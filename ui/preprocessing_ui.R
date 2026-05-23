@@ -39,22 +39,23 @@ preprocessing_ui <- function() {
                 hr(),
                 h4("3. Missing Value Imputation", style = "color: #337ab7;"),
                 selectInput("imputation_method", "Imputation method",
-                            choices = c("Minimum value" = "min",
-                                        "Mean" = "mean",
-                                        "Median" = "median",
-                                        "KNN" = "knn",
-                                        "None (skip imputation)" = "none")),
-                conditionalPanel(
-                  condition = "input.imputation_method == 'min'",
-                  numericInput("min_impute_value", "Minimum value size",
-                               value = 1e-4, step = 1e-5),
-                  helpText("Recommended: 1e-4 (0.0001) as a small constant.")
-                ),
+                            choices = c("k-Nearest Neighbors (KNN)" = "knn",
+                                        "Probabilistic PCA (PPCA)" = "ppca",
+                                        "None (skip imputation)" = "none"),
+                            selected = "knn"),
                 conditionalPanel(
                   condition = "input.imputation_method == 'knn'",
                   helpText(style = "color: orange; font-weight: bold;",
                            "Note: KNN imputation requires the 'impute' package.\n",
-                           "Please run: BiocManager::install('impute') if not installed.")
+                           "Please run: BiocManager::install('impute') if not installed.\n",
+                           "Default parameters: k = 10.")
+                ),
+                conditionalPanel(
+                  condition = "input.imputation_method == 'ppca'",
+                  helpText(style = "color: orange; font-weight: bold;",
+                           "Note: PPCA imputation requires the 'pcaMethods' package.\n",
+                           "Please run: BiocManager::install('pcaMethods') if not installed.\n",
+                           "Default parameters: nPcs = 2.")
                 ),
                 conditionalPanel(
                   condition = "input.imputation_method == 'none'",
@@ -138,6 +139,63 @@ preprocessing_ui <- function() {
                                       DT::dataTableOutput("filter_summary_table"),
                                       br(),
                                       downloadButton("download_filter_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
+                               )
+                             )
+                           )
+                  ),
+                  tabPanel("Imputation Comparison", value = "imputation_comparison",
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == false",
+                             div(style = "margin-top: 20px; color: #999; text-align: center;",
+                                 icon("exclamation-triangle", "fa-3x"),
+                                 h4("Please run preprocessing first to see imputation comparison.")
+                             )
+                           ),
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == true",
+                             fluidRow(
+                               column(12,
+                                      h4("Imputation Statistics"),
+                                      verbatimTextOutput("imputation_stats_text"),
+                                      hr()
+                               )
+                             ),
+                             fluidRow(
+                               column(12,
+                                      h4("Boxplot: Before vs After Imputation"),
+                                      shinycssloaders::withSpinner(
+                                        plotOutput("imputation_boxplot", height = "600px"),
+                                        type = 4, color = "#3498db"
+                                      )
+                               )
+                             ),
+                             hr(),
+                             fluidRow(
+                               column(12,
+                                      h4("PCA: Before vs After Imputation"),
+                                      shinycssloaders::withSpinner(
+                                        plotOutput("imputation_pca_plot", height = "500px"),
+                                        type = 4, color = "#3498db"
+                                      )
+                               )
+                             ),
+                             hr(),
+                             fluidRow(
+                               column(12,
+                                      h4("Q-Q Plot: Before vs After Imputation"),
+                                      shinycssloaders::withSpinner(
+                                        plotOutput("imputation_qq_plot", height = "500px"),
+                                        type = 4, color = "#3498db"
+                                      )
+                               )
+                             ),
+                             hr(),
+                             fluidRow(
+                               column(12,
+                                      h4("Summary Statistics"),
+                                      DT::dataTableOutput("imputation_summary_table"),
+                                      br(),
+                                      downloadButton("download_imputation_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
                                )
                              )
                            )

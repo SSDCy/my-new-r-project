@@ -197,30 +197,43 @@ output$pre_raw_missing_plot <- renderPlot({
   })
 })
 
-# ---------- 缺失值填充函数 ----------
-impute_missing_values <- function(data, method = "min", min_value = 1e-4) {
+# ---------- 缺失值填充函数（含 PPCA 回退） ----------
+impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
   if (method == "none") {
     return(data)
   }
   data_matrix <- as.matrix(data)
-  if (method == "min") {
-    data_matrix[is.na(data_matrix)] <- min_value
-  } else if (method == "mean") {
-    data_matrix <- apply(data_matrix, 2, function(x) {
-      x[is.na(x)] <- mean(x, na.rm = TRUE); x
-    })
-  } else if (method == "median") {
-    data_matrix <- apply(data_matrix, 2, function(x) {
-      x[is.na(x)] <- median(x, na.rm = TRUE); x
-    })
-  } else if (method == "knn") {
+  if (method == "knn") {
     if (!requireNamespace("impute", quietly = TRUE))
       stop("impute package required for KNN. Run BiocManager::install('impute')")
-    impute_result <- impute::impute.knn(data_matrix)
+    suppressMessages({
+      impute_result <- impute::impute.knn(data_matrix, k = 10)
+    })
     data_matrix <- impute_result$data
+  } else if (method == "ppca") {
+    if (!requireNamespace("pcaMethods", quietly = TRUE))
+      stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
+    tryCatch({
+      pc <- pcaMethods::ppca(data_matrix, nPcs = 2, scale = "uv", center = TRUE)
+      data_matrix <- as.matrix(pcaMethods::completeObs(pc))
+    }, error = function(e) {
+      showNotification(
+        paste("PPCA imputation failed:", e$message, "- Automatically switching to KNN imputation."),
+        type = "warning", duration = 10
+      )
+      if (!requireNamespace("impute", quietly = TRUE))
+        stop("impute package required for fallback KNN. Run BiocManager::install('impute')")
+      suppressMessages({
+        impute_result <- impute::impute.knn(data_matrix, k = 10)
+      })
+      data_matrix <<- impute_result$data
+    })
+  } else {
+    stop("Unknown imputation method.")
   }
+  rownames(data_matrix) <- rownames(data)
+  colnames(data_matrix) <- colnames(data)
   result <- as.data.frame(data_matrix)
-  rownames(result) <- rownames(data)
   return(result)
 }
 
@@ -263,14 +276,14 @@ processed_data <- eventReactive(input$run_preprocessing, {
   tryCatch({
     data <- expression_data()
     
-    # 1. 缺失值过滤（如果阈值 < 1）
+    # 1. 缺失值过滤
     if (input$max_missing_fraction < 1) {
       missing_frac <- rowMeans(is.na(data))
       data <- data[missing_frac <= input$max_missing_fraction, , drop = FALSE]
       if (nrow(data) == 0) stop("No proteins left after missing value filter. Relax the threshold.")
     }
     
-    # 2. 强度过滤（始终移除 Inf）
+    # 2. 强度过滤
     max_int <- apply(data, 1, max, na.rm = TRUE)
     keep_finite <- is.finite(max_int)
     preprocessing_params$inf_filtered_count <- sum(!keep_finite)
@@ -285,11 +298,11 @@ processed_data <- eventReactive(input$run_preprocessing, {
       if (nrow(data) == 0) stop("No proteins left after intensity filter. Lower the threshold.")
     }
     
-    # 3. 缺失值填充
+    # 3. 缺失值填补
     preprocessing_params$imputation_method <- input$imputation_method
-    data <- impute_missing_values(data, method = input$imputation_method, min_value = input$min_impute_value)
+    data <- impute_missing_values(data, method = input$imputation_method)
     
-    # 4. 批次校正（可选）
+    # 4. 批次校正
     preprocessing_params$batch_performed <- FALSE
     preprocessing_params$batch_corrected_cols <- NULL
     if (input$perform_batch_correction && !is.null(input$batch_column) && input$batch_column != "") {
@@ -323,10 +336,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
     preprocessing_params$last_run_time <- Sys.time()
     removeNotification("preprocess_notif")
     showNotification("Preprocessing completed! Redirecting to Analysis & Export...", type = "message", duration = 3)
-    
-    # 自动跳转到 Plots 页面（分析页面）
     updateNavbarPage(session, "main_navbar", selected = "plots")
-    
     return(data)
   }, error = function(e) {
     removeNotification("preprocess_notif")
@@ -360,20 +370,18 @@ output$pre_processed_summary <- renderPrint({
   
   if (!is.null(preprocessing_params$imputation_method)) {
     cat("\n====================\n")
-    method_name <- switch(preprocessing_params$imputation_method,
-                          min = "极小值填补法",
-                          mean = "均值填补法",
-                          median = "中位数填补法",
-                          knn = "KNN填补法",
-                          none = "无（跳过填充）")
-    cat("缺失值处理方式：", method_name, "\n")
+    method_display <- switch(preprocessing_params$imputation_method,
+                             knn = "K近邻填补法",
+                             ppca = "概率主成分分析填补法",
+                             none = "无（跳过填充）")
+    cat("缺失值处理方式：", method_display, "\n")
     cat("最后运行时间：", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
     
     cat("\n预处理步骤顺序：\n")
     cat("1. 缺失值过滤 (max fraction = ", input$max_missing_fraction, ")\n", sep = "")
     cat("2. 异常值(Inf)过滤（始终执行）\n")
     cat("3. 强度过滤 (min intensity = ", input$min_intensity, ")\n", sep = "")
-    cat("4. 缺失值填补 (", method_name, ")\n", sep = "")
+    cat("4. 缺失值填补 (", method_display, ")\n", sep = "")
     if (preprocessing_params$batch_performed) {
       cat("5. 批次校正\n")
       if (!is.null(preprocessing_params$batch_corrected_cols)) {
@@ -399,7 +407,6 @@ output$pre_processed_table <- DT::renderDT({
   df <- processed_data()
   df <- cbind(`Master Protein ID` = rownames(df), df)
   rownames(df) <- NULL
-  
   dt <- DT::datatable(
     df,
     options = list(
@@ -411,7 +418,6 @@ output$pre_processed_table <- DT::renderDT({
     rownames = FALSE,
     filter = "top"
   )
-  
   corrected <- preprocessing_params$batch_corrected_cols
   if (!is.null(corrected) && length(corrected) > 0) {
     for (col in corrected) {
@@ -423,13 +429,11 @@ output$pre_processed_table <- DT::renderDT({
 
 # ============ 缺失值过滤前后对比 ============
 
-# 指示是否已完成预处理
 output$preprocessing_done <- reactive({
   !is.null(processed_data())
 })
 outputOptions(output, "preprocessing_done", suspendWhenHidden = FALSE)
 
-# 对比数据准备
 filter_comparison_data <- reactive({
   req(processed_data())
   before <- expression_data()
@@ -469,7 +473,7 @@ filter_comparison_data <- reactive({
   
   raw_for_export <- cbind(Protein_ID = protein_ids, before)
   
-  before_impute <- impute_missing_values(before, method = "min", min_value = 1e-4)
+  before_impute <- impute_missing_values(before, method = "knn")
   after_impute <- after
   common_cols <- intersect(colnames(before_impute), colnames(after_impute))
   before_impute <- before_impute[, common_cols, drop = FALSE]
@@ -577,7 +581,6 @@ output$filter_summary_table <- DT::renderDT({
   )
 })
 
-# ---------- 下载对比表格 ----------
 output$download_filter_table <- downloadHandler(
   filename = function() {
     paste0("Filter_Comparison_", Sys.Date(), ".xlsx")
@@ -588,7 +591,6 @@ output$download_filter_table <- downloadHandler(
     raw_before <- dat$raw_before
     
     wb <- openxlsx::createWorkbook()
-    
     openxlsx::addWorksheet(wb, "Raw Data Before Filtering")
     openxlsx::writeData(wb, "Raw Data Before Filtering", raw_before)
     
@@ -679,13 +681,288 @@ output$download_filter_table <- downloadHandler(
     )
     
     stopifnot(length(log_items) == length(log_values))
-    
     log_df <- data.frame(Item = log_items, Value = log_values, stringsAsFactors = FALSE)
     
     openxlsx::addWorksheet(wb, "Filtering Log")
     openxlsx::writeData(wb, "Filtering Log", log_df)
     openxlsx::setColWidths(wb, "Filtering Log", cols = 1, widths = 60)
     openxlsx::setColWidths(wb, "Filtering Log", cols = 2, widths = 40)
+    
+    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+  }
+)
+
+# ============ 缺失值填补前后对比 ============
+
+pre_imputation_matrix <- reactive({
+  req(processed_data())
+  data <- expression_data()
+  if (input$max_missing_fraction < 1) {
+    missing_frac <- rowMeans(is.na(data))
+    data <- data[missing_frac <= input$max_missing_fraction, , drop = FALSE]
+  }
+  max_int <- apply(data, 1, max, na.rm = TRUE)
+  keep_finite <- is.finite(max_int)
+  data <- data[keep_finite, , drop = FALSE]
+  if (nrow(data) > 0 && input$min_intensity > 0) {
+    max_int_finite <- apply(data, 1, max, na.rm = TRUE)
+    keep <- max_int_finite > input$min_intensity
+    data <- data[keep, , drop = FALSE]
+  }
+  data
+})
+
+imputation_comparison_data <- reactive({
+  req(processed_data(), pre_imputation_matrix())
+  before_imp <- pre_imputation_matrix()
+  after_imp <- processed_data()
+  
+  all_ids <- rv$clean_data$`Master protein IDs`
+  expr_ids <- rownames(expression_data())
+  before_ids <- rownames(before_imp)
+  idx <- match(before_ids, expr_ids)
+  protein_ids <- all_ids[idx]
+  if (any(is.na(protein_ids))) {
+    protein_ids <- before_ids
+  }
+  
+  missing_before <- rowSums(is.na(before_imp))
+  missing_rate_before <- rowMeans(is.na(before_imp))
+  mean_before <- rowMeans(before_imp, na.rm = TRUE)
+  median_before <- apply(before_imp, 1, median, na.rm = TRUE)
+  
+  mean_after <- rowMeans(as.matrix(after_imp), na.rm = TRUE)
+  median_after <- apply(after_imp, 1, median, na.rm = TRUE)
+  
+  detailed <- data.frame(
+    Protein_ID = protein_ids,
+    Missing_Count_Before = missing_before,
+    Missing_Rate_Before = round(missing_rate_before, 4),
+    Mean_Intensity_Before = mean_before,
+    Median_Intensity_Before = median_before,
+    Mean_Intensity_After = mean_after,
+    Median_Intensity_After = median_after,
+    stringsAsFactors = FALSE
+  )
+  
+  before_vis <- impute_missing_values(before_imp, method = "knn")
+  after_vis <- after_imp
+  common_cols <- intersect(colnames(before_vis), colnames(after_vis))
+  before_vis <- before_vis[, common_cols, drop = FALSE]
+  after_vis <- after_vis[, common_cols, drop = FALSE]
+  
+  total_missing_before <- sum(missing_before)
+  missing_after <- sum(is.na(after_imp))
+  method <- preprocessing_params$imputation_method
+  params <- if (method == "knn") "k = 10 (default), using 10 nearest proteins for imputation" else if (method == "ppca") "nPcs = 2, scale = 'uv', center = TRUE" else "None"
+  
+  list(
+    detailed = detailed,
+    before_vis = before_vis,
+    after_vis = after_vis,
+    total_missing_before = total_missing_before,
+    missing_after = missing_after,
+    method = method,
+    params = params,
+    n_proteins = nrow(before_imp),
+    n_samples = ncol(before_imp)
+  )
+})
+
+output$imputation_stats_text <- renderPrint({
+  req(imputation_comparison_data())
+  dat <- imputation_comparison_data()
+  cat("Total missing values before imputation:", dat$total_missing_before, "\n")
+  cat("Missing values after imputation:", dat$missing_after, "\n")
+  cat("Imputation method:", dat$method, "\n")
+  cat("Parameters:", dat$params, "\n")
+})
+
+output$imputation_boxplot <- renderPlot({
+  req(imputation_comparison_data())
+  dat <- imputation_comparison_data()
+  
+  before_log <- log2(as.matrix(dat$before_vis) + 1)
+  after_log <- log2(as.matrix(dat$after_vis) + 1)
+  
+  before_df <- data.frame(Sample = rep(colnames(before_log), each = nrow(before_log)),
+                          Intensity = as.vector(before_log),
+                          Stage = "Before Imputation")
+  after_df <- data.frame(Sample = rep(colnames(after_log), each = nrow(after_log)),
+                         Intensity = as.vector(after_log),
+                         Stage = "After Imputation")
+  plot_df <- rbind(before_df, after_df)
+  plot_df$Stage <- factor(plot_df$Stage, levels = c("Before Imputation", "After Imputation"))
+  
+  sample_names <- colnames(before_log)
+  group_levels <- gsub("\\..*", "", sample_names)
+  plot_df$Group <- rep(group_levels, each = nrow(before_log))
+  
+  n_proteins <- nrow(before_log)
+  n_samples <- length(sample_names)
+  method_display <- switch(dat$method, knn = "KNN", ppca = "PPCA", none = "None")
+  subtitle_text <- paste0(method_display, " Imputation | ", n_proteins, " proteins | ", n_samples, " samples")
+  
+  group_summary <- data.frame(
+    Sample = sample_names,
+    Group = group_levels,
+    stringsAsFactors = FALSE
+  )
+  
+  max_y <- max(plot_df$Intensity, na.rm = TRUE)
+  y_tile <- max_y * 1.08
+  tile_height <- max_y * 0.02
+  
+  group_colors <- c("L2" = "#E41A1C", "L4" = "#377EB8", "L6" = "#4DAF4A", "L8" = "#984EA3")
+  
+  ggplot(plot_df, aes(x = Sample, y = Intensity, fill = Stage)) +
+    geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+    geom_tile(data = group_summary, aes(x = Sample, y = y_tile, fill = Group),
+              width = 0.9, height = tile_height, inherit.aes = FALSE) +
+    scale_fill_manual(
+      values = c("Before Imputation" = "#e67e22", "After Imputation" = "#9b59b6",
+                 setNames(group_colors, names(group_colors))),
+      breaks = c("Before Imputation", "After Imputation"),
+      name = "Stage"
+    ) +
+    labs(title = "Intensity Distribution (log2) Before and After Imputation",
+         subtitle = subtitle_text,
+         y = "log2(Intensity)", x = "") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          legend.position = "bottom")
+})
+
+output$imputation_pca_plot <- renderPlot({
+  req(imputation_comparison_data())
+  dat <- imputation_comparison_data()
+  
+  before_sub <- dat$before_vis
+  after_sub <- dat$after_vis
+  
+  if (nrow(before_sub) < 3) {
+    plot.new()
+    text(0.5, 0.5, "Not enough proteins for PCA.")
+    return()
+  }
+  
+  before_log <- log2(as.matrix(before_sub) + 1)
+  after_log <- log2(as.matrix(after_sub) + 1)
+  
+  pca_before <- safe_pca(before_log)
+  pca_after <- safe_pca(after_log)
+  
+  if (is.null(pca_before) || is.null(pca_after)) {
+    plot.new()
+    text(0.5, 0.5, "PCA failed due to insufficient variability or missing values.")
+    return()
+  }
+  
+  var_before <- round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1)
+  var_after <- round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
+  
+  df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before Imputation")
+  df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After Imputation")
+  pca_df <- rbind(df_before, df_after)
+  
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
+    geom_point(alpha = 0.6, size = 2) +
+    stat_ellipse(type = "norm", level = 0.95) +
+    scale_color_manual(values = c("Before Imputation" = "#e67e22", "After Imputation" = "#9b59b6")) +
+    labs(title = "PCA: Before vs After Imputation",
+         x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
+         y = paste0("PC2 (Before: ", var_before[2], "%, After: ", var_after[2], "%)")) +
+    theme_bw() +
+    theme(legend.position = "bottom")
+})
+
+output$imputation_qq_plot <- renderPlot({
+  req(imputation_comparison_data())
+  dat <- imputation_comparison_data()
+  
+  before_log <- log2(as.matrix(dat$before_vis) + 1)
+  after_log <- log2(as.matrix(dat$after_vis) + 1)
+  
+  qq_before <- data.frame(Intensity = as.vector(before_log), Stage = "Before Imputation")
+  qq_after <- data.frame(Intensity = as.vector(after_log), Stage = "After Imputation")
+  qq_df <- rbind(qq_before, qq_after)
+  
+  ggplot(qq_df, aes(sample = Intensity, color = Stage)) +
+    stat_qq(size = 0.5, alpha = 0.5) +
+    stat_qq_line() +
+    scale_color_manual(values = c("Before Imputation" = "#e67e22", "After Imputation" = "#9b59b6")) +
+    labs(title = "Q-Q Plot: Normality Check Before and After Imputation",
+         subtitle = paste("Log2 Intensity Distribution"),
+         x = "Theoretical Quantiles",
+         y = "Sample Quantiles") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+})
+
+output$imputation_summary_table <- DT::renderDT({
+  req(imputation_comparison_data())
+  DT::datatable(
+    imputation_comparison_data()$detailed,
+    options = list(pageLength = 10, scrollX = TRUE),
+    rownames = FALSE
+  )
+})
+
+output$download_imputation_table <- downloadHandler(
+  filename = function() {
+    paste0("Imputation_Comparison_", Sys.Date(), ".xlsx")
+  },
+  content = function(file) {
+    dat <- imputation_comparison_data()
+    detailed <- dat$detailed
+    
+    wb <- openxlsx::createWorkbook()
+    openxlsx::addWorksheet(wb, "Imputation Details")
+    
+    total <- nrow(detailed)
+    na_count <- sum(detailed$Missing_Count_Before > 0)
+    na_pct <- round(na_count / total * 100, 1)
+    total_missing <- dat$total_missing_before
+    total_cells <- dat$n_proteins * dat$n_samples
+    missing_pct <- round(total_missing / total_cells * 100, 1)
+    
+    summary_labels <- c(
+      paste0("Total Proteins: ", total),
+      paste0("Proteins with NA before imputation: ", na_count, " (", na_pct, "%)"),
+      paste0("Total missing values before imputation: ", total_missing, " (", total_missing, "/(", dat$n_proteins, "×", dat$n_samples, ") = ", missing_pct, "%)"),
+      paste0("Missing values after imputation: ", dat$missing_after),
+      paste0("Imputation method: ", dat$method),
+      paste0("Parameters: ", dat$params)
+    )
+    summary_rows <- data.frame(Metric = summary_labels, stringsAsFactors = FALSE)
+    
+    openxlsx::writeData(wb, "Imputation Details", summary_rows, startRow = 1, startCol = 1, colNames = TRUE)
+    openxlsx::writeData(wb, "Imputation Details", detailed, startRow = nrow(summary_rows) + 3, startCol = 1, colNames = TRUE)
+    
+    now_time <- Sys.time()
+    log_items <- c(
+      "Experiment Name", "Analysis Time", "Imputation Method", "Parameters",
+      "", "--- Column Definitions ---",
+      "Missing_Count_Before: Number of missing values per protein before imputation",
+      "Missing_Rate_Before: Missing rate before imputation",
+      "Mean_Intensity_Before: Average intensity before imputation (NA ignored)",
+      "Median_Intensity_Before: Median intensity before imputation (NA ignored)",
+      "Mean_Intensity_After: Average intensity after imputation",
+      "Median_Intensity_After: Median intensity after imputation"
+    )
+    log_values <- c(
+      if (!is.null(input$expression_file)) input$expression_file$name else "Unknown",
+      format(now_time, "%Y-%m-%d %H:%M:%S"),
+      dat$method,
+      dat$params,
+      "", "", "", "", "", "", "", ""
+    )
+    log_df <- data.frame(Item = log_items, Value = log_values, stringsAsFactors = FALSE)
+    
+    openxlsx::addWorksheet(wb, "Imputation Log")
+    openxlsx::writeData(wb, "Imputation Log", log_df)
+    openxlsx::setColWidths(wb, "Imputation Log", cols = 1, widths = 50)
+    openxlsx::setColWidths(wb, "Imputation Log", cols = 2, widths = 40)
     
     openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
   }
