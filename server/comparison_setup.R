@@ -166,59 +166,12 @@ observeEvent(input$apply_replicate_fill, {
   }
 })
 
-# 跳转到比较页面
+# 跳转到比较页面（已不再需要，但保留以兼容其他引用）
 observeEvent(input$goto_comparisons, {
   updateNavbarPage(session, "main_navbar", selected = "comparisons")
 })
 
-# ---------- 导出相关 UI ----------
-output$export_comparisons_ui <- renderUI({
-  comps <- sapply(sorted_comps(), `[[`, "name")
-  if (length(comps) == 0) return(p("No comparisons defined yet."))
-  checkboxGroupInput("export_comparisons", NULL, choices = comps, selected = character(0), inline = TRUE)
-})
-
-output$export_comps_count_text <- renderText({
-  comps <- sapply(sorted_comps(), `[[`, "name")
-  paste0("(", length(comps), " comparisons)")
-})
-
-observeEvent(input$select_all_export, {
-  comps <- sapply(sorted_comps(), `[[`, "name")
-  if (length(comps) > 10) {
-    showNotification("Excel export is limited to 10 comparisons. Only the first 10 will be selected.", type = "warning", duration = 5)
-    comps <- comps[1:10]
-  }
-  updateCheckboxGroupInput(session, "export_comparisons", selected = comps)
-})
-
-observeEvent(input$deselect_all_export, {
-  updateCheckboxGroupInput(session, "export_comparisons", selected = character(0))
-})
-
-# ---------- UpSet 复选框 UI ----------
-output$upset_comparisons_checkbox_ui <- renderUI({
-  comps <- sapply(sorted_comps(), `[[`, "name")
-  if (length(comps) == 0) return(p("No comparisons defined."))
-  tagList(
-    div(style = "display: flex; align-items: center; gap: 10px; margin-bottom: 5px;",
-        actionButton("select_toggle_upset", "Select All / Deselect All", class = "btn-sm btn-outline-secondary")
-    ),
-    checkboxGroupInput("venn_comparisons_checkbox", NULL, choices = comps, selected = NULL, inline = TRUE)
-  )
-})
-
-observeEvent(input$select_toggle_upset, {
-  comps <- sapply(sorted_comps(), `[[`, "name")
-  current_selected <- input$venn_comparisons_checkbox
-  if (length(current_selected) == length(comps)) {
-    updateCheckboxGroupInput(session, "venn_comparisons_checkbox", selected = character(0))
-  } else {
-    if (length(comps) > 15) {
-      showNotification("UpSet is limited to 15 comparisons. Selecting the first 15.", type = "warning")
-      updateCheckboxGroupInput(session, "venn_comparisons_checkbox", selected = comps[1:15])
-    } else {
-      updateCheckboxGroupInput(session, "venn_comparisons_checkbox", selected = comps)
-    }
-  }
-})
+# ===== 以下与Venn/Upset相关的输出和观察者已完全移除 =====
+# 删除了: output$export_comparisons_ui, output$upset_comparisons_checkbox_ui
+# 删除了: observeEvent(input$select_toggle_upset, ...)
+# 删除了: 更新 venn_comparisons_select 的 observer
