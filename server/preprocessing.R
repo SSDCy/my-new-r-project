@@ -45,6 +45,17 @@ expression_data <- reactive({
   df
 })
 
+# ---------- 快速预设按钮 ----------
+observeEvent(input$preset_missing_0.3, {
+  updateSliderInput(session, "max_missing_fraction", value = 0.3)
+})
+observeEvent(input$preset_missing_0.5, {
+  updateSliderInput(session, "max_missing_fraction", value = 0.5)
+})
+observeEvent(input$preset_missing_0.7, {
+  updateSliderInput(session, "max_missing_fraction", value = 0.7)
+})
+
 # ---------- 动态缺失值过滤效果 ----------
 output$missing_filter_effect <- renderPrint({
   req(expression_data())
@@ -52,8 +63,9 @@ output$missing_filter_effect <- renderPrint({
   filtered <- sum(missing_per_protein > input$max_missing_fraction)
   retained <- nrow(expression_data()) - filtered
   filtered_percent <- round(filtered / nrow(expression_data()) * 100, 1)
-  cat("Predicted removal:", filtered, "proteins (", filtered_percent, "%)\n", sep = "")
-  cat("Predicted retained:", retained, "proteins\n", sep = "")
+  cat("Single-step predicted removal (only missing rate):", filtered, "proteins (", filtered_percent, "%)\n", sep = "")
+  cat("Single-step predicted retained (only missing rate):", retained, "proteins\n", sep = "")
+  cat("\nNote: This prediction only considers the missing rate filter, without prior Inf/Intensity filters. It is intended as a reference for threshold estimation.\n")
 })
 
 # ---------- 强度过滤效果 ----------
@@ -408,3 +420,273 @@ output$pre_processed_table <- DT::renderDT({
   }
   dt
 })
+
+# ============ 缺失值过滤前后对比 ============
+
+# 指示是否已完成预处理
+output$preprocessing_done <- reactive({
+  !is.null(processed_data())
+})
+outputOptions(output, "preprocessing_done", suspendWhenHidden = FALSE)
+
+# 对比数据准备
+filter_comparison_data <- reactive({
+  req(processed_data())
+  before <- expression_data()
+  after <- processed_data()
+  
+  protein_ids <- rv$clean_data$`Master protein IDs`
+  if (is.null(protein_ids) || length(protein_ids) != nrow(before)) {
+    protein_ids <- rownames(before)
+  } else {
+    protein_ids <- as.character(protein_ids)
+  }
+  
+  before_missing_rate <- rowMeans(is.na(before))
+  before_max <- apply(before, 1, max, na.rm = TRUE)
+  before_mean <- rowMeans(before, na.rm = TRUE)
+  before_median <- apply(before, 1, median, na.rm = TRUE)
+  
+  pass_inf <- is.finite(before_max)
+  pass_missing <- before_missing_rate <= input$max_missing_fraction
+  pass_intensity <- ifelse(pass_inf, before_max > input$min_intensity, FALSE)
+  retained <- pass_inf & pass_missing & pass_intensity
+  
+  detailed <- data.frame(
+    Protein_ID = protein_ids,
+    Missing_Rate_Before = round(before_missing_rate, 4),
+    Max_Intensity_Before = before_max,
+    Mean_Intensity_Before = before_mean,
+    Median_Intensity_Before = before_median,
+    Pass_Inf_Filter = pass_inf,
+    Pass_Missing_Filter = pass_missing,
+    Pass_Intensity_Filter = pass_intensity,
+    Retained_After_Filter = retained,
+    Missing_Fraction_Threshold = input$max_missing_fraction,
+    Intensity_Threshold = input$min_intensity,
+    stringsAsFactors = FALSE
+  )
+  
+  raw_for_export <- cbind(Protein_ID = protein_ids, before)
+  
+  before_impute <- impute_missing_values(before, method = "min", min_value = 1e-4)
+  after_impute <- after
+  common_cols <- intersect(colnames(before_impute), colnames(after_impute))
+  before_impute <- before_impute[, common_cols, drop = FALSE]
+  after_impute <- after_impute[, common_cols, drop = FALSE]
+  
+  list(
+    detailed = detailed,
+    raw_before = raw_for_export,
+    before_impute = before_impute,
+    after_impute = after_impute
+  )
+})
+
+output$filter_boxplot <- renderPlot({
+  req(filter_comparison_data())
+  dat <- filter_comparison_data()
+  
+  before_log <- log2(as.matrix(dat$before_impute) + 1)
+  after_log <- log2(as.matrix(dat$after_impute) + 1)
+  
+  before_df <- data.frame(Sample = rep(colnames(before_log), each = nrow(before_log)),
+                          Intensity = as.vector(before_log),
+                          Stage = "Before Filtering")
+  after_df <- data.frame(Sample = rep(colnames(after_log), each = nrow(after_log)),
+                         Intensity = as.vector(after_log),
+                         Stage = "After Filtering")
+  plot_df <- rbind(before_df, after_df)
+  plot_df$Stage <- factor(plot_df$Stage, levels = c("Before Filtering", "After Filtering"))
+  
+  ggplot(plot_df, aes(x = Sample, y = Intensity, fill = Stage)) +
+    geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+    scale_fill_manual(values = c("Before Filtering" = "#3498db", "After Filtering" = "#2ecc71")) +
+    labs(title = "Intensity Distribution (log2) Before and After Filtering",
+         y = "log2(Intensity)", x = "") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+})
+
+safe_pca <- function(mat, scale = TRUE) {
+  mat <- as.matrix(mat)
+  mat[!is.finite(mat)] <- NA
+  mat <- mat[complete.cases(mat), , drop = FALSE]
+  if (nrow(mat) < 2) return(NULL)
+  row_vars <- apply(mat, 1, var, na.rm = TRUE)
+  keep <- row_vars > 1e-12
+  mat <- mat[keep, , drop = FALSE]
+  if (nrow(mat) < 2) return(NULL)
+  tryCatch(
+    prcomp(mat, scale. = scale),
+    error = function(e) NULL
+  )
+}
+
+output$filter_pca_plot <- renderPlot({
+  req(filter_comparison_data())
+  dat <- filter_comparison_data()
+  
+  after_ids <- rownames(dat$after_impute)
+  before_sub <- dat$before_impute[after_ids, , drop = FALSE]
+  after_sub <- dat$after_impute[after_ids, , drop = FALSE]
+  
+  if (nrow(before_sub) < 3) {
+    plot.new()
+    text(0.5, 0.5, "Not enough common proteins for PCA.")
+    return()
+  }
+  
+  before_log <- log2(as.matrix(before_sub) + 1)
+  after_log <- log2(as.matrix(after_sub) + 1)
+  
+  pca_before <- safe_pca(before_log)
+  pca_after <- safe_pca(after_log)
+  
+  if (is.null(pca_before) || is.null(pca_after)) {
+    plot.new()
+    text(0.5, 0.5, "PCA failed due to insufficient variability or missing values.")
+    return()
+  }
+  
+  var_before <- round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1)
+  var_after <- round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
+  
+  df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before")
+  df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After")
+  pca_df <- rbind(df_before, df_after)
+  
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
+    geom_point(alpha = 0.6, size = 2) +
+    stat_ellipse(type = "norm", level = 0.95) +
+    scale_color_manual(values = c("Before" = "#3498db", "After" = "#2ecc71")) +
+    labs(title = "PCA: Before vs After Filtering (common proteins)",
+         x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
+         y = paste0("PC2 (Before: ", var_before[2], "%, After: ", var_after[2], "%)")) +
+    theme_bw() +
+    theme(legend.position = "bottom")
+})
+
+output$filter_summary_table <- DT::renderDT({
+  req(filter_comparison_data())
+  detailed <- filter_comparison_data()$detailed
+  DT::datatable(
+    detailed,
+    options = list(pageLength = 10, scrollX = TRUE),
+    rownames = FALSE
+  )
+})
+
+# ---------- 下载对比表格 ----------
+output$download_filter_table <- downloadHandler(
+  filename = function() {
+    paste0("Filter_Comparison_", Sys.Date(), ".xlsx")
+  },
+  content = function(file) {
+    dat <- filter_comparison_data()
+    detailed <- dat$detailed
+    raw_before <- dat$raw_before
+    
+    wb <- openxlsx::createWorkbook()
+    
+    openxlsx::addWorksheet(wb, "Raw Data Before Filtering")
+    openxlsx::writeData(wb, "Raw Data Before Filtering", raw_before)
+    
+    total_proteins <- nrow(detailed)
+    inf_removed <- sum(!detailed$Pass_Inf_Filter)
+    missing_removed <- sum(detailed$Pass_Inf_Filter & !detailed$Pass_Missing_Filter)
+    intensity_removed <- sum(detailed$Pass_Inf_Filter & detailed$Pass_Missing_Filter & !detailed$Pass_Intensity_Filter)
+    retained <- sum(detailed$Retained_After_Filter)
+    
+    summary_rows <- data.frame(
+      Metric = c(
+        "Total Proteins (Before Filtering)",
+        "Inf Value Filter Removed",
+        "Missing Rate Filter Removed",
+        "Intensity Filter Removed",
+        "Final Retained Proteins"
+      ),
+      Count = c(total_proteins, inf_removed, missing_removed, intensity_removed, retained),
+      stringsAsFactors = FALSE
+    )
+    
+    openxlsx::addWorksheet(wb, "Protein Details")
+    openxlsx::writeData(wb, "Protein Details", summary_rows, startRow = 1, startCol = 1, colNames = TRUE)
+    detail_start_row <- nrow(summary_rows) + 3
+    openxlsx::writeData(wb, "Protein Details", detailed, startRow = detail_start_row, startCol = 1, colNames = TRUE)
+    
+    now_time <- Sys.time()
+    uploaded_name <- if (!is.null(input$expression_file)) input$expression_file$name else "Unknown"
+    n_samples <- length(rv$sample_names)
+    if (is.null(n_samples)) n_samples <- ncol(dat$before_impute)
+    
+    miss_threshold <- input$max_missing_fraction
+    inten_threshold <- input$min_intensity
+    
+    log_items <- c(
+      "Experiment Name",
+      "Number of Samples",
+      "Analysis Time",
+      "Analyst",
+      "",
+      "--- Filtering Procedure (applied in order) ---",
+      "Step 1: Inf/Abnormal Value Filter",
+      "  Rule",
+      "  Filtered Protein Count",
+      "Step 2: Missing Rate Filter",
+      "  Formula (Missing Rate = missing samples / total samples)",
+      "  Threshold (max allowed fraction)",
+      "  Filtered Protein Count",
+      "Step 3: Intensity Filter",
+      "  Formula (Intensity = max expression value across all samples)",
+      "  Threshold (min intensity)",
+      "  Filtered Protein Count",
+      "",
+      "--- Column Definitions ---",
+      "Missing_Rate_Before: Missing rate = missing sample count / total sample count",
+      "Max_Intensity_Before: Maximum intensity among all samples for each protein",
+      "Mean_Intensity_Before: Average intensity across samples",
+      "Median_Intensity_Before: Median intensity across samples",
+      "Pass_Inf_Filter: TRUE if max intensity is finite (not Inf/NaN)",
+      "Pass_Missing_Filter: TRUE if missing rate <= threshold",
+      "Pass_Intensity_Filter: TRUE if max intensity > intensity threshold",
+      "Retained_After_Filter: TRUE if protein meets ALL three conditions",
+      "Missing_Fraction_Threshold: user-set missing fraction cutoff",
+      "Intensity_Threshold: user-set minimum intensity cutoff"
+    )
+    
+    log_values <- c(
+      uploaded_name,
+      as.character(n_samples),
+      format(now_time, "%Y-%m-%d %H:%M:%S"),
+      "Not provided",
+      "",
+      "",
+      "",
+      "Proteins with non-finite (Inf/NaN) maximum intensity are removed",
+      as.character(inf_removed),
+      "",
+      "",
+      as.character(miss_threshold),
+      as.character(missing_removed),
+      "",
+      "",
+      as.character(inten_threshold),
+      as.character(intensity_removed),
+      "",
+      "",
+      "", "", "", "", "", "", "", "", "", ""
+    )
+    
+    stopifnot(length(log_items) == length(log_values))
+    
+    log_df <- data.frame(Item = log_items, Value = log_values, stringsAsFactors = FALSE)
+    
+    openxlsx::addWorksheet(wb, "Filtering Log")
+    openxlsx::writeData(wb, "Filtering Log", log_df)
+    openxlsx::setColWidths(wb, "Filtering Log", cols = 1, widths = 60)
+    openxlsx::setColWidths(wb, "Filtering Log", cols = 2, widths = 40)
+    
+    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+  }
+)

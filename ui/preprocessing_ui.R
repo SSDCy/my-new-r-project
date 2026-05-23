@@ -22,9 +22,14 @@ preprocessing_ui <- function() {
                 hr(),
                 h4("1. Missing Value Filter", style = "color: #337ab7;"),
                 sliderInput("max_missing_fraction", "Max allowed missing fraction (0-1)",
-                            min = 0, max = 1, value = 0.5, step = 0.05),
+                            min = 0, max = 1, value = 0.5, step = 0.05, ticks = TRUE),
+                div(style = "margin-bottom: 10px;",
+                    actionButton("preset_missing_0.3", "0.3", class = "btn-xs btn-outline-secondary"),
+                    actionButton("preset_missing_0.5", "0.5", class = "btn-xs btn-outline-secondary"),
+                    actionButton("preset_missing_0.7", "0.7", class = "btn-xs btn-outline-secondary")
+                ),
                 verbatimTextOutput("missing_filter_effect", placeholder = TRUE),
-                helpText("Proteins with missing value proportion above this threshold will be removed. Set to 1 to keep all proteins."),
+                helpText("Proteins with missing value proportion > this threshold will be removed. Proteins with missing value ≤ this threshold will be retained. Set to 1 to keep all proteins; set to 0 to only keep proteins with 0 missing values."),
                 hr(),
                 h4("2. Minimum Intensity Filter", style = "color: #337ab7;"),
                 numericInput("min_intensity", "Minimum intensity threshold",
@@ -96,6 +101,46 @@ preprocessing_ui <- function() {
                   ),
                   tabPanel("Processed Data Table", value = "pre_processed_table",
                            DT::dataTableOutput("pre_processed_table")
+                  ),
+                  tabPanel("Filter Comparison", value = "filter_comparison",
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == false",
+                             div(style = "margin-top: 20px; color: #999; text-align: center;",
+                                 icon("exclamation-triangle", "fa-3x"),
+                                 h4("Please run preprocessing first to see filter comparison.")
+                             )
+                           ),
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == true",
+                             fluidRow(
+                               column(12,
+                                      h4("Boxplot: Before vs After Filtering"),
+                                      shinycssloaders::withSpinner(
+                                        plotOutput("filter_boxplot", height = "500px"),
+                                        type = 4, color = "#3498db"
+                                      )
+                               )
+                             ),
+                             hr(),
+                             fluidRow(
+                               column(12,
+                                      h4("PCA: Before vs After Filtering"),
+                                      shinycssloaders::withSpinner(
+                                        plotOutput("filter_pca_plot", height = "500px"),
+                                        type = 4, color = "#3498db"
+                                      )
+                               )
+                             ),
+                             hr(),
+                             fluidRow(
+                               column(12,
+                                      h4("Summary Statistics"),
+                                      DT::dataTableOutput("filter_summary_table"),
+                                      br(),
+                                      downloadButton("download_filter_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
+                               )
+                             )
+                           )
                   )
                 )
               )
