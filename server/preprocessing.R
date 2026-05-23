@@ -68,7 +68,7 @@ output$missing_filter_effect <- renderPrint({
   cat("\nNote: This prediction only considers the missing rate filter, without prior Inf/Intensity filters. It is intended as a reference for threshold estimation.\n")
 })
 
-# ---------- 强度过滤效果 ----------
+# ---------- 强度过滤效果（动态中文总结） ----------
 output$intensity_filter_effect <- renderPrint({
   req(expression_data(), input$max_missing_fraction, input$min_intensity)
   data <- expression_data()
@@ -77,10 +77,68 @@ output$intensity_filter_effect <- renderPrint({
   data <- data[keep, , drop = FALSE]
   max_int <- apply(data, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_int)
+  total_before_intensity <- sum(keep_finite)
   data <- data[keep_finite, , drop = FALSE]
   max_int <- max_int[keep_finite]
-  below_thresh <- max_int < input$min_intensity
-  cat("After missing and Inf filter, ", sum(below_thresh), " proteins are below the intensity threshold and will be removed.\n")
+  below_thresh <- sum(max_int < input$min_intensity)
+  retained <- total_before_intensity - below_thresh
+  threshold_log <- log10(input$min_intensity + 1)
+  cat("After missing and Inf filter, ", below_thresh, " proteins are below the intensity threshold (",
+      input$min_intensity, ", log10 = ", round(threshold_log, 2), ") and will be removed. ",
+      "All ", retained, " proteins are retained.\n", sep = "")
+  if (below_thresh > 0) {
+    cat(sprintf("本次过滤移除了 %d 个蛋白，保留了 %d 个蛋白。\n", below_thresh, retained))
+  } else {
+    cat("本次过滤未造成有效蛋白损失，所有符合信号质量要求的蛋白均被保留。\n")
+  }
+})
+
+# ---------- 强度分布图（优化标题换行） ----------
+output$intensity_dist_plot <- renderPlot({
+  req(expression_data(), input$max_missing_fraction)
+  threshold <- if (is.null(input$min_intensity) || is.na(input$min_intensity)) 0 else input$min_intensity
+  
+  data <- expression_data()
+  missing_frac <- rowMeans(is.na(data))
+  keep <- missing_frac <= input$max_missing_fraction
+  data <- data[keep, , drop = FALSE]
+  max_int <- apply(data, 1, max, na.rm = TRUE)
+  max_int <- max_int[is.finite(max_int)]
+  if (length(max_int) == 0) return(NULL)
+  
+  log_int <- log10(max_int + 1)
+  df <- data.frame(log_int = log_int)
+  
+  total_count <- length(max_int)
+  retained_count <- sum(max_int > threshold)
+  
+  # 将长副标题分成两行，避免被截断
+  subtitle_text <- paste0(
+    "After missing & Inf filter: ", total_count, " proteins\n",
+    "Retained if threshold = ", threshold, ": ", retained_count
+  )
+  
+  p <- ggplot(df, aes(x = log_int)) +
+    geom_histogram(aes(y = after_stat(density)), bins = 50, fill = "steelblue", alpha = 0.6) +
+    geom_density(color = "darkorange", linewidth = 1.2) +
+    labs(title = "Protein Max Intensity Distribution",
+         subtitle = subtitle_text,
+         x = "log10(Max Intensity + 1)", y = "Density") +
+    theme_bw() +
+    theme(
+      plot.title = element_text(size = 11, face = "bold"),
+      plot.subtitle = element_text(size = 9),
+      plot.margin = margin(t = 10, r = 10, b = 5, l = 10)
+    )
+  
+  if (threshold > 0) {
+    threshold_log <- log10(threshold + 1)
+    p <- p + geom_vline(xintercept = threshold_log, color = "red", linetype = "dashed", linewidth = 1) +
+      annotate("text", x = threshold_log, y = Inf, 
+               label = paste0("Threshold = ", threshold, " (log10 = ", round(threshold_log, 2), ")"),
+               vjust = 2, hjust = -0.1, color = "red", size = 3.5)
+  }
+  p
 })
 
 # ---------- 强度统计（用于阈值推荐和原始数据概览） ----------
@@ -308,12 +366,14 @@ processed_data <- eventReactive(input$run_preprocessing, {
   tryCatch({
     data <- expression_data()
     
+    # 1. 缺失值过滤
     if (input$max_missing_fraction < 1) {
       missing_frac <- rowMeans(is.na(data))
       data <- data[missing_frac <= input$max_missing_fraction, , drop = FALSE]
       if (nrow(data) == 0) stop("No proteins left after missing value filter. Relax the threshold.")
     }
     
+    # 2. 强度过滤
     max_int <- apply(data, 1, max, na.rm = TRUE)
     keep_finite <- is.finite(max_int)
     preprocessing_params$inf_filtered_count <- sum(!keep_finite)
@@ -321,16 +381,18 @@ processed_data <- eventReactive(input$run_preprocessing, {
     data <- data[keep_finite, , drop = FALSE]
     if (nrow(data) == 0) stop("No proteins left after removing Inf values.")
     
-    if (input$min_intensity > 0) {
+    if (!is.null(input$min_intensity) && !is.na(input$min_intensity) && input$min_intensity > 0) {
       max_int_finite <- apply(data, 1, max, na.rm = TRUE)
       keep <- max_int_finite > input$min_intensity
       data <- data[keep, , drop = FALSE]
       if (nrow(data) == 0) stop("No proteins left after intensity filter. Lower the threshold.")
     }
     
+    # 3. 缺失值填补
     preprocessing_params$imputation_method <- input$imputation_method
     data <- impute_missing_values(data, method = input$imputation_method)
     
+    # 4. 批次校正
     preprocessing_params$batch_performed <- FALSE
     preprocessing_params$batch_corrected_cols <- NULL
     if (input$perform_batch_correction && !is.null(input$batch_column) && input$batch_column != "") {
@@ -732,7 +794,7 @@ pre_imputation_matrix <- reactive({
   max_int <- apply(data, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_int)
   data <- data[keep_finite, , drop = FALSE]
-  if (nrow(data) > 0 && input$min_intensity > 0) {
+  if (nrow(data) > 0 && !is.null(input$min_intensity) && !is.na(input$min_intensity) && input$min_intensity > 0) {
     max_int_finite <- apply(data, 1, max, na.rm = TRUE)
     keep <- max_int_finite > input$min_intensity
     data <- data[keep, , drop = FALSE]
@@ -782,7 +844,6 @@ imputation_comparison_data <- reactive({
   total_missing_before <- sum(missing_before)
   missing_after <- sum(is.na(after_imp))
   method <- preprocessing_params$imputation_method
-  # 优化后的参数说明
   params <- if (method == "knn") {
     "k = 10 (default), using 10 nearest proteins for imputation"
   } else if (method == "ppca") {
