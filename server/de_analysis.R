@@ -266,14 +266,8 @@ all_analysis_results <- reactive({
   list(raw = rv$raw_data, clean = rv$clean_data, norm = norm_data_full(), filtered = nd, unique_col = unique_col, results = results)
 })
 
-# ---------- 更新下拉框 ----------
+# ---------- 更新热图分组选择（原本还有 selected_comparison，已移除） ----------
 observe({
-  comp_names <- sapply(sorted_comps(), function(c) c$name)
-  if (length(comp_names) > 0) {
-    updateSelectInput(session, "selected_comparison", choices = comp_names, selected = comp_names[1])
-  } else {
-    updateSelectInput(session, "selected_comparison", choices = character(0))
-  }
   group_names <- names(rv$groups)
   if (length(group_names) > 0) {
     updateSelectInput(session, "heatmap_groups", choices = group_names, selected = NULL)

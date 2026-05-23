@@ -458,10 +458,8 @@ server <- function(input, output, session) {
   source("server/group_management.R", local = TRUE)
   source("server/comparison_setup.R", local = TRUE)
   source("server/de_analysis.R", local = TRUE)
-  source("server/volcano_plot.R", local = TRUE)
+  # 火山图和韦恩图/导出功能已全部移除
   source("server/heatmap_plot.R", local = TRUE)
-  source("server/venn_upset.R", local = TRUE)
-  source("server/export_functions.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
 }
