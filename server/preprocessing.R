@@ -197,7 +197,7 @@ output$pre_raw_missing_plot <- renderPlot({
   })
 })
 
-# ---------- 缺失值填充函数（PPCA 静默回退） ----------
+# ---------- 缺失值填充函数 ----------
 impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
   if (method == "none") {
     return(data)
@@ -217,7 +217,6 @@ impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
     orig_rows <- rownames(data)
     orig_cols <- colnames(data)
     
-    # 移除全 NA 的行和列，同时移除方差为零的列（避免 ppca 内部错误）
     na_rows <- which(rowSums(is.na(data_matrix)) == ncol(data_matrix))
     na_cols <- which(colSums(is.na(data_matrix)) == nrow(data_matrix))
     constant_cols <- which(apply(data_matrix, 2, var, na.rm = TRUE) == 0)
@@ -227,13 +226,10 @@ impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
     if (length(na_rows) > 0) clean <- clean[-na_rows, , drop = FALSE]
     if (length(remove_cols) > 0) clean <- clean[, -remove_cols, drop = FALSE]
     
-    # 如果清理后矩阵过小，直接回退 KNN
     if (nrow(clean) < 2 || ncol(clean) < 2) {
-      message("PPCA: insufficient data after cleaning, switching to KNN")
       return(impute_missing_values(data, method = "knn"))
     }
     
-    # 尝试 PPCA，失败则静默回退
     success <- FALSE
     tryCatch({
       pc <- pcaMethods::ppca(clean, nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
@@ -247,7 +243,6 @@ impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
       return(impute_missing_values(data, method = "knn"))
     }
     
-    # 将 clean 的结果放回原始矩阵
     full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
     rownames(full_matrix) <- orig_rows
     colnames(full_matrix) <- orig_cols
@@ -256,12 +251,11 @@ impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
     col_idx <- setdiff(seq_len(ncol(data_matrix)), remove_cols)
     full_matrix[row_idx, col_idx] <- imputed_clean
     
-    # 填充被移除的行/列
     if (length(na_rows) > 0) full_matrix[na_rows, ] <- min_value
     if (length(na_cols) > 0) full_matrix[, na_cols] <- min_value
     if (length(constant_cols) > 0) {
       for (j in constant_cols) {
-        full_matrix[, j] <- data_matrix[, j]  # 保留原值（方差为零，无需填补）
+        full_matrix[, j] <- data_matrix[, j]
       }
     }
     data_matrix <- full_matrix
@@ -314,14 +308,12 @@ processed_data <- eventReactive(input$run_preprocessing, {
   tryCatch({
     data <- expression_data()
     
-    # 1. 缺失值过滤
     if (input$max_missing_fraction < 1) {
       missing_frac <- rowMeans(is.na(data))
       data <- data[missing_frac <= input$max_missing_fraction, , drop = FALSE]
       if (nrow(data) == 0) stop("No proteins left after missing value filter. Relax the threshold.")
     }
     
-    # 2. 强度过滤
     max_int <- apply(data, 1, max, na.rm = TRUE)
     keep_finite <- is.finite(max_int)
     preprocessing_params$inf_filtered_count <- sum(!keep_finite)
@@ -336,11 +328,9 @@ processed_data <- eventReactive(input$run_preprocessing, {
       if (nrow(data) == 0) stop("No proteins left after intensity filter. Lower the threshold.")
     }
     
-    # 3. 缺失值填补
     preprocessing_params$imputation_method <- input$imputation_method
     data <- impute_missing_values(data, method = input$imputation_method)
     
-    # 4. 批次校正
     preprocessing_params$batch_performed <- FALSE
     preprocessing_params$batch_corrected_cols <- NULL
     if (input$perform_batch_correction && !is.null(input$batch_column) && input$batch_column != "") {
@@ -792,7 +782,14 @@ imputation_comparison_data <- reactive({
   total_missing_before <- sum(missing_before)
   missing_after <- sum(is.na(after_imp))
   method <- preprocessing_params$imputation_method
-  params <- if (method == "knn") "k = 10 (default), using 10 nearest proteins for imputation" else if (method == "ppca") "nPcs = 2, scale = 'uv', center = TRUE" else "None"
+  # 优化后的参数说明
+  params <- if (method == "knn") {
+    "k = 10 (default), using 10 nearest proteins for imputation"
+  } else if (method == "ppca") {
+    "nPcs = 2 (number of principal components), scale = 'uv' (unit variance scaling), center = TRUE (mean centering)"
+  } else {
+    "None"
+  }
   
   list(
     detailed = detailed,
