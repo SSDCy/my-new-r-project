@@ -154,49 +154,78 @@ preprocessing_ui <- function() {
                            ),
                            conditionalPanel(
                              condition = "output.preprocessing_done == true",
-                             fluidRow(
-                               column(12,
-                                      h4("Imputation Statistics"),
-                                      verbatimTextOutput("imputation_stats_text"),
-                                      hr()
+                             conditionalPanel(
+                               condition = "output.imputation_skipped == true",
+                               # ------ 跳过填充的专属界面 ------
+                               div(style = "background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin-bottom: 20px;",
+                                   h4(icon("exclamation-triangle"), " Imputation Skipped", style = "color: #856404; margin-top: 0;"),
+                                   p("Missing value imputation was not performed. The data still contains NA values, and all downstream analyses will be based on the original data with missing values. Consider re-running preprocessing with an imputation method for more reliable results.")
+                               ),
+                               h4("Missing Value Heatmap"),
+                               shinycssloaders::withSpinner(plotOutput("missing_heatmap_skipped", height = "550px"), type = 4, color = "#3498db"),
+                               hr(),
+                               h4("Valid Values per Sample"),
+                               shinycssloaders::withSpinner(plotOutput("valid_barplot_skipped", height = "350px"), type = 4, color = "#3498db"),
+                               hr(),
+                               h4("Missing Value Summary"),
+                               tableOutput("missing_summary_table_skipped"),
+                               hr(),
+                               h4("Downstream Analysis Risk"),
+                               div(style = "background: #e7f3ff; border-left: 4px solid #3498db; padding: 15px; border-radius: 4px;",
+                                   tags$ul(
+                                     tags$li("PCA, clustering, and other multivariate methods require a complete data matrix without missing values."),
+                                     tags$li("Some statistical tests (e.g., t-test) may ignore proteins with missing values, reducing statistical power."),
+                                     tags$li("We strongly recommend applying a missing value filter and imputation before proceeding to downstream analysis.")
+                                   )
                                )
                              ),
-                             fluidRow(
-                               column(12,
-                                      h4("Boxplot: Before vs After Imputation"),
-                                      shinycssloaders::withSpinner(
-                                        plotOutput("imputation_boxplot", height = "600px"),
-                                        type = 4, color = "#3498db"
-                                      )
-                               )
-                             ),
-                             hr(),
-                             fluidRow(
-                               column(12,
-                                      h4("PCA: Before vs After Imputation"),
-                                      shinycssloaders::withSpinner(
-                                        plotOutput("imputation_pca_plot", height = "500px"),
-                                        type = 4, color = "#3498db"
-                                      )
-                               )
-                             ),
-                             hr(),
-                             fluidRow(
-                               column(12,
-                                      h4("Q-Q Plot: Before vs After Imputation"),
-                                      shinycssloaders::withSpinner(
-                                        plotOutput("imputation_qq_plot", height = "500px"),
-                                        type = 4, color = "#3498db"
-                                      )
-                               )
-                             ),
-                             hr(),
-                             fluidRow(
-                               column(12,
-                                      h4("Summary Statistics"),
-                                      DT::dataTableOutput("imputation_summary_table"),
-                                      br(),
-                                      downloadButton("download_imputation_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
+                             conditionalPanel(
+                               condition = "output.imputation_skipped == false",
+                               # ------ 正常填补的对比界面 ------
+                               fluidRow(
+                                 column(12,
+                                        h4("Imputation Statistics"),
+                                        verbatimTextOutput("imputation_stats_text"),
+                                        hr()
+                                 )
+                               ),
+                               fluidRow(
+                                 column(12,
+                                        h4("Boxplot: Before vs After Imputation"),
+                                        shinycssloaders::withSpinner(
+                                          plotOutput("imputation_boxplot", height = "600px"),
+                                          type = 4, color = "#3498db"
+                                        )
+                                 )
+                               ),
+                               hr(),
+                               fluidRow(
+                                 column(12,
+                                        h4("PCA: Before vs After Imputation"),
+                                        shinycssloaders::withSpinner(
+                                          plotOutput("imputation_pca_plot", height = "500px"),
+                                          type = 4, color = "#3498db"
+                                        )
+                                 )
+                               ),
+                               hr(),
+                               fluidRow(
+                                 column(12,
+                                        h4("Q-Q Plot: Before vs After Imputation"),
+                                        shinycssloaders::withSpinner(
+                                          plotOutput("imputation_qq_plot", height = "500px"),
+                                          type = 4, color = "#3498db"
+                                        )
+                                 )
+                               ),
+                               hr(),
+                               fluidRow(
+                                 column(12,
+                                        h4("Summary Statistics"),
+                                        DT::dataTableOutput("imputation_summary_table"),
+                                        br(),
+                                        downloadButton("download_imputation_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
+                                 )
                                )
                              )
                            )

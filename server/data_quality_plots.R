@@ -1,91 +1,92 @@
 # server/data_quality_plots.R
 
-# 所有输出仅在 show_quality 按钮被奇数次点击时计算
+# ==================== 数据质量评分 ====================
 output$dq_score <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(dq_quality_score()$score, error = function(e) paste("Error:", e$message))
 })
 output$dq_grade <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(dq_quality_score()$grade, error = function(e) paste("Error:", e$message))
 })
 output$dq_missing_rate <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(paste0(dq_quality_score()$details$missing_ratio, "%"), error = function(e) paste("Error:", e$message))
 })
 output$dq_missing_score <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(paste0("Score: ", dq_quality_score()$details$missing_score, "/30"), error = function(e) paste("Error:", e$message))
 })
 output$dq_consistency <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
     if (dq_quality_score()$details$avg_correlation > 0.8) "Good"
     else if (dq_quality_score()$details$avg_correlation > 0.7) "Fair" else "Poor"
   }, error = function(e) paste("Error:", e$message))
 })
 output$dq_consistency_score <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(paste0("Score: ", dq_quality_score()$details$correlation_score, "/20"), error = function(e) paste("Error:", e$message))
 })
 output$dq_protein_quality <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
     if (dq_quality_score()$details$protein_valid_ratio > 80) "Good"
     else if (dq_quality_score()$details$protein_valid_ratio > 60) "Fair" else "Poor"
   }, error = function(e) paste("Error:", e$message))
 })
 output$dq_protein_score <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(paste0("Score: ", dq_quality_score()$details$protein_score, "/20"), error = function(e) paste("Error:", e$message))
 })
 
+# ==================== 智能报告 ====================
 output$dq_total_score <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(dq_quality_score()$score, error = function(e) paste("Error:", e$message))
 })
 output$dq_total_grade <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(dq_quality_score()$grade, error = function(e) paste("Error:", e$message))
 })
 output$dq_total_missing <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(paste0(dq_quality_score()$details$missing_ratio, "%"), error = function(e) paste("Error:", e$message))
 })
 output$dq_total_consistency <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
     if (dq_quality_score()$details$avg_correlation > 0.8) "Good"
     else if (dq_quality_score()$details$avg_correlation > 0.7) "Fair" else "Poor"
   }, error = function(e) paste("Error:", e$message))
 })
 output$dq_total_correlation <- renderText({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch(dq_quality_score()$details$avg_correlation, error = function(e) paste("Error:", e$message))
 })
 
 output$dq_key_findings <- renderUI({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_quality_score(), dq_expr_matrix())
+    req(dq_quality_score())
     report <- generate_quality_report(dq_quality_score(), dq_expr_matrix(), rv$sample_info)
     tagList(lapply(report$key_findings, render_key_finding))
   }, error = function(e) div(style = "color: red;", paste("Error:", e$message)))
 })
 
 output$dq_recommendations <- renderUI({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_quality_score(), dq_expr_matrix())
+    req(dq_quality_score())
     report <- generate_quality_report(dq_quality_score(), dq_expr_matrix(), rv$sample_info)
     tagList(lapply(report$recommendations, render_recommendation))
   }, error = function(e) div(style = "color: red;", paste("Error:", e$message)))
 })
 
 output$dq_special_note <- renderUI({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_quality_score(), dq_expr_matrix())
+    req(dq_quality_score())
     report <- generate_quality_report(dq_quality_score(), dq_expr_matrix(), rv$sample_info)
     if (report$special_note != "") {
       div(style = "background: #e3f2fd; padding: 15px; border-radius: 8px; margin-top: 15px;",
@@ -95,10 +96,10 @@ output$dq_special_note <- renderUI({
   }, error = function(e) div(style = "color: red;", paste("Error:", e$message)))
 })
 
+# ==================== 缺失值热图 ====================
 output$dq_missing_heatmap <- renderPlot({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_expr_matrix())
     mat <- dq_expr_matrix()
     missing_mat <- is.na(mat) * 1
     if (nrow(missing_mat) > 1000) {
@@ -118,8 +119,9 @@ output$dq_missing_heatmap <- renderPlot({
   }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
 })
 
+# ==================== 有效值柱状图 ====================
 output$dq_valid_values_plot <- renderPlot({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
     req(dq_missing_stats())
     stats <- dq_missing_stats()
@@ -138,24 +140,36 @@ output$dq_valid_values_plot <- renderPlot({
   }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
 })
 
-output$dq_missing_cor_plot <- renderPlot({
-  req(input$show_quality %% 2 == 1)
-  tryCatch({
-    req(dq_expr_matrix())
-    mat <- dq_expr_matrix()
-    missing_mat <- is.na(mat) * 1
-    if (ncol(missing_mat) < 2) { plot.new(); text(0.5, 0.5, "Not enough samples"); return() }
-    cor_mat <- cor(missing_mat, use = "pairwise.complete.obs")
-    cor_mat[is.na(cor_mat)] <- 0
-    pheatmap(cor_mat, main = "Missing Value Correlation", color = colorRampPalette(c("blue", "white", "red"))(100),
-             show_rownames = TRUE, show_colnames = TRUE, fontsize_row = 8, fontsize_col = 8)
-  }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
+# ==================== 缺失值相关性热图 ====================
+output$debug_missing_cor_status <- renderText({
+  if (!isTRUE(dq_expr_matrix())) return("No expression data uploaded.")
+  return("Container is active, attempting plot...")
 })
 
-output$dq_intensity_dist_plot <- renderPlot({
-  req(input$show_quality %% 2 == 1)
+output$dq_missing_cor_plot <- renderPlot({
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_expr_matrix())
+    mat <- dq_expr_matrix()
+    missing_mat <- is.na(mat) * 1
+    if (ncol(missing_mat) < 2) {
+      plot.new(); text(0.5, 0.5, "Not enough samples")
+      return()
+    }
+    cor_mat <- cor(missing_mat, use = "pairwise.complete.obs")
+    cor_mat[is.na(cor_mat)] <- 0
+    pheatmap(cor_mat, main = "Missing Value Correlation",
+             color = colorRampPalette(c("blue", "white", "red"))(100),
+             show_rownames = TRUE, show_colnames = TRUE,
+             fontsize_row = 8, fontsize_col = 8)
+  }, error = function(e) {
+    plot.new(); text(0.5, 0.5, paste("Error:", e$message))
+  })
+})
+
+# ==================== 强度分布箱线图 ====================
+output$dq_intensity_dist_plot <- renderPlot({
+  req(dq_expr_matrix())
+  tryCatch({
     mat <- dq_expr_matrix()
     log_mat <- log2(mat + 1)
     df <- reshape2::melt(as.matrix(log_mat))
@@ -168,12 +182,20 @@ output$dq_intensity_dist_plot <- renderPlot({
   }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
 })
 
+# ==================== 样本相关性热图 ====================
+output$debug_cor_heatmap_status <- renderText({
+  if (!isTRUE(dq_expr_matrix())) return("No expression data uploaded.")
+  return("Container is active, attempting plot...")
+})
+
 output$dq_cor_heatmap <- renderPlot({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_expr_matrix())
     cor_mat <- calculate_sample_correlation(dq_expr_matrix())
-    if (is.null(cor_mat)) { plot.new(); text(0.5, 0.5, "Not enough data"); return() }
+    if (is.null(cor_mat)) {
+      plot.new(); text(0.5, 0.5, "Not enough data")
+      return()
+    }
     ann_col <- NULL; ann_colors <- NULL
     if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
       sample_info_short <- rv$sample_info
@@ -186,28 +208,37 @@ output$dq_cor_heatmap <- renderPlot({
           cor_mat <- cor_mat[rownames(ann_col), rownames(ann_col)]
           groups <- unique(ann_col$Group)
           ann_colors <- list(Group = get_group_colors(groups))
-          if (is.null(ann_colors$Group) || length(ann_colors$Group) == 0) { ann_col <- NULL; ann_colors <- NULL }
-        } else { ann_col <- NULL }
+        }
       }
     }
-    pheatmap(cor_mat, main = "Sample Correlation Heatmap", color = colorRampPalette(c("blue", "white", "red"))(100),
-             breaks = seq(0.4, 1, length.out = 101), show_rownames = TRUE, show_colnames = TRUE,
-             fontsize_row = 9, fontsize_col = 9, annotation_col = ann_col, annotation_colors = ann_colors)
-  }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
+    pheatmap(cor_mat, main = "Sample Correlation Heatmap",
+             color = colorRampPalette(c("blue", "white", "red"))(100),
+             breaks = seq(0.4, 1, length.out = 101),
+             show_rownames = TRUE, show_colnames = TRUE,
+             fontsize_row = 9, fontsize_col = 9,
+             annotation_col = ann_col, annotation_colors = ann_colors)
+  }, error = function(e) {
+    plot.new(); text(0.5, 0.5, paste("Error:", e$message))
+  })
 })
 
+# ==================== PCA 图 ====================
 output$dq_pca_plot <- renderPlot({
-  req(input$show_quality %% 2 == 1)
+  req(dq_expr_matrix())
   tryCatch({
-    req(dq_expr_matrix())
     pca_result <- calculate_pca(dq_expr_matrix(), rv$sample_info)
-    if (is.null(pca_result)) { plot.new(); text(0.5, 0.5, "Not enough data for PCA"); return() }
+    if (is.null(pca_result)) {
+      plot.new(); text(0.5, 0.5, "Not enough data for PCA")
+      return()
+    }
     pca_df <- pca_result$pca_df
     pca_df <- pca_df[!is.na(pca_df$Group) & pca_df$Group != "a", ]
     ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
       geom_point(size = 3, alpha = 0.8) +
       geom_text(vjust = 1.5, size = 3) +
-      labs(title = "PCA Plot (Unsupervised Clustering)", x = paste0("PC1 (", pca_result$pc1_var, "%)"), y = paste0("PC2 (", pca_result$pc2_var, "%)")) +
+      labs(title = "PCA Plot (Unsupervised Clustering)",
+           x = paste0("PC1 (", pca_result$pc1_var, "%)"),
+           y = paste0("PC2 (", pca_result$pc2_var, "%)")) +
       theme_bw() + theme(legend.position = "right")
   }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Error:", e$message)) })
 })
