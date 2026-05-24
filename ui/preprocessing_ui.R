@@ -63,15 +63,11 @@ preprocessing_ui <- function() {
                   helpText("No imputation will be performed. Missing values will remain as NA (may affect downstream analysis).")
                 ),
                 hr(),
-                h4("4. Batch Correction (optional)", style = "color: #337ab7;"),
-                checkboxInput("perform_batch_correction", "Perform batch correction", value = FALSE),
-                conditionalPanel(
-                  condition = "input.perform_batch_correction == true",
-                  selectInput("batch_column", "Select batch column", choices = NULL),
-                  helpText("Select the column from sample info that contains batch identifiers."),
-                  br(),
-                  verbatimTextOutput("batch_info_preview")
-                ),
+                # ========== 4. Batch Correction (Optional) ==========
+                h4("4. Batch Correction (Optional)", style = "color: #337ab7;"),
+                checkboxInput("perform_batch_correction", "启用 ComBat 批次校正", value = FALSE),
+                verbatimTextOutput("batch_diagnostic_message", placeholder = TRUE),
+                uiOutput("batch_help_text"),
                 hr(),
                 actionButton("run_preprocessing", "Run Preprocessing",
                              class = "btn-primary btn-lg btn-block"),
@@ -156,7 +152,6 @@ preprocessing_ui <- function() {
                              condition = "output.preprocessing_done == true",
                              conditionalPanel(
                                condition = "output.imputation_skipped == true",
-                               # ------ 跳过填充的专属界面 ------
                                div(style = "background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin-bottom: 20px;",
                                    h4(icon("exclamation-triangle"), " Imputation Skipped", style = "color: #856404; margin-top: 0;"),
                                    p("Missing value imputation was not performed. The data still contains NA values, and all downstream analyses will be based on the original data with missing values. Consider re-running preprocessing with an imputation method for more reliable results.")
@@ -181,7 +176,6 @@ preprocessing_ui <- function() {
                              ),
                              conditionalPanel(
                                condition = "output.imputation_skipped == false",
-                               # ------ 正常填补的对比界面 ------
                                fluidRow(
                                  column(12,
                                         h4("Imputation Statistics"),
@@ -225,6 +219,39 @@ preprocessing_ui <- function() {
                                         DT::dataTableOutput("imputation_summary_table"),
                                         br(),
                                         downloadButton("download_imputation_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")
+                                 )
+                               )
+                             )
+                           )
+                  ),
+                  tabPanel("Batch Correction", value = "batch_correction",
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == false",
+                             div(style = "margin-top: 20px; color: #999; text-align: center;",
+                                 icon("exclamation-triangle", "fa-3x"),
+                                 h4("Please run preprocessing first to see batch correction results.")
+                             )
+                           ),
+                           conditionalPanel(
+                             condition = "output.preprocessing_done == true",
+                             conditionalPanel(
+                               condition = "output.batch_correction_performed == false",
+                               div(style = "background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin-bottom: 20px;",
+                                   h4(icon("info-circle"), " Batch Correction Not Performed", style = "color: #856404; margin-top: 0;"),
+                                   p("Batch correction was not applied in the last preprocessing run.")
+                               )
+                             ),
+                             conditionalPanel(
+                               condition = "output.batch_correction_performed == true",
+                               fluidRow(
+                                 column(12,
+                                        h4("PCA: Before vs After Batch Correction"),
+                                        shinycssloaders::withSpinner(
+                                          plotOutput("batch_pca_plot", height = "600px"),
+                                          type = 4, color = "#3498db"
+                                        ),
+                                        uiOutput("batch_pca_interpretation"),
+                                        downloadButton("download_batch_pca", "Download PCA Comparison", class = "btn btn-sm btn-outline-success")
                                  )
                                )
                              )
