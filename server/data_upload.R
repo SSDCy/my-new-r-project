@@ -71,84 +71,89 @@ calculate_data_quality_score <- function(expr_matrix) {
   list(score = total_score, grade = grade, details = details)
 }
 
+# ================== 优化后的关键发现报告生成函数 ==================
 generate_quality_report <- function(quality_score, expr_matrix, sample_info = NULL) {
   details <- quality_score$details
   key_findings <- list()
   recommendations <- list()
   special_note <- ""
   
+  # ---- 缺失率发现 ----
   if (details$missing_ratio < 10) {
     key_findings <- c(key_findings, list(list(
       type = "success",
-      title = "极低缺失率",
-      content = paste0("数据缺失率仅为 ", details$missing_ratio, "%，数据完整性非常好。")
+      title = "✅ 低缺失率",
+      content = paste0("数据缺失率仅为 ", details$missing_ratio, "%，完整性非常好，可直接进行下游分析。\n→ 对应预处理操作：无需特殊处理，或设置缺失值过滤阈值为 0.3 进行轻度过滤")
     )))
   } else if (details$missing_ratio < 20) {
     key_findings <- c(key_findings, list(list(
       type = "success",
-      title = "较低缺失率",
-      content = paste0("数据缺失率为 ", details$missing_ratio, "%，整体完整性较好。")
+      title = "✅ 较低缺失率",
+      content = paste0("数据缺失率为 ", details$missing_ratio, "%，整体完整性较好，不影响主要分析。\n→ 对应预处理操作：建议设置缺失值过滤阈值为 0.5，并执行 KNN 填充")
     )))
   } else if (details$missing_ratio < 40) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
-      title = "中等缺失率",
-      content = paste0("数据缺失率为 ", details$missing_ratio, "%，建议进行适当过滤和填充。")
+      title = "⚠️ 中等缺失率",
+      content = paste0("数据缺失率为 ", details$missing_ratio, "%，会降低部分统计方法的效力。\n→ 对应预处理操作：设置缺失值过滤阈值为 0.5，并执行 KNN 或 PPCA 填充")
     )))
   } else {
     key_findings <- c(key_findings, list(list(
       type = "danger",
       title = "高缺失率",
-      content = paste0("数据缺失率高达 ", details$missing_ratio, "%，可能影响分析，强烈建议预处理。")
+      content = paste0("数据缺失率高达 ", details$missing_ratio, "%，会直接影响后续差异分析、聚类的可靠性。\n→ 对应预处理操作：缺失值过滤（阈值 0.5）+ 缺失值填充（KNN/PPCA）")
     )))
   }
   
+  # ---- 样本一致性发现 ----
   if (details$avg_correlation > 0.9) {
     key_findings <- c(key_findings, list(list(
       type = "success",
-      title = "优秀的样本一致性",
-      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，实验重复性极佳。")
+      title = "✅ 优秀的样本一致性",
+      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，实验重复性极佳。\n→ 对应预处理操作：无需额外处理")
     )))
   } else if (details$avg_correlation > 0.8) {
     key_findings <- c(key_findings, list(list(
       type = "success",
-      title = "良好的样本一致性",
-      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，实验重复性较好。")
+      title = "✅ 良好的样本一致性",
+      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，实验重复性较好。\n→ 对应预处理操作：可考虑执行批次校正以进一步提升一致性")
     )))
   } else if (details$avg_correlation > 0.7) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
-      title = "一般的样本一致性",
-      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，可能有技术波动。")
+      title = "⚠️ 一般的样本一致性",
+      content = paste0("样本间平均相关性为 ", round(details$avg_correlation, 3), "，可能存在技术波动。\n→ 对应预处理操作：检查并移除异常样本，执行缺失值填充")
     )))
   } else {
     key_findings <- c(key_findings, list(list(
       type = "danger",
       title = "较差的样本一致性",
-      content = paste0("样本间平均相关性仅为 ", round(details$avg_correlation, 3), "，数据可靠性存疑。")
+      content = paste0("样本间平均相关性仅为 ", round(details$avg_correlation, 3), "，样本重复性较差，会降低后续分析的统计效力。\n→ 对应预处理操作：异常样本移除 + 缺失值填充")
     )))
   }
   
+  # ---- 蛋白有效检出率 ----
   if (details$protein_valid_ratio > 80) {
     key_findings <- c(key_findings, list(list(
       type = "success",
       title = "蛋白有效检出率高",
-      content = paste0("超过 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出。")
+      content = paste0("超过 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出，蛋白整体质量优秀。\n→ 对应预处理操作：最小强度过滤阈值可设为 100000，无需大幅调整")
     )))
   } else if (details$protein_valid_ratio > 60) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
-      title = "蛋白有效检出率一般",
-      content = paste0("约 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出，部分蛋白检出率偏低。")
+      title = "⚠️ 蛋白有效检出率一般",
+      content = paste0("约 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出，部分蛋白检出率偏低。\n→ 对应预处理操作：适当降低强度过滤阈值，保留更多蛋白")
     )))
   } else {
     key_findings <- c(key_findings, list(list(
       type = "danger",
-      title = "蛋白有效检出率低",
-      content = paste0("仅有 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出，数据可靠性较低。")
+      title = "ⓧ 蛋白有效检出率低",
+      content = paste0("仅有 ", details$protein_valid_ratio, "% 的蛋白在至少 2 个样本中被检出，数据可靠性较低。\n→ 对应预处理操作：建议放宽强度过滤阈值，并核对实验流程")
     )))
   }
   
+  # ---- PCA 分析（批次效应、异常样本、分组效果）----
   pca_result <- calculate_pca(expr_matrix, sample_info)
   pca_df <- if (!is.null(pca_result)) pca_result$pca_df else NULL
   
@@ -206,31 +211,32 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
   if (batch_effect_detected) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
-      title = "检测到潜在批次效应",
-      content = "PCA 显示样本按批次聚集，建议在预处理中启用批次校正。"
+      title = "⚠️ 检测到潜在批次效应",
+      content = "PCA 显示样本按批次聚集，可能引入系统性偏差。\n→ 对应预处理操作：在预处理中启用批次校正（ComBat）"
     )))
   }
   if (length(outlier_samples) > 0) {
     key_findings <- c(key_findings, list(list(
       type = "danger",
       title = "检测到异常样本",
-      content = paste0("PCA 发现 ", length(outlier_samples), " 个可能的异常样本：", paste(outlier_samples, collapse = ", "), "。强烈建议检查并移除。")
+      content = paste0("PCA 发现 ", length(outlier_samples), " 个可能的异常样本：", paste(outlier_samples, collapse = ", "), "，严重拉低样本一致性。\n→ 对应预处理操作：核对实验记录后，从样本信息表中移除该样本")
     )))
   }
   if (group_separation_good && !batch_effect_detected) {
     key_findings <- c(key_findings, list(list(
       type = "success",
-      title = "良好的分组效果",
-      content = "不同处理组在 PCA 中明显分离，实验效应显著。"
+      title = "✅ 良好的分组效果",
+      content = "不同处理组在 PCA 中明显分离，实验效应显著。\n→ 对应预处理操作：可直接进行差异分析"
     )))
   } else if (!group_separation_good && has_groups && !batch_effect_detected) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
-      title = "分组效果不显著",
-      content = "PCA 图中各组间未明显分开，可能处理效应较弱或噪声较大。"
+      title = "⚠️ 分组效果不显著",
+      content = "PCA 图中各组间未明显分开，可能处理效应较弱或噪声较大。\n→ 对应预处理操作：提高强度过滤阈值或移除异常样本，以增强组间差异"
     )))
   }
   
+  # ---- 操作建议（保持不变） ----
   if (details$missing_ratio > 20) {
     recommendations <- c(recommendations, list(list(
       title = "缺失值处理",
@@ -239,7 +245,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       items = c(
         paste0("当前缺失率 ", details$missing_ratio, "% > 20%，建议："),
         "1. 设置 Max missing fraction = 0.5（过滤缺失过半的蛋白）",
-        "2. 选择 KNN 或最小值填充",
+        "2. 选择 KNN 或 PPCA 填充",
         "3. 如缺失率过高，考虑剔除相应样本"
       )
     )))
@@ -248,7 +254,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       title = "缺失值处理",
       tag = "可选",
       tag_type = "secondary",
-      items = c("当前缺失率较低，可选用最小值填充（推荐 1e-4）或保留缺失值。")
+      items = c("当前缺失率较低，可选用 KNN 填充（推荐）或保留缺失值。")
     )))
   }
   
@@ -275,8 +281,8 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       tag_type = "danger",
       items = c(
         paste0("检测到以下异常样本：", paste(outlier_samples, collapse = ", ")),
-        "1. 检查原始数据或实验记录",
-        "2. 在样本信息表中删除这些样本，重新上传后再分析"
+        "1. 核对实验记录",
+        "2. 从样本信息表中删除这些样本，重新上传后再分析"
       )
     )))
   }
@@ -372,7 +378,7 @@ render_key_finding <- function(finding) {
   icon_name <- switch(finding$type, success = "check-circle", warning = "exclamation-triangle", danger = "times-circle", "info-circle")
   div(style = paste0("background: ", bg_color, "; border: 1px solid ", border_color, "; border-radius: 8px; padding: 12px; margin-bottom: 10px; color: ", text_color, ";"),
       div(style = "display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-weight: bold;", icon(icon_name), finding$title),
-      p(style = "margin: 0;", finding$content))
+      p(style = "margin: 0; white-space: pre-line;", finding$content))
 }
 
 render_recommendation <- function(rec) {
