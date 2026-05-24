@@ -1,17 +1,11 @@
 # server/preprocessing.R
 
-# ---------- 动态填充批次列选项 ----------
-observe({
-  req(rv$sample_info)
-  updateSelectInput(session, "batch_column", choices = colnames(rv$sample_info))
-})
-
 # ---------- 显示样本信息各列的概要 ----------
 output$batch_info_preview <- renderPrint({
-  req(rv$sample_info, input$batch_column)
-  col_data <- rv$sample_info[[input$batch_column]]
+  req(rv$sample_info)
+  col_data <- rv$sample_info[["Batch"]]
   unique_vals <- unique(col_data)
-  cat("样本信息表“", input$batch_column, "”列概览：\n", sep = "")
+  cat("样本信息表“Batch”列概览：\n")
   cat("样本总数：", length(col_data), "\n")
   cat("唯一值数量：", length(unique_vals), "\n")
   cat("唯一值列表（前10个）：\n")
@@ -20,6 +14,29 @@ output$batch_info_preview <- renderPrint({
   } else {
     cat(paste(head(unique_vals, 10), collapse = "\n"), "\n... 还有", length(unique_vals) - 10, "个\n")
   }
+})
+
+# ---------- 提取原始表达矩阵 ----------
+expression_data <- reactive({
+  req(rv$clean_data)
+  if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
+    validate(need(FALSE, "No intensity columns found. Please upload data first."))
+  }
+  df <- rv$clean_data
+  if (!"Master protein IDs" %in% colnames(df)) {
+    validate(need(FALSE, "Master protein IDs column not found in cleaned data."))
+  }
+  rownames(df) <- as.character(df$`Master protein IDs`)
+  df <- df[, rv$lfq_cols, drop = FALSE]
+  df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
+  df[df == 0] <- NA
+  if (ncol(df) == 0) {
+    validate(need(FALSE, "No intensity columns found."))
+  }
+  if (nrow(df) == 0) {
+    validate(need(FALSE, "No protein rows found."))
+  }
+  df
 })
 
 # ---------- 快速预设按钮 ----------
@@ -45,7 +62,7 @@ output$missing_filter_effect <- renderPrint({
   cat("\nNote: This prediction only considers the missing rate filter, without prior Inf/Intensity filters. It is intended as a reference for threshold estimation.\n")
 })
 
-# ---------- 强度过滤效果（动态中文总结） ----------
+# ---------- 强度过滤效果 ----------
 output$intensity_filter_effect <- renderPrint({
   req(expression_data(), input$max_missing_fraction, input$min_intensity)
   data <- expression_data()
@@ -110,14 +127,14 @@ output$intensity_dist_plot <- renderPlot({
   if (threshold > 0) {
     threshold_log <- log10(threshold + 1)
     p <- p + geom_vline(xintercept = threshold_log, color = "red", linetype = "dashed", linewidth = 1) +
-      annotate("text", x = threshold_log, y = Inf, 
+      annotate("text", x = threshold_log, y = Inf,
                label = paste0("Threshold = ", threshold, " (log10 = ", round(threshold_log, 2), ")"),
                vjust = 2, hjust = -0.1, color = "red", size = 3.5)
   }
   p
 })
 
-# ---------- 强度统计（用于阈值推荐和原始数据概览） ----------
+# ---------- 强度统计 ----------
 intensity_stats <- reactive({
   req(expression_data(), input$max_missing_fraction)
   data <- expression_data()
@@ -303,7 +320,7 @@ impute_missing_values <- function(data, method = "knn", min_value = 1e-4) {
   return(result)
 }
 
-# ---------- ComBat 批次校正 ----------
+# ---------- ComBat 批次校正（增加缺失值处理） ----------
 combat_correction <- function(data, batch) {
   if (!requireNamespace("sva", quietly = TRUE))
     stop("sva package required. Run BiocManager::install('sva')")
@@ -311,9 +328,24 @@ combat_correction <- function(data, batch) {
   if (length(levels(batch_factor)) < 2) {
     stop("批次校正需要至少两个不同的批次值。")
   }
-  corrected <- sva::ComBat(dat = as.matrix(data), batch = batch_factor)
+  # 检查并移除全零方差行/列，并填充缺失值
+  data_matrix <- as.matrix(data)
+  # 如果存在缺失值，临时使用 KNN 填充（仅用于校正计算，不影响原始数据选择）
+  if (any(is.na(data_matrix))) {
+    message("[DEBUG] ComBat: Detected missing values, applying KNN imputation temporarily for batch correction.")
+    data_matrix <- impute_missing_values(data, method = "knn")
+    data_matrix <- as.matrix(data_matrix)
+  }
+  # 移除全零方差行
+  row_vars <- apply(data_matrix, 1, var)
+  if (any(row_vars == 0)) {
+    data_matrix <- data_matrix[row_vars > 0, ]
+  }
+  corrected <- sva::ComBat(dat = data_matrix, batch = batch_factor)
   result <- as.data.frame(corrected)
-  rownames(result) <- rownames(data)
+  rownames(result) <- rownames(data_matrix)
+  # 如果原始数据有缺失值，将填充值替换回 NA 以保持原始缺失模式（可选，但建议保持校正后填充值）
+  # 此处不替换，因为校正后数据应完整
   return(result)
 }
 
@@ -333,10 +365,105 @@ preprocessing_params <- reactiveValues(
   inf_filtered_count = 0,
   inf_filtered_proteins = character(0),
   batch_performed = FALSE,
-  batch_corrected_cols = NULL
+  batch_corrected_cols = NULL,
+  pre_batch_data = NULL,
+  post_batch_data = NULL
 )
 
-# ============ 核心预处理反应式 ============
+# ============ 智能批次诊断 ============
+batch_diagnostic <- reactive({
+  if (is.null(rv$sample_info) || !"Batch" %in% colnames(rv$sample_info)) {
+    return(list(status = "warning", message = "⚠️ 批次诊断失败：样本信息表中缺少 Batch 列。"))
+  }
+  if (is.null(expression_data())) {
+    return(list(status = "info", message = "Expression data not loaded."))
+  }
+  
+  tryCatch({
+    mat <- expression_data()
+    if (input$max_missing_fraction < 1) {
+      missing_frac <- rowMeans(is.na(mat))
+      mat <- mat[missing_frac <= input$max_missing_fraction, , drop = FALSE]
+    }
+    max_int <- apply(mat, 1, max, na.rm = TRUE)
+    keep_finite <- is.finite(max_int)
+    mat <- mat[keep_finite, , drop = FALSE]
+    if (!is.null(input$min_intensity) && !is.na(input$min_intensity) && input$min_intensity > 0) {
+      max_int_finite <- apply(mat, 1, max, na.rm = TRUE)
+      mat <- mat[max_int_finite > input$min_intensity, , drop = FALSE]
+    }
+    if (nrow(mat) < 2 || ncol(mat) < 2) {
+      return(list(status = "warning", message = "⚠️ 批次诊断失败：过滤后数据量不足。"))
+    }
+    suppressMessages({
+      filled <- impute_missing_values(mat, method = "knn")
+    })
+    filled <- as.matrix(filled)
+    mat_t <- t(log2(filled + 1))
+    mat_t <- mat_t[, apply(mat_t, 2, var) > 1e-12, drop = FALSE]
+    if (ncol(mat_t) < 2) {
+      return(list(status = "warning", message = "⚠️ 批次诊断失败：可变蛋白数量不足。"))
+    }
+    pca <- prcomp(mat_t, scale. = TRUE)
+    pc1 <- pca$x[,1]
+    sample_names <- rownames(mat_t)
+    info_rows <- normalize_sample_name(rownames(rv$sample_info))
+    sample_norm <- normalize_sample_name(sample_names)
+    idx <- match(sample_norm, info_rows)
+    if (all(is.na(idx))) {
+      return(list(status = "warning", message = "⚠️ 批次诊断失败：无法匹配样本到样本信息表。"))
+    }
+    batch <- rv$sample_info[idx, "Batch"]
+    batch <- factor(batch)
+    if (length(levels(batch)) < 2) {
+      return(list(status = "info", message = "✅ 批次效应检测：仅检测到一个批次，无需校正。"))
+    }
+    anova_p <- tryCatch(summary(aov(pc1 ~ batch))[[1]]$`Pr(>F)`[1], error = function(e) NA)
+    if (!is.na(anova_p) && anova_p < 0.05) {
+      return(list(status = "significant", message = "⚠️ 检测到显著批次效应（ANOVA p < 0.05），建议启用 ComBat 校正。"))
+    } else {
+      return(list(status = "success", message = "✅ 批次效应检测完成：您的数据无显著批次分离，校正前后样本分布无明显变化，无需校正。"))
+    }
+  }, error = function(e) {
+    return(list(status = "warning", message = "⚠️ 批次诊断失败：请检查样本信息表中 Batch 列是否存在，或每个批次样本数量是否≥3 个。"))
+  })
+})
+
+observe({
+  diag <- batch_diagnostic()
+  req(diag)
+  if (diag$status == "significant") {
+    if (!isTRUE(input$perform_batch_correction)) {
+      updateCheckboxInput(session, "perform_batch_correction", value = TRUE)
+      showNotification("⚠️ 检测到显著批次效应，已自动启用 ComBat 校正。", type = "warning", duration = 6)
+    }
+  }
+})
+
+output$batch_diagnostic_message <- renderPrint({
+  cat(batch_diagnostic()$message)
+})
+
+output$batch_help_text <- renderUI({
+  diag <- batch_diagnostic()
+  base_text <- "采用 ComBat 算法校正实验批次偏差。批次列将自动识别为样本信息表中的 'Batch' 列。"
+  if (diag$status == "success") {
+    HTML(paste(base_text, "<br><b>👉 结合您的数据：校正前后 PCA 显示，批次无显著分离，无明显批次效应，建议取消勾选，避免过度校正。</b>"))
+  } else if (diag$status == "significant") {
+    HTML(paste(base_text, "<br><b>👉 注意：已自动启用校正，建议运行预处理后查看 Batch Correction 选项卡中的 PCA 对比图。</b>"))
+  } else if (diag$status == "warning") {
+    HTML(paste(base_text, "<br><b>", diag$message, "</b>"))
+  } else {
+    HTML(base_text)
+  }
+})
+
+output$batch_correction_performed <- reactive({
+  !is.null(processed_data()) && preprocessing_params$batch_performed
+})
+outputOptions(output, "batch_correction_performed", suspendWhenHidden = FALSE)
+
+# ============ 核心预处理反应式（修复批次校正缺失值问题） ============
 processed_data <- eventReactive(input$run_preprocessing, {
   showNotification("Running preprocessing...", type = "message", duration = NULL, id = "preprocess_notif")
   tryCatch({
@@ -366,36 +493,60 @@ processed_data <- eventReactive(input$run_preprocessing, {
     
     # 3. 缺失值填补
     preprocessing_params$imputation_method <- input$imputation_method
-    data <- impute_missing_values(data, method = input$imputation_method)
+    # 如果跳过填充，但后续又需要批次校正，则先记下，后续处理
+    if (input$imputation_method == "none") {
+      # 检查是否启用批次校正，若是，则自动用 KNN 填充
+      if (input$perform_batch_correction) {
+        showNotification("批次校正需要无缺失值，已自动使用 KNN 填充缺失值。", type = "warning", duration = 6)
+        data <- impute_missing_values(data, method = "knn")
+        preprocessing_params$imputation_method <- "knn (auto for batch correction)"
+      } else {
+        # 不填充
+        preprocessing_params$imputation_method <- "none"
+      }
+    } else {
+      data <- impute_missing_values(data, method = input$imputation_method)
+      preprocessing_params$imputation_method <- input$imputation_method
+    }
     
     # 4. 批次校正
     preprocessing_params$batch_performed <- FALSE
     preprocessing_params$batch_corrected_cols <- NULL
-    if (input$perform_batch_correction && !is.null(input$batch_column) && input$batch_column != "") {
-      expr_cols <- colnames(data)
-      info_rows <- rownames(rv$sample_info)
-      expr_norm <- normalize_sample_name(expr_cols)
-      info_norm <- normalize_sample_name(info_rows)
-      match_idx <- match(expr_norm, info_norm)
-      if (all(is.na(match_idx))) {
-        showNotification("批次校正跳过：无法将表达矩阵中的样本名与样本信息表匹配。", type = "warning")
-      } else {
-        keep_samples <- !is.na(match_idx)
-        batch_info <- rv$sample_info[match_idx[keep_samples], input$batch_column]
-        unique_vals <- unique(batch_info)
-        if (length(unique_vals) < 2) {
-          showNotification(
-            paste0("批次校正被跳过：所选批次列“", input$batch_column, "”中只有一种批次值（", 
-                   paste(unique_vals, collapse = ", "), "）。"),
-            type = "warning", duration = 8
-          )
+    if (input$perform_batch_correction) {
+      if (!is.null(rv$sample_info) && "Batch" %in% colnames(rv$sample_info)) {
+        expr_cols <- colnames(data)
+        info_rows <- rownames(rv$sample_info)
+        expr_norm <- normalize_sample_name(expr_cols)
+        info_norm <- normalize_sample_name(info_rows)
+        match_idx <- match(expr_norm, info_norm)
+        if (all(is.na(match_idx))) {
+          showNotification("Batch correction skipped: unable to match sample names.", type = "warning")
         } else {
-          data_to_correct <- data[, keep_samples, drop = FALSE]
-          corrected_part <- combat_correction(data_to_correct, batch = batch_info)
-          data[, keep_samples] <- corrected_part
-          preprocessing_params$batch_performed <- TRUE
-          preprocessing_params$batch_corrected_cols <- expr_cols[keep_samples]
+          keep_samples <- !is.na(match_idx)
+          batch_info <- rv$sample_info[match_idx[keep_samples], "Batch"]
+          unique_vals <- unique(batch_info)
+          if (length(unique_vals) < 2) {
+            showNotification("Batch correction skipped: only one batch value.", type = "warning", duration = 8)
+          } else {
+            preprocessing_params$pre_batch_data <- data[, keep_samples, drop = FALSE]
+            data_to_correct <- data[, keep_samples, drop = FALSE]
+            # 确保无缺失值
+            if (any(is.na(data_to_correct))) {
+              data_to_correct <- impute_missing_values(data_to_correct, method = "knn")
+            }
+            corrected_part <- combat_correction(data_to_correct, batch = batch_info)
+            # 修复可能产生的 NaN/Inf
+            corrected_part[is.na(corrected_part)] <- 1e-4
+            corrected_part[!is.finite(as.matrix(corrected_part))] <- 1e-4
+            data[, keep_samples] <- corrected_part
+            preprocessing_params$batch_performed <- TRUE
+            preprocessing_params$batch_corrected_cols <- expr_cols[keep_samples]
+            preprocessing_params$post_batch_data <- data
+            showNotification("Batch correction applied using ComBat.", type = "message", duration = 5)
+          }
         }
+      } else {
+        showNotification("Batch correction skipped: 'Batch' column not found.", type = "warning")
       }
     }
     
@@ -439,6 +590,7 @@ output$pre_processed_summary <- renderPrint({
     method_display <- switch(preprocessing_params$imputation_method,
                              knn = "K近邻填补法",
                              ppca = "概率主成分分析填补法",
+                             "knn (auto for batch correction)" = "KNN填补（因批次校正自动启用）",
                              none = "无（跳过填充）")
     cat("缺失值处理方式：", method_display, "\n")
     cat("最后运行时间：", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
@@ -475,14 +627,8 @@ output$pre_processed_table <- DT::renderDT({
   rownames(df) <- NULL
   dt <- DT::datatable(
     df,
-    options = list(
-      pageLength = 10,
-      scrollX = TRUE,
-      searchHighlight = TRUE,
-      server = TRUE
-    ),
-    rownames = FALSE,
-    filter = "top"
+    options = list(pageLength = 10, scrollX = TRUE, searchHighlight = TRUE, server = TRUE),
+    rownames = FALSE, filter = "top"
   )
   corrected <- preprocessing_params$batch_corrected_cols
   if (!is.null(corrected) && length(corrected) > 0) {
@@ -495,12 +641,9 @@ output$pre_processed_table <- DT::renderDT({
 
 # ============ 缺失值过滤前后对比 ============
 
-output$preprocessing_done <- reactive({
-  !is.null(processed_data())
-})
+output$preprocessing_done <- reactive({ !is.null(processed_data()) })
 outputOptions(output, "preprocessing_done", suspendWhenHidden = FALSE)
 
-# 是否跳过填充
 output$imputation_skipped <- reactive({
   !is.null(processed_data()) && preprocessing_params$imputation_method == "none"
 })
@@ -593,10 +736,7 @@ safe_pca <- function(mat, scale = TRUE) {
   keep <- row_vars > 1e-12
   mat <- mat[keep, , drop = FALSE]
   if (nrow(mat) < 2) return(NULL)
-  tryCatch(
-    prcomp(mat, scale. = scale),
-    error = function(e) NULL
-  )
+  tryCatch(prcomp(mat, scale. = scale), error = function(e) NULL)
 }
 
 output$filter_pca_plot <- renderPlot({
@@ -646,17 +786,11 @@ output$filter_pca_plot <- renderPlot({
 output$filter_summary_table <- DT::renderDT({
   req(filter_comparison_data())
   detailed <- filter_comparison_data()$detailed
-  DT::datatable(
-    detailed,
-    options = list(pageLength = 10, scrollX = TRUE),
-    rownames = FALSE
-  )
+  DT::datatable(detailed, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$download_filter_table <- downloadHandler(
-  filename = function() {
-    paste0("Filter_Comparison_", Sys.Date(), ".xlsx")
-  },
+  filename = function() paste0("Filter_Comparison_", Sys.Date(), ".xlsx"),
   content = function(file) {
     dat <- filter_comparison_data()
     detailed <- dat$detailed
@@ -673,13 +807,8 @@ output$download_filter_table <- downloadHandler(
     retained <- sum(detailed$Retained_After_Filter)
     
     summary_rows <- data.frame(
-      Metric = c(
-        "Total Proteins (Before Filtering)",
-        "Inf Value Filter Removed",
-        "Missing Rate Filter Removed",
-        "Intensity Filter Removed",
-        "Final Retained Proteins"
-      ),
+      Metric = c("Total Proteins (Before Filtering)", "Inf Value Filter Removed",
+                 "Missing Rate Filter Removed", "Intensity Filter Removed", "Final Retained Proteins"),
       Count = c(total_proteins, inf_removed, missing_removed, intensity_removed, retained),
       stringsAsFactors = FALSE
     )
@@ -698,24 +827,13 @@ output$download_filter_table <- downloadHandler(
     inten_threshold <- input$min_intensity
     
     log_items <- c(
-      "Experiment Name",
-      "Number of Samples",
-      "Analysis Time",
-      "Analyst",
-      "",
+      "Experiment Name", "Number of Samples", "Analysis Time", "Analyst", "",
       "--- Filtering Procedure (applied in order) ---",
-      "Step 1: Inf/Abnormal Value Filter",
-      "  Rule",
-      "  Filtered Protein Count",
-      "Step 2: Missing Rate Filter",
-      "  Formula (Missing Rate = missing samples / total samples)",
-      "  Threshold (max allowed fraction)",
-      "  Filtered Protein Count",
-      "Step 3: Intensity Filter",
-      "  Formula (Intensity = max expression value across all samples)",
-      "  Threshold (min intensity)",
-      "  Filtered Protein Count",
-      "",
+      "Step 1: Inf/Abnormal Value Filter", "  Rule", "  Filtered Protein Count",
+      "Step 2: Missing Rate Filter", "  Formula (Missing Rate = missing samples / total samples)",
+      "  Threshold (max allowed fraction)", "  Filtered Protein Count",
+      "Step 3: Intensity Filter", "  Formula (Intensity = max expression value across all samples)",
+      "  Threshold (min intensity)", "  Filtered Protein Count", "",
       "--- Column Definitions ---",
       "Missing_Rate_Before: Missing rate = missing sample count / total sample count",
       "Max_Intensity_Before: Maximum intensity among all samples for each protein",
@@ -730,25 +848,10 @@ output$download_filter_table <- downloadHandler(
     )
     
     log_values <- c(
-      uploaded_name,
-      as.character(n_samples),
-      format(now_time, "%Y-%m-%d %H:%M:%S"),
-      "Not provided",
-      "",
-      "",
-      "",
+      uploaded_name, as.character(n_samples), format(now_time, "%Y-%m-%d %H:%M:%S"), "Not provided", "", "", "",
       "Proteins with non-finite (Inf/NaN) maximum intensity are removed",
-      as.character(inf_removed),
-      "",
-      "",
-      as.character(miss_threshold),
-      as.character(missing_removed),
-      "",
-      "",
-      as.character(inten_threshold),
-      as.character(intensity_removed),
-      "",
-      "",
+      as.character(inf_removed), "", "", as.character(miss_threshold), as.character(missing_removed),
+      "", "", as.character(inten_threshold), as.character(intensity_removed), "", "",
       "", "", "", "", "", "", "", "", "", ""
     )
     
@@ -979,17 +1082,12 @@ output$imputation_qq_plot <- renderPlot({
 
 output$imputation_summary_table <- DT::renderDT({
   req(imputation_comparison_data())
-  DT::datatable(
-    imputation_comparison_data()$detailed,
-    options = list(pageLength = 10, scrollX = TRUE),
-    rownames = FALSE
-  )
+  DT::datatable(imputation_comparison_data()$detailed,
+                options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$download_imputation_table <- downloadHandler(
-  filename = function() {
-    paste0("Imputation_Comparison_", Sys.Date(), ".xlsx")
-  },
+  filename = function() paste0("Imputation_Comparison_", Sys.Date(), ".xlsx"),
   content = function(file) {
     dat <- imputation_comparison_data()
     detailed <- dat$detailed
@@ -1051,20 +1149,15 @@ output$download_imputation_table <- downloadHandler(
 output$missing_heatmap_skipped <- renderPlot({
   req(pre_imputation_matrix())
   mat <- pre_imputation_matrix()
-  # 转换为0/1缺失矩阵
   miss_mat <- is.na(as.matrix(mat)) * 1
   rownames(miss_mat) <- rownames(mat)
   colnames(miss_mat) <- colnames(mat)
   
-  # 样本分组（基于样本名前缀）
   sample_groups <- gsub("\\..*", "", colnames(mat))
-  # 确保分组为因子
   sample_groups <- factor(sample_groups, levels = unique(sample_groups))
   ann_col <- data.frame(Group = sample_groups, row.names = colnames(mat))
   
-  # 为每个实际出现的组动态生成颜色
   group_levels <- levels(sample_groups)
-  # 使用RColorBrewer自动扩展颜色
   if (length(group_levels) <= 8) {
     group_color_vec <- RColorBrewer::brewer.pal(length(group_levels), "Set2")
   } else {
@@ -1073,7 +1166,6 @@ output$missing_heatmap_skipped <- renderPlot({
   names(group_color_vec) <- group_levels
   ann_colors <- list(Group = group_color_vec)
   
-  # 若蛋白数量过多，随机采样以便显示
   if (nrow(miss_mat) > 1000) {
     set.seed(123)
     miss_mat <- miss_mat[sample(1:nrow(miss_mat), 1000), ]
@@ -1130,3 +1222,107 @@ output$missing_summary_table_skipped <- renderTable({
     stringsAsFactors = FALSE
   )
 }, striped = TRUE, bordered = TRUE, width = "100%")
+
+# ============ 批次校正前后 PCA 对比 ============
+batch_comparison_pca <- reactive({
+  req(processed_data(), preprocessing_params$batch_performed)
+  before <- preprocessing_params$pre_batch_data
+  after <- preprocessing_params$post_batch_data
+  if (is.null(before) || is.null(after)) return(NULL)
+  
+  common_cols <- intersect(colnames(before), colnames(after))
+  before <- before[, common_cols, drop = FALSE]
+  after <- after[, common_cols, drop = FALSE]
+  
+  before_t <- t(log2(as.matrix(before) + 1))
+  after_t <- t(log2(as.matrix(after) + 1))
+  
+  before_ok <- apply(before_t, 2, function(x) all(is.finite(x)))
+  after_ok <- apply(after_t, 2, function(x) all(is.finite(x)))
+  keep_cols <- which(before_ok & after_ok)
+  if (length(keep_cols) < 2) return(NULL)
+  before_t <- before_t[, keep_cols, drop = FALSE]
+  after_t <- after_t[, keep_cols, drop = FALSE]
+  
+  before_var <- apply(before_t, 2, var)
+  after_var <- apply(after_t, 2, var)
+  keep_var <- which(before_var > 1e-12 & after_var > 1e-12)
+  if (length(keep_var) < 2) return(NULL)
+  before_t <- before_t[, keep_var, drop = FALSE]
+  after_t <- after_t[, keep_var, drop = FALSE]
+  
+  pca_before <- tryCatch(prcomp(before_t, scale. = TRUE), error = function(e) NULL)
+  pca_after <- tryCatch(prcomp(after_t, scale. = TRUE), error = function(e) NULL)
+  if (is.null(pca_before) || is.null(pca_after)) return(NULL)
+  
+  sample_info_short <- rv$sample_info
+  rownames(sample_info_short) <- normalize_sample_name(rownames(sample_info_short))
+  before_norm <- normalize_sample_name(colnames(before))
+  after_norm <- normalize_sample_name(colnames(after))
+  batch_before <- sample_info_short[before_norm, "Batch"]
+  batch_after <- sample_info_short[after_norm, "Batch"]
+  
+  list(
+    pca_before = pca_before,
+    pca_after = pca_after,
+    batch_before = batch_before,
+    batch_after = batch_after,
+    var_before = round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1),
+    var_after = round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
+  )
+})
+
+output$batch_pca_plot <- renderPlot({
+  dat <- batch_comparison_pca()
+  if (is.null(dat)) {
+    plot.new(); text(0.5, 0.5, "PCA not available")
+    return()
+  }
+  df_before <- data.frame(PC1 = dat$pca_before$x[,1], PC2 = dat$pca_before$x[,2],
+                          Batch = dat$batch_before, Stage = "Before Correction")
+  df_after <- data.frame(PC1 = dat$pca_after$x[,1], PC2 = dat$pca_after$x[,2],
+                         Batch = dat$batch_after, Stage = "After Correction")
+  pca_df <- rbind(df_before, df_after)
+  pca_df$Stage <- factor(pca_df$Stage, levels = c("Before Correction", "After Correction"))
+  
+  ggplot(pca_df, aes(x = PC1, y = PC2, color = Batch)) +
+    geom_point(size = 3, alpha = 0.8) +
+    stat_ellipse(type = "norm", level = 0.95) +
+    facet_wrap(~ Stage) +
+    labs(title = "PCA Before and After ComBat Batch Correction",
+         x = paste0("PC1 (Before: ", dat$var_before[1], "%, After: ", dat$var_after[1], "%)"),
+         y = paste0("PC2 (Before: ", dat$var_before[2], "%, After: ", dat$var_after[2], "%)")) +
+    theme_bw() + theme(legend.position = "bottom")
+})
+
+output$batch_pca_interpretation <- renderUI({
+  diag <- batch_diagnostic()
+  if (diag$status == "significant") {
+    p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布出现分离趋势，提示存在批次效应，建议启用校正。")
+  } else {
+    p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布无明显聚类，说明无显著批次效应，无需校正。")
+  }
+})
+
+output$download_batch_pca <- downloadHandler(
+  filename = function() "batch_correction_pca.png",
+  content = function(file) {
+    dat <- batch_comparison_pca()
+    if (is.null(dat)) return()
+    df_before <- data.frame(PC1 = dat$pca_before$x[,1], PC2 = dat$pca_before$x[,2],
+                            Batch = dat$batch_before, Stage = "Before Correction")
+    df_after <- data.frame(PC1 = dat$pca_after$x[,1], PC2 = dat$pca_after$x[,2],
+                           Batch = dat$batch_after, Stage = "After Correction")
+    pca_df <- rbind(df_before, df_after)
+    pca_df$Stage <- factor(pca_df$Stage, levels = c("Before Correction", "After Correction"))
+    plot <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Batch)) +
+      geom_point(size = 3, alpha = 0.8) +
+      stat_ellipse(type = "norm", level = 0.95) +
+      facet_wrap(~ Stage) +
+      labs(title = "PCA Before and After ComBat Batch Correction",
+           x = paste0("PC1 (Before: ", dat$var_before[1], "%, After: ", dat$var_after[1], "%)"),
+           y = paste0("PC2 (Before: ", dat$var_before[2], "%, After: ", dat$var_after[2], "%)")) +
+      theme_bw() + theme(legend.position = "bottom")
+    ggsave(file, plot = plot, width = 12, height = 6, dpi = 150)
+  }
+)
