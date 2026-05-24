@@ -22,29 +22,6 @@ output$batch_info_preview <- renderPrint({
   }
 })
 
-# ---------- 提取原始表达矩阵（仅 LFQ 列），使用 Master protein IDs 作为行名 ----------
-expression_data <- reactive({
-  req(rv$clean_data)
-  if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
-    validate(need(FALSE, "No intensity columns found. Please upload data first."))
-  }
-  df <- rv$clean_data
-  if (!"Master protein IDs" %in% colnames(df)) {
-    validate(need(FALSE, "Master protein IDs column not found in cleaned data."))
-  }
-  rownames(df) <- as.character(df$`Master protein IDs`)
-  df <- df[, rv$lfq_cols, drop = FALSE]
-  df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
-  df[df == 0] <- NA
-  if (ncol(df) == 0) {
-    validate(need(FALSE, "No intensity columns found."))
-  }
-  if (nrow(df) == 0) {
-    validate(need(FALSE, "No protein rows found."))
-  }
-  df
-})
-
 # ---------- 快速预设按钮 ----------
 observeEvent(input$preset_missing_0.3, {
   updateSliderInput(session, "max_missing_fraction", value = 0.3)
@@ -93,7 +70,7 @@ output$intensity_filter_effect <- renderPrint({
   }
 })
 
-# ---------- 强度分布图（优化标题换行） ----------
+# ---------- 强度分布图 ----------
 output$intensity_dist_plot <- renderPlot({
   req(expression_data(), input$max_missing_fraction)
   threshold <- if (is.null(input$min_intensity) || is.na(input$min_intensity)) 0 else input$min_intensity
@@ -112,7 +89,6 @@ output$intensity_dist_plot <- renderPlot({
   total_count <- length(max_int)
   retained_count <- sum(max_int > threshold)
   
-  # 将长副标题分成两行，避免被截断
   subtitle_text <- paste0(
     "After missing & Inf filter: ", total_count, " proteins\n",
     "Retained if threshold = ", threshold, ": ", retained_count
@@ -523,6 +499,12 @@ output$preprocessing_done <- reactive({
   !is.null(processed_data())
 })
 outputOptions(output, "preprocessing_done", suspendWhenHidden = FALSE)
+
+# 是否跳过填充
+output$imputation_skipped <- reactive({
+  !is.null(processed_data()) && preprocessing_params$imputation_method == "none"
+})
+outputOptions(output, "imputation_skipped", suspendWhenHidden = FALSE)
 
 filter_comparison_data <- reactive({
   req(processed_data())
@@ -1063,3 +1045,88 @@ output$download_imputation_table <- downloadHandler(
     openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
   }
 )
+
+# ============ 跳过填充时的专属图表 ============
+
+output$missing_heatmap_skipped <- renderPlot({
+  req(pre_imputation_matrix())
+  mat <- pre_imputation_matrix()
+  # 转换为0/1缺失矩阵
+  miss_mat <- is.na(as.matrix(mat)) * 1
+  rownames(miss_mat) <- rownames(mat)
+  colnames(miss_mat) <- colnames(mat)
+  
+  # 样本分组（基于样本名前缀）
+  sample_groups <- gsub("\\..*", "", colnames(mat))
+  # 确保分组为因子
+  sample_groups <- factor(sample_groups, levels = unique(sample_groups))
+  ann_col <- data.frame(Group = sample_groups, row.names = colnames(mat))
+  
+  # 为每个实际出现的组动态生成颜色
+  group_levels <- levels(sample_groups)
+  # 使用RColorBrewer自动扩展颜色
+  if (length(group_levels) <= 8) {
+    group_color_vec <- RColorBrewer::brewer.pal(length(group_levels), "Set2")
+  } else {
+    group_color_vec <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(length(group_levels))
+  }
+  names(group_color_vec) <- group_levels
+  ann_colors <- list(Group = group_color_vec)
+  
+  # 若蛋白数量过多，随机采样以便显示
+  if (nrow(miss_mat) > 1000) {
+    set.seed(123)
+    miss_mat <- miss_mat[sample(1:nrow(miss_mat), 1000), ]
+  }
+  
+  pheatmap::pheatmap(miss_mat,
+                     color = c("#3498db", "#e74c3c"),
+                     legend_breaks = c(0, 1),
+                     legend_labels = c("Present", "Missing"),
+                     cluster_rows = TRUE,
+                     cluster_cols = TRUE,
+                     show_rownames = FALSE,
+                     show_colnames = TRUE,
+                     annotation_col = ann_col,
+                     annotation_colors = ann_colors,
+                     main = "Missing Value Heatmap (Blue = Present, Red = Missing)",
+                     fontsize_col = 8)
+})
+
+output$valid_barplot_skipped <- renderPlot({
+  req(pre_imputation_matrix())
+  mat <- pre_imputation_matrix()
+  valid_pct <- (1 - colMeans(is.na(mat))) * 100
+  df <- data.frame(Sample = names(valid_pct), ValidPct = valid_pct)
+  df$Sample <- factor(df$Sample, levels = df$Sample)
+  
+  ggplot(df, aes(x = Sample, y = ValidPct)) +
+    geom_col(fill = "#3498db", alpha = 0.8) +
+    geom_hline(yintercept = 70, color = "red", linetype = "dashed", linewidth = 1) +
+    annotate("text", x = 1, y = 72, label = "70% threshold", color = "red", hjust = 0) +
+    labs(title = "Valid Values per Sample", y = "Valid Percentage (%)", x = "") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+})
+
+output$missing_summary_table_skipped <- renderTable({
+  req(pre_imputation_matrix())
+  mat <- pre_imputation_matrix()
+  n_prot <- nrow(mat)
+  n_samp <- ncol(mat)
+  overall_na <- round(mean(is.na(mat)) * 100, 1)
+  na_proteins <- sum(rowSums(is.na(mat)) > 0)
+  avg_valid <- round(mean(1 - colMeans(is.na(mat))) * 100, 1)
+  
+  data.frame(
+    Metric = c("Total Proteins", "Total Samples", "Overall Missing Rate",
+               "Proteins with Missing Values", "Average Valid Value % per Sample"),
+    Value = c(n_prot, n_samp, paste0(overall_na, "%"), na_proteins, paste0(avg_valid, "%")),
+    Description = c("Number of proteins after filtering",
+                    "Number of samples",
+                    "Percentage of all protein-sample pairs with NA",
+                    "Number of proteins with at least one missing value",
+                    "Mean of valid value percentages across samples"),
+    stringsAsFactors = FALSE
+  )
+}, striped = TRUE, bordered = TRUE, width = "100%")

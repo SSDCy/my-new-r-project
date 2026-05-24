@@ -71,15 +71,12 @@ calculate_data_quality_score <- function(expr_matrix) {
   list(score = total_score, grade = grade, details = details)
 }
 
-# ================== 动态智能报告生成（修复长度匹配问题） ==================
 generate_quality_report <- function(quality_score, expr_matrix, sample_info = NULL) {
   details <- quality_score$details
   key_findings <- list()
   recommendations <- list()
   special_note <- ""
   
-  # ---------- 关键发现 ----------
-  # 缺失率
   if (details$missing_ratio < 10) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -106,7 +103,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 样本相关性
   if (details$avg_correlation > 0.9) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -133,7 +129,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 蛋白有效检出率
   if (details$protein_valid_ratio > 80) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -154,7 +149,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---------- PCA 分析（统一使用 pca_df 避免长度不匹配） ----------
   pca_result <- calculate_pca(expr_matrix, sample_info)
   pca_df <- if (!is.null(pca_result)) pca_result$pca_df else NULL
   
@@ -168,18 +162,14 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     pc2 <- pca_df$PC2
     samples_pca <- pca_df$Sample
     
-    # 检测批次效应：从 sample_info 映射到 pca_df 的每一行
     if (!is.null(sample_info) && "Batch" %in% colnames(sample_info)) {
-      # 将 sample_info 的 rownames 统一为点分隔
       si_names <- gsub("-", ".", rownames(sample_info))
       batch_all <- sample_info$Batch
-      # 构建与 pca_df 等长的 batch 向量
       batch_vec <- rep(NA_character_, nrow(pca_df))
       for (k in seq_len(nrow(pca_df))) {
         idx <- which(si_names == samples_pca[k])
         if (length(idx) == 1) batch_vec[k] <- batch_all[idx]
       }
-      # 只保留有批次信息的样本
       valid_batch <- !is.na(batch_vec)
       if (sum(valid_batch) >= 2 && length(unique(batch_vec[valid_batch])) >= 2) {
         pc1_valid <- pc1[valid_batch]
@@ -195,7 +185,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       }
     }
     
-    # 检测异常样本
     z1 <- abs((pc1 - mean(pc1)) / sd(pc1))
     z2 <- abs((pc2 - mean(pc2)) / sd(pc2))
     outlier_mask <- (z1 > 3 | z2 > 3)
@@ -203,7 +192,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       outlier_samples <- samples_pca[outlier_mask]
     }
     
-    # 检测分组效果
     if (has_groups) {
       groups_pca <- pca_df$Group
       group_means <- tapply(pc1, groups_pca, mean)
@@ -215,7 +203,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     }
   }
   
-  # 根据 PCA 结果添加关键发现
   if (batch_effect_detected) {
     key_findings <- c(key_findings, list(list(
       type = "warning",
@@ -244,8 +231,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---------- 操作建议 ----------
-  # 缺失值处理
   if (details$missing_ratio > 20) {
     recommendations <- c(recommendations, list(list(
       title = "缺失值处理",
@@ -267,7 +252,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 批次效应
   if (batch_effect_detected) {
     recommendations <- c(recommendations, list(list(
       title = "批次校正",
@@ -284,7 +268,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 异常样本
   if (length(outlier_samples) > 0) {
     recommendations <- c(recommendations, list(list(
       title = "异常样本处理",
@@ -298,7 +281,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 统计方法
   if (details$missing_ratio > 30) {
     recommendations <- c(recommendations, list(list(
       title = "统计方法",
@@ -315,7 +297,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # 特别说明
   if (details$missing_ratio > 40) {
     special_note <- paste0("您的数据缺失率较高（", details$missing_ratio, "%），但通过合理的过滤和填充，仍可获得可靠结果。请务必关注异常样本。")
   } else if (details$missing_ratio < 10 && details$avg_correlation > 0.9) {
@@ -331,7 +312,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
   list(key_findings = key_findings, recommendations = recommendations, special_note = special_note)
 }
 
-# ================== 其他数据质量辅助函数 ==================
 calculate_missing_stats <- function(expr_matrix) {
   if (is.null(expr_matrix) || nrow(expr_matrix) == 0) return(list())
   protein_missing <- rowMeans(is.na(expr_matrix))
@@ -586,7 +566,6 @@ output$detected_samples_ui <- renderUI({
   )
 })
 
-# ---------- 重置所有 ----------
 observeEvent(input$reset_all, {
   raw <- rv$raw_data; clean <- rv$clean_data; lfq <- rv$lfq_cols; sn <- rv$sample_names; si <- rv$sample_info
   rv$groups <- list(); rv$comparisons <- list(); rv$analysis_results <- NULL
@@ -639,7 +618,6 @@ observeEvent(input$reset_all, {
   showNotification("All settings reset.", type = "message", duration = 2)
 })
 
-# ==================== 归一化逻辑 ====================
 get_base_sample <- function() {
   user_sel <- input$baseline_sample
   if (!is.null(user_sel) && user_sel != "Auto" && user_sel %in% rv$sample_names) return(user_sel)
@@ -758,7 +736,29 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ==================== 供数据质量分析使用的反应式 ====================
+# ==================== 供数据质量分析和预处理使用的核心反应式 ====================
+expression_data <- reactive({
+  req(rv$clean_data)
+  if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
+    validate(need(FALSE, "No intensity columns found. Please upload data first."))
+  }
+  df <- rv$clean_data
+  if (!"Master protein IDs" %in% colnames(df)) {
+    validate(need(FALSE, "Master protein IDs column not found in cleaned data."))
+  }
+  rownames(df) <- as.character(df$`Master protein IDs`)
+  df <- df[, rv$lfq_cols, drop = FALSE]
+  df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
+  df[df == 0] <- NA
+  if (ncol(df) == 0) {
+    validate(need(FALSE, "No intensity columns found."))
+  }
+  if (nrow(df) == 0) {
+    validate(need(FALSE, "No protein rows found."))
+  }
+  df
+})
+
 dq_expr_matrix <- reactive({
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
