@@ -1,12 +1,18 @@
 # global.R - 全局设置、包加载与工具函数
 
 # =====================================================
+# 调试信息：开始加载 global.R
+# =====================================================
+message("[DEBUG] global.R loading started...")
+
+# =====================================================
 # 全局选项（确保上传大小限制等设置最先执行）
 # =====================================================
 options(shiny.maxRequestSize = 200 * 1024^2)   # 允许上传最大 200MB 文件
 options(shiny.fullstacktrace = TRUE)
 options(warn = -1)
-options("jsonlite.keep_vec_names" = FALSE)
+# 修正 jsonlite 选项，避免 keep_vec_names 警告
+options(jsonlite.keep_vec_names = FALSE)
 
 # =====================================================
 # 加载所有可能在 UI/Server 模块中直接或间接调用的包
@@ -202,3 +208,8 @@ step_indicator <- function(steps, current_step) {
   })
   tags$div(class = "process-steps", do.call(tagList, step_items))
 }
+
+# =====================================================
+# 调试信息：global.R 加载完成
+# =====================================================
+message("[DEBUG] global.R loaded successfully.")

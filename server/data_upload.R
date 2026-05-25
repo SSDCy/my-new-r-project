@@ -529,18 +529,27 @@ output$sample_match_hint <- renderUI({
       icon("info-circle"), " Green highlighted samples are matched with the uploaded sample info. Samples without fill color are not matched.")
 })
 
+# ==================== 修复：正确的 renderDataTable 参数位置 ====================
+# 注意：server = FALSE 必须作为 renderDataTable() 的顶层参数，
+# 而不是放在 DT::datatable() 内部。
 output$upload_preview <- DT::renderDataTable({
+  message("[DEBUG] upload_preview: rv$lfq_cols length = ", length(rv$lfq_cols))
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
-  DT::datatable(df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
-})
+  DT::datatable(df,
+                options = list(pageLength = 10, scrollX = TRUE),
+                rownames = FALSE)
+}, server = FALSE)   # 关键修改：将 server 参数移到这里
 
 output$sample_info_preview <- DT::renderDataTable({
+  message("[DEBUG] sample_info_preview triggered")
   req(rv$sample_info)
   df <- rv$sample_info
   df_display <- data.frame(SampleName = rownames(df), df, check.names = FALSE, stringsAsFactors = FALSE)
-  DT::datatable(df_display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
-})
+  DT::datatable(df_display,
+                options = list(pageLength = 10, scrollX = TRUE),
+                rownames = FALSE)
+}, server = FALSE)   # 关键修改：同样移到这里
 
 output$data_summary_ui <- renderUI({
   req(rv$raw_data)
@@ -742,8 +751,9 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ==================== 供数据质量分析和预处理使用的核心反应式 ====================
+# ==================== 核心：expression_data 反应式（唯一入口） ====================
 expression_data <- reactive({
+  message("[DEBUG] expression_data triggered from server/data_upload.R")
   req(rv$clean_data)
   if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
     validate(need(FALSE, "No intensity columns found. Please upload data first."))
@@ -762,10 +772,13 @@ expression_data <- reactive({
   if (nrow(df) == 0) {
     validate(need(FALSE, "No protein rows found."))
   }
+  message(sprintf("[DEBUG] expression_data: %d proteins, %d samples", nrow(df), ncol(df)))
   df
 })
 
+# 数据质量专用矩阵（使用简短样本名）
 dq_expr_matrix <- reactive({
+  message("[DEBUG] dq_expr_matrix triggered")
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
   df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
@@ -776,11 +789,13 @@ dq_expr_matrix <- reactive({
 }) %>% bindCache(rv$clean_data, rv$lfq_cols)
 
 dq_quality_score <- reactive({
+  message("[DEBUG] dq_quality_score triggered")
   req(dq_expr_matrix())
   calculate_data_quality_score(dq_expr_matrix())
 }) %>% bindCache(dq_expr_matrix())
 
 dq_missing_stats <- reactive({
+  message("[DEBUG] dq_missing_stats triggered")
   req(dq_expr_matrix())
   calculate_missing_stats(dq_expr_matrix())
 }) %>% bindCache(dq_expr_matrix())

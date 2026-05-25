@@ -1,4 +1,8 @@
 # server/preprocessing.R
+# ============================================================
+# 注意：expression_data 反应式已在 server/data_upload.R 中定义，
+# 本文件直接使用 expression_data()，不再重复定义。
+# ============================================================
 
 # ---------- 显示样本信息各列的概要 ----------
 output$batch_info_preview <- renderPrint({
@@ -14,29 +18,6 @@ output$batch_info_preview <- renderPrint({
   } else {
     cat(paste(head(unique_vals, 10), collapse = "\n"), "\n... 还有", length(unique_vals) - 10, "个\n")
   }
-})
-
-# ---------- 提取原始表达矩阵 ----------
-expression_data <- reactive({
-  req(rv$clean_data)
-  if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
-    validate(need(FALSE, "No intensity columns found. Please upload data first."))
-  }
-  df <- rv$clean_data
-  if (!"Master protein IDs" %in% colnames(df)) {
-    validate(need(FALSE, "Master protein IDs column not found in cleaned data."))
-  }
-  rownames(df) <- as.character(df$`Master protein IDs`)
-  df <- df[, rv$lfq_cols, drop = FALSE]
-  df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
-  df[df == 0] <- NA
-  if (ncol(df) == 0) {
-    validate(need(FALSE, "No intensity columns found."))
-  }
-  if (nrow(df) == 0) {
-    validate(need(FALSE, "No protein rows found."))
-  }
-  df
 })
 
 # ---------- 快速预设按钮 ----------
@@ -64,6 +45,7 @@ output$missing_filter_effect <- renderPrint({
 
 # ---------- 强度过滤效果 ----------
 output$intensity_filter_effect <- renderPrint({
+  message("[DEBUG] intensity_filter_effect called")
   req(expression_data(), input$max_missing_fraction, input$min_intensity)
   data <- expression_data()
   missing_frac <- rowMeans(is.na(data))
@@ -136,6 +118,7 @@ output$intensity_dist_plot <- renderPlot({
 
 # ---------- 强度统计 ----------
 intensity_stats <- reactive({
+  message("[DEBUG] intensity_stats called, using expression_data from data_upload.R")
   req(expression_data(), input$max_missing_fraction)
   data <- expression_data()
   missing_per_protein <- rowMeans(is.na(data))
@@ -468,6 +451,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
   showNotification("Running preprocessing...", type = "message", duration = NULL, id = "preprocess_notif")
   tryCatch({
     data <- expression_data()
+    message("[DEBUG] processed_data: starting preprocessing")
     
     # 1. 缺失值过滤
     if (input$max_missing_fraction < 1) {
@@ -554,6 +538,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
     removeNotification("preprocess_notif")
     showNotification("Preprocessing completed! Redirecting to Analysis & Export...", type = "message", duration = 3)
     updateNavbarPage(session, "main_navbar", selected = "plots")
+    message("[DEBUG] processed_data: preprocessing finished successfully")
     return(data)
   }, error = function(e) {
     removeNotification("preprocess_notif")
