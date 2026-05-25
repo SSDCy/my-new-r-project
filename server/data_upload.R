@@ -37,37 +37,46 @@ get_group_colors <- function(groups) {
 }
 
 # ================== 数据质量分析辅助函数 ==================
+# 权重：Missing 30 + Consistency 40 + Protein Quality 30 = 100
+# 评级统一标准：≥90 Excellent, ≥80 Good, ≥60 Fair, <60 Poor
 calculate_data_quality_score <- function(expr_matrix) {
   if (is.null(expr_matrix) || nrow(expr_matrix) == 0 || ncol(expr_matrix) == 0) {
-    return(list(score = 0, grade = "F", details = list()))
+    return(list(score = 0, grade = "Poor", details = list()))
   }
+  
   total_values <- nrow(expr_matrix) * ncol(expr_matrix)
   missing_values <- sum(is.na(expr_matrix))
   missing_ratio <- missing_values / total_values
-  missing_score <- max(0, 30 * (1 - missing_ratio * 2))
+  missing_score <- max(0, 30 * (1 - missing_ratio * 2))   # 0~30分
+  
+  # 样本一致性基于平均相关性，权重40分
   sample_cor <- cor(expr_matrix, use = "pairwise.complete.obs")
   diag(sample_cor) <- NA
   avg_cor <- mean(sample_cor, na.rm = TRUE)
-  cor_score <- max(0, 20 * pmin(1, avg_cor / 0.8))
+  consistency_score <- max(0, 40 * pmin(1, avg_cor / 0.8))   # 0~40分
+  
+  # 蛋白有效检出率：至少2个样本中检出，权重30分
   protein_valid <- rowSums(!is.na(expr_matrix)) >= 2
   protein_valid_ratio <- mean(protein_valid)
-  protein_score <- max(0, 20 * protein_valid_ratio)
-  cor_score_2 <- max(0, 30 * pmin(1, avg_cor / 0.8))
-  total_score <- round(missing_score + cor_score + protein_score + cor_score_2, 1)
+  protein_score <- max(0, 30 * protein_valid_ratio)   # 0~30分
+  
+  total_score <- round(missing_score + consistency_score + protein_score, 1)
+  
+  # 统一评级：Excellent, Good, Fair, Poor
   grade <- if (total_score >= 90) "Excellent"
   else if (total_score >= 80) "Good"
-  else if (total_score >= 70) "Fair"
-  else if (total_score >= 60) "Poor"
-  else "Bad"
+  else if (total_score >= 60) "Fair"
+  else "Poor"
+  
   details <- list(
     missing_ratio = round(missing_ratio * 100, 2),
     missing_score = round(missing_score, 1),
     avg_correlation = round(avg_cor, 3),
-    correlation_score = round(cor_score, 1),
+    consistency_score = round(consistency_score, 1),
     protein_valid_ratio = round(protein_valid_ratio * 100, 2),
-    protein_score = round(protein_score, 1),
-    sample_cor_score = round(cor_score_2, 1)
+    protein_score = round(protein_score, 1)
   )
+  
   list(score = total_score, grade = grade, details = details)
 }
 
@@ -236,7 +245,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---- 操作建议（保持不变） ----
+  # ---- 操作建议 ----
   if (details$missing_ratio > 20) {
     recommendations <- c(recommendations, list(list(
       title = "缺失值处理",
@@ -529,17 +538,17 @@ output$sample_match_hint <- renderUI({
       icon("info-circle"), " Green highlighted samples are matched with the uploaded sample info. Samples without fill color are not matched.")
 })
 
-# ==================== 修复：正确的 renderDataTable 参数位置 ====================
-# 注意：server = FALSE 必须作为 renderDataTable() 的顶层参数，
-# 而不是放在 DT::datatable() 内部。
+# ==================== 修复：避免 DataTables 列缓存错误 ====================
 output$upload_preview <- DT::renderDataTable({
   message("[DEBUG] upload_preview: rv$lfq_cols length = ", length(rv$lfq_cols))
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
   DT::datatable(df,
                 options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE)
-}, server = FALSE)   # 关键修改：将 server 参数移到这里
+                rownames = FALSE,
+                # 强制客户端模式，避免列名缓存问题
+                server = FALSE)
+})
 
 output$sample_info_preview <- DT::renderDataTable({
   message("[DEBUG] sample_info_preview triggered")
@@ -548,8 +557,9 @@ output$sample_info_preview <- DT::renderDataTable({
   df_display <- data.frame(SampleName = rownames(df), df, check.names = FALSE, stringsAsFactors = FALSE)
   DT::datatable(df_display,
                 options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE)
-}, server = FALSE)   # 关键修改：同样移到这里
+                rownames = FALSE,
+                server = FALSE)
+})
 
 output$data_summary_ui <- renderUI({
   req(rv$raw_data)

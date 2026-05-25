@@ -1,53 +1,89 @@
 # server/de_analysis.R
+# ============================================================
+# 差异分析模块
+# 当前 UI 仅使用热图，未展示火山图/差异表格，因此暂时注释掉
+# filtered_data 和 all_analysis_results 以减少性能消耗。
+# 核心函数 run_de_analysis 保留，供将来扩展使用。
+# ============================================================
 
 # ---------- 输入验证 ----------
 validate_inputs <- reactive({
-  if (length(rv$comparisons) == 0) { showNotification("Please define at least one comparison", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$fc_up) || input$fc_up < 1) { showNotification("FC up must be >= 1.0", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$fc_down) || input$fc_down <= 0 || input$fc_down >= 1) { showNotification("FC down must be between 0 and 1", type = "error", duration = 2); return(FALSE) }
-  if (is.null(input$p_cut) || !(input$p_cut %in% c("0.05","0.1"))) { showNotification("Please select a valid P-value threshold", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_treat_valid) || input$min_treat_valid < 1) { showNotification("Min treat valid replicates invalid", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_ctrl_valid) || input$min_ctrl_valid < 1) { showNotification("Min ctrl valid replicates invalid", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_rep_ttest) || input$min_rep_ttest < 1) { showNotification("Min t-test replicates invalid", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_rep_inc) || input$min_rep_inc < 1) { showNotification("Min Increase replicates invalid", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_rep_dec) || input$min_rep_dec < 1) { showNotification("Min Decrease replicates invalid", type = "error", duration = 2); return(FALSE) }
-  if (is.na(input$min_unique_pep) || input$min_unique_pep < 1 || input$min_unique_pep > 10) { showNotification("Min unique peptides must be between 1 and 10", type = "error", duration = 2); return(FALSE) }
+  if (length(rv$comparisons) == 0) {
+    showNotification("Please define at least one comparison", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$fc_up) || input$fc_up < 1) {
+    showNotification("FC up must be >= 1.0", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$fc_down) || input$fc_down <= 0 || input$fc_down >= 1) {
+    showNotification("FC down must be between 0 and 1", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.null(input$p_cut) || !(input$p_cut %in% c("0.05","0.1"))) {
+    showNotification("Please select a valid P-value threshold", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_treat_valid) || input$min_treat_valid < 1) {
+    showNotification("Min treat valid replicates invalid", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_ctrl_valid) || input$min_ctrl_valid < 1) {
+    showNotification("Min ctrl valid replicates invalid", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_rep_ttest) || input$min_rep_ttest < 1) {
+    showNotification("Min t-test replicates invalid", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_rep_inc) || input$min_rep_inc < 1) {
+    showNotification("Min Increase replicates invalid", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_rep_dec) || input$min_rep_dec < 1) {
+    showNotification("Min Decrease replicates invalid", type = "error", duration = 2)
+    return(FALSE)
+  }
+  if (is.na(input$min_unique_pep) || input$min_unique_pep < 1 || input$min_unique_pep > 10) {
+    showNotification("Min unique peptides must be between 1 and 10", type = "error", duration = 2)
+    return(FALSE)
+  }
   TRUE
 })
 
-# ---------- 唯一肽段过滤 ----------
-filtered_data <- reactive({
-  req(norm_data_full())
-  nd <- norm_data_full()
-  
-  unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
-  
-  # 如果没有该列，或者列中全部为 NA，则跳过过滤
-  if (is.na(unique_col) || !unique_col %in% colnames(nd)) {
-    showNotification("Info: Unique peptides column not found. Skipping peptide filter.", type = "message", duration = 5)
-    return(nd)
-  }
-  
-  nd[[unique_col]] <- as.numeric(nd[[unique_col]])
-  
-  if (all(is.na(nd[[unique_col]]))) {
-    showNotification("Info: Unique peptides column contains only missing values. Skipping peptide filter.", type = "message", duration = 5)
-    return(nd)
-  }
-  
-  nd_before <- nd
-  nd <- filter(nd, .data[[unique_col]] >= input$min_unique_pep)
-  
-  if (nrow(nd) == 0) {
-    showNotification(
-      paste0("Warning: Unique peptides filter (>= ", input$min_unique_pep, ") removed all proteins. The filter has been skipped to allow analysis. Consider lowering the threshold in the Parameters tab."),
-      type = "warning", duration = 10
-    )
-    nd <- nd_before
-  }
-  
-  nd
-})
+# ---------- 唯一肽段过滤（暂时注释，因未在 UI 中使用）----------
+# filtered_data <- reactive({
+#   req(norm_data_full())
+#   nd <- norm_data_full()
+#   
+#   unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
+#   
+#   # 如果没有该列，或者列中全部为 NA，则跳过过滤
+#   if (is.na(unique_col) || !unique_col %in% colnames(nd)) {
+#     showNotification("Info: Unique peptides column not found. Skipping peptide filter.", type = "message", duration = 5)
+#     return(nd)
+#   }
+#   
+#   nd[[unique_col]] <- as.numeric(nd[[unique_col]])
+#   
+#   if (all(is.na(nd[[unique_col]]))) {
+#     showNotification("Info: Unique peptides column contains only missing values. Skipping peptide filter.", type = "message", duration = 5)
+#     return(nd)
+#   }
+#   
+#   nd_before <- nd
+#   nd <- filter(nd, .data[[unique_col]] >= input$min_unique_pep)
+#   
+#   if (nrow(nd) == 0) {
+#     showNotification(
+#       paste0("Warning: Unique peptides filter (>= ", input$min_unique_pep, ") removed all proteins. The filter has been skipped to allow analysis. Consider lowering the threshold in the Parameters tab."),
+#       type = "warning", duration = 10
+#     )
+#     nd <- nd_before
+#   }
+#   
+#   nd
+# })
 
 # ---------- 安全条件判断辅助函数 ----------
 safe_if <- function(cond) {
@@ -193,80 +229,80 @@ match_norm_columns <- function(samples, nd_colnames, norm_prefix) {
   return(matched)
 }
 
-# ---------- 所有分析结果 ----------
-all_analysis_results <- reactive({
-  req(input$baseline_sample)
-  req(filtered_data(), rv$comparisons)
-  req(validate_inputs())
-  
-  fcu <- input$fc_up; fcd <- input$fc_down; pc <- as.numeric(input$p_cut)
-  stat_method <- input$stat_method
-  nd <- filtered_data()
-  
-  if (nrow(nd) == 0) {
-    showNotification("No proteins remain after filtering. Adjust unique peptide threshold or preprocessing.", type = "error", duration = 8)
-    return(list(raw = rv$raw_data, clean = rv$clean_data, norm = NULL, filtered = nd, unique_col = NULL, results = list()))
-  }
-  
-  unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
-  
-  norm_prefix <- get_norm_prefix()
-  norm_colnames <- colnames(nd)
-  
-  results <- list()
-  missing_comps <- c()
-  
-  sorted_comp <- sorted_comps()
-  for (comp in sorted_comp) {
-    treat_group <- comp$treat; ctrl_group <- comp$ctrl; comp_name <- comp$name
-    
-    if (!treat_group %in% names(rv$groups) || !ctrl_group %in% names(rv$groups)) {
-      missing_comps <- c(missing_comps, paste0(comp_name, " (group missing)"))
-      next
-    }
-    if (length(rv$groups[[treat_group]]) == 0 || length(rv$groups[[ctrl_group]]) == 0) {
-      missing_comps <- c(missing_comps, paste0(comp_name, " (group empty)"))
-      next
-    }
-    
-    treat_samples <- rv$groups[[treat_group]]
-    ctrl_samples <- rv$groups[[ctrl_group]]
-    treat_cols <- match_norm_columns(treat_samples, norm_colnames, norm_prefix)
-    ctrl_cols <- match_norm_columns(ctrl_samples, norm_colnames, norm_prefix)
-    
-    if (length(treat_cols) == 0 || length(ctrl_cols) == 0) {
-      missing_comps <- c(missing_comps, comp_name)
-      next
-    }
-    
-    select_cols <- c("Protein IDs", "Majority protein IDs", "Master protein IDs", all_of(unique_col), all_of(treat_cols), all_of(ctrl_cols))
-    s <- select(nd, any_of(select_cols))
-    
-    res <- tryCatch(
-      run_de_analysis(s, treat_cols, ctrl_cols, fcu, fcd, pc, stat_method),
-      error = function(e) {
-        showNotification(paste("Comparison", comp_name, "failed:", e$message), type = "error", duration = 8)
-        return(NULL)
-      }
-    )
-    if (!is.null(res)) {
-      results[[comp_name]] <- list(data = res, treat = treat_group, ctrl = ctrl_group, name = comp_name)
-    } else {
-      missing_comps <- c(missing_comps, paste0(comp_name, " (analysis error)"))
-    }
-  }
-  
-  if (length(missing_comps) > 0) {
-    showNotification(
-      paste("Some comparisons missing or failed:", paste(missing_comps, collapse = ", ")),
-      type = "warning", duration = 10, id = "missing_cols"
-    )
-  }
-  
-  list(raw = rv$raw_data, clean = rv$clean_data, norm = norm_data_full(), filtered = nd, unique_col = unique_col, results = results)
-})
+# ---------- 所有分析结果（暂时注释，因未在 UI 中展示）----------
+# all_analysis_results <- reactive({
+#   req(input$baseline_sample)
+#   req(filtered_data(), rv$comparisons)
+#   req(validate_inputs())
+#   
+#   fcu <- input$fc_up; fcd <- input$fc_down; pc <- as.numeric(input$p_cut)
+#   stat_method <- input$stat_method
+#   nd <- filtered_data()
+#   
+#   if (nrow(nd) == 0) {
+#     showNotification("No proteins remain after filtering. Adjust unique peptide threshold or preprocessing.", type = "error", duration = 8)
+#     return(list(raw = rv$raw_data, clean = rv$clean_data, norm = NULL, filtered = nd, unique_col = NULL, results = list()))
+#   }
+#   
+#   unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
+#   
+#   norm_prefix <- get_norm_prefix()
+#   norm_colnames <- colnames(nd)
+#   
+#   results <- list()
+#   missing_comps <- c()
+#   
+#   sorted_comp <- sorted_comps()
+#   for (comp in sorted_comp) {
+#     treat_group <- comp$treat; ctrl_group <- comp$ctrl; comp_name <- comp$name
+#     
+#     if (!treat_group %in% names(rv$groups) || !ctrl_group %in% names(rv$groups)) {
+#       missing_comps <- c(missing_comps, paste0(comp_name, " (group missing)"))
+#       next
+#     }
+#     if (length(rv$groups[[treat_group]]) == 0 || length(rv$groups[[ctrl_group]]) == 0) {
+#       missing_comps <- c(missing_comps, paste0(comp_name, " (group empty)"))
+#       next
+#     }
+#     
+#     treat_samples <- rv$groups[[treat_group]]
+#     ctrl_samples <- rv$groups[[ctrl_group]]
+#     treat_cols <- match_norm_columns(treat_samples, norm_colnames, norm_prefix)
+#     ctrl_cols <- match_norm_columns(ctrl_samples, norm_colnames, norm_prefix)
+#     
+#     if (length(treat_cols) == 0 || length(ctrl_cols) == 0) {
+#       missing_comps <- c(missing_comps, comp_name)
+#       next
+#     }
+#     
+#     select_cols <- c("Protein IDs", "Majority protein IDs", "Master protein IDs", all_of(unique_col), all_of(treat_cols), all_of(ctrl_cols))
+#     s <- select(nd, any_of(select_cols))
+#     
+#     res <- tryCatch(
+#       run_de_analysis(s, treat_cols, ctrl_cols, fcu, fcd, pc, stat_method),
+#       error = function(e) {
+#         showNotification(paste("Comparison", comp_name, "failed:", e$message), type = "error", duration = 8)
+#         return(NULL)
+#       }
+#     )
+#     if (!is.null(res)) {
+#       results[[comp_name]] <- list(data = res, treat = treat_group, ctrl = ctrl_group, name = comp_name)
+#     } else {
+#       missing_comps <- c(missing_comps, paste0(comp_name, " (analysis error)"))
+#     }
+#   }
+#   
+#   if (length(missing_comps) > 0) {
+#     showNotification(
+#       paste("Some comparisons missing or failed:", paste(missing_comps, collapse = ", ")),
+#       type = "warning", duration = 10, id = "missing_cols"
+#     )
+#   }
+#   
+#   list(raw = rv$raw_data, clean = rv$clean_data, norm = norm_data_full(), filtered = nd, unique_col = unique_col, results = results)
+# })
 
-# ---------- 更新热图分组选择（原本还有 selected_comparison，已移除） ----------
+# ---------- 更新热图分组选择（保留，供热图 LFQ 模式使用）----------
 observe({
   group_names <- names(rv$groups)
   if (length(group_names) > 0) {
