@@ -1,7 +1,15 @@
 # server/heatmap_plot.R
+# ============================================================
+# 热图数据准备与绘制模块
+# 依赖：expression_data / processed_data (来自 data_upload / preprocessing)
+# 关键假设：rv$lfq_cols 的顺序与 expression_data() 的列顺序完全一致，
+#          因此 all_samples <- rv$sample_names 的顺序也与数据列对应。
+#          这种设计确保了通过逻辑向量筛选时不会错位。
+# ============================================================
 
 # ---------- 辅助：提取原始强度矩阵并进行 log2 和 Z-score ----------
 prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL) {
+  message("[DEBUG] prepare_expr_matrix: starting with samples=", length(samples), ", all_cols=", length(all_cols))
   expr_matrix <- data.matrix(data_src[, all_cols, drop = FALSE])
   rownames(expr_matrix) <- rownames(data_src)
   colnames(expr_matrix) <- samples
@@ -55,6 +63,7 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
   colnames(expr_z) <- colnames(log_expr)
   expr_z[!is.finite(expr_z)] <- 0
   
+  message("[DEBUG] prepare_expr_matrix: final matrix dimensions=", nrow(expr_z), "x", ncol(expr_z))
   list(mat = expr_z, has_na = has_na, na_rows_removed = na_rows_removed)
 }
 
@@ -123,8 +132,9 @@ output$heatmap_group_selection_ui <- renderUI({
                      choices = group_names, selected = group_names, inline = TRUE)
 })
 
-# ---------- 热图数据（修正判断条件） ----------
+# ---------- 核心热图数据准备 ----------
 heatmap_data <- eventReactive(input$generate_heatmap, {
+  message("[DEBUG] heatmap_data triggered")
   result <- list(error = NULL, mat = NULL, has_na = FALSE, na_rows_removed = 0)
   
   if (is.null(rv$raw_data)) {
@@ -138,8 +148,18 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     return(result)
   }
   
+  # ----- 关键：all_lfq_cols 与 all_samples 顺序严格对应 data_src 的列顺序 -----
+  # data_src 来自 expression_data() 或 processed_data()，其列名是 rv$lfq_cols（例如 "LFQ intensity L2.1.1"）。
+  # rv$sample_names 是通过 extract_sample_names(rv$lfq_cols) 得到的简化名，顺序相同。
+  # 因此 all_samples[i] 对应 all_lfq_cols[i]，对应 data_src 的第 i 列。
+  # 下面的逻辑通过 all_samples %in% selected_samples 生成逻辑向量 keep，
+  # 再用 which(keep) 选取列位置，可以安全地引用 data_src[, col_positions]。
+  # 这一依赖关系确保了热图样本列匹配的正确性，任何对 rv$lfq_cols 顺序的修改需同步更新 rv$sample_names。
   all_lfq_cols <- rv$lfq_cols
   all_samples  <- rv$sample_names
+  
+  message("[DEBUG] heatmap_data: all_samples length=", length(all_samples),
+          ", first 3 samples: ", paste(head(all_samples, 3), collapse = ", "))
   
   if (length(all_lfq_cols) == 0) {
     result$error <- "No intensity columns found. Please check your Data Upload settings."
@@ -149,7 +169,7 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   mode <- input$heatmap_protein_mode
   if (is.null(mode)) mode <- "top_n"
   
-  # 修正：LFQ 或 Intensity
+  # LFQ 模式：使用预定义分组
   if (input$heatmap_data_source == "LFQ") {
     if (is.null(input$heatmap_groups) || length(input$heatmap_groups) == 0) {
       result$error <- "Please select at least one group."
@@ -162,6 +182,8 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       return(result)
     }
     keep <- all_samples %in% selected_samples
+    message("[DEBUG] heatmap_data LFQ: selected_samples count=", length(selected_samples),
+            ", matched samples=", sum(keep))
     if (!any(keep)) {
       result$error <- "None of the selected group samples match the columns in the data."
       return(result)
@@ -171,7 +193,7 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     all_cols <- colnames(data_src)[col_positions]
     group_vec <- rep("Unassigned", length(samples))
     for (g in groups_sel) group_vec[samples %in% rv$groups[[g]]] <- g
-  } else {   # "Intensity"
+  } else {   # "Intensity" 模式：使用原始分组或全部样本
     if (mode == "custom") {
       selected_samples <- all_samples
     } else {
@@ -192,6 +214,8 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       }
     }
     keep <- all_samples %in% selected_samples
+    message("[DEBUG] heatmap_data Intensity: selected_samples count=", length(selected_samples),
+            ", matched samples=", sum(keep))
     if (!any(keep)) {
       result$error <- "None of the selected samples match the columns."
       return(result)
@@ -206,6 +230,11 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       group_vec[is.na(group_vec)] <- "Other"
     }
   }
+  
+  message("[DEBUG] heatmap_data: final samples count=", length(samples),
+          ", first 3 samples: ", paste(head(samples, 3), collapse = ", "))
+  message("[DEBUG] heatmap_data: all_cols count=", length(all_cols),
+          ", first 3 all_cols: ", paste(head(all_cols, 3), collapse = ", "))
   
   protein_ids <- NULL
   top_n <- NULL
