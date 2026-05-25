@@ -79,7 +79,7 @@ upload_ui <- function() {
       tabPanel(
         title = "Data Quality Analysis",
         div(style = "padding: 10px;",
-            # ========== 顶部总评分卡片 + 扣分点 ==========
+            # ========== 顶部总评分卡片 ==========
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px;",
                 fluidRow(
                   column(4, align = "center",
@@ -129,7 +129,7 @@ upload_ui <- function() {
                 h4(icon("search"), " Key Findings", style = "color: #2c3e50; margin-bottom: 15px;"),
                 uiOutput("dq_key_findings")
             ),
-            # ========== 预处理引导按钮（文案优化） ==========
+            # ========== 预处理引导按钮 ==========
             div(style = "margin-bottom: 30px; text-align: center;",
                 actionButton("goto_preprocessing", "立即进入数据预处理 →", 
                              icon = icon("arrow-right"), 
@@ -175,6 +175,7 @@ upload_ui <- function() {
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                     div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                         downloadButton("download_missing_heatmap", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                        downloadButton("download_missing_matrix", "Matrix", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download missing matrix CSV (0/1)"),
                         actionButton("help_missing_heatmap", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                     ),
                     plotOutput("dq_missing_heatmap", height = "400px"),
@@ -189,6 +190,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_valid_bar", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_sample_missing_stats", "Stats", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download sample missing statistics CSV"),
                                  actionButton("help_valid_bar", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_valid_values_plot", height = "300px"),
@@ -203,6 +205,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_missing_cor", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_missing_cor_matrix", "CSV", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download missing pattern correlation matrix CSV"),
                                  actionButton("help_missing_cor", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_missing_cor_plot", height = "300px"),
@@ -220,6 +223,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_intensity", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_intensity_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download intensity data (multi-sheet Excel)"),
                                  actionButton("help_intensity", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_intensity_dist_plot", height = "400px"),
@@ -234,6 +238,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_cor_heatmap", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_cor_matrix", "CSV", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download correlation matrix CSV"),
                                  actionButton("help_cor_heatmap", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_cor_heatmap", height = "500px"),
@@ -244,7 +249,7 @@ upload_ui <- function() {
               )
             ),
             hr(),
-            # ========== PCA 分析（双维度，标题精简） ==========
+            # ========== PCA 分析（双维度） ==========
             h4(icon("project-diagram"), " PCA Analysis (Dual-view)"),
             fluidRow(
               column(6,
@@ -253,6 +258,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_pca_group", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_pca_group_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download PCA Group data (multi-sheet Excel)"),
                                  actionButton("help_pca_group", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_pca_group_plot", height = "450px"),
@@ -267,6 +273,7 @@ upload_ui <- function() {
                          div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
                              div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
                                  downloadButton("download_pca_batch", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
+                                 downloadButton("download_pca_batch_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download PCA Batch data (multi-sheet Excel)"),
                                  actionButton("help_pca_batch", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
                              ),
                              plotOutput("dq_pca_batch_plot", height = "450px"),
