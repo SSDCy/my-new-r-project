@@ -37,8 +37,6 @@ get_group_colors <- function(groups) {
 }
 
 # ================== 数据质量分析辅助函数 ==================
-# 权重：Missing 30 + Consistency 40 + Protein Quality 30 = 100
-# 评级统一标准：≥90 Excellent, ≥80 Good, ≥60 Fair, <60 Poor
 calculate_data_quality_score <- function(expr_matrix) {
   if (is.null(expr_matrix) || nrow(expr_matrix) == 0 || ncol(expr_matrix) == 0) {
     return(list(score = 0, grade = "Poor", details = list()))
@@ -47,22 +45,19 @@ calculate_data_quality_score <- function(expr_matrix) {
   total_values <- nrow(expr_matrix) * ncol(expr_matrix)
   missing_values <- sum(is.na(expr_matrix))
   missing_ratio <- missing_values / total_values
-  missing_score <- max(0, 30 * (1 - missing_ratio * 2))   # 0~30分
+  missing_score <- max(0, 30 * (1 - missing_ratio * 2))
   
-  # 样本一致性基于平均相关性，权重40分
   sample_cor <- cor(expr_matrix, use = "pairwise.complete.obs")
   diag(sample_cor) <- NA
   avg_cor <- mean(sample_cor, na.rm = TRUE)
-  consistency_score <- max(0, 40 * pmin(1, avg_cor / 0.8))   # 0~40分
+  consistency_score <- max(0, 40 * pmin(1, avg_cor / 0.8))
   
-  # 蛋白有效检出率：至少2个样本中检出，权重30分
   protein_valid <- rowSums(!is.na(expr_matrix)) >= 2
   protein_valid_ratio <- mean(protein_valid)
-  protein_score <- max(0, 30 * protein_valid_ratio)   # 0~30分
+  protein_score <- max(0, 30 * protein_valid_ratio)
   
   total_score <- round(missing_score + consistency_score + protein_score, 1)
   
-  # 统一评级：Excellent, Good, Fair, Poor
   grade <- if (total_score >= 90) "Excellent"
   else if (total_score >= 80) "Good"
   else if (total_score >= 60) "Fair"
@@ -80,14 +75,12 @@ calculate_data_quality_score <- function(expr_matrix) {
   list(score = total_score, grade = grade, details = details)
 }
 
-# ================== 优化后的关键发现报告生成函数 ==================
 generate_quality_report <- function(quality_score, expr_matrix, sample_info = NULL) {
   details <- quality_score$details
   key_findings <- list()
   recommendations <- list()
   special_note <- ""
   
-  # ---- 缺失率发现 ----
   if (details$missing_ratio < 10) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -114,7 +107,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---- 样本一致性发现 ----
   if (details$avg_correlation > 0.9) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -141,7 +133,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---- 蛋白有效检出率 ----
   if (details$protein_valid_ratio > 80) {
     key_findings <- c(key_findings, list(list(
       type = "success",
@@ -162,7 +153,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---- PCA 分析（批次效应、异常样本、分组效果）----
   pca_result <- calculate_pca(expr_matrix, sample_info)
   pca_df <- if (!is.null(pca_result)) pca_result$pca_df else NULL
   
@@ -245,7 +235,6 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
-  # ---- 操作建议 ----
   if (details$missing_ratio > 20) {
     recommendations <- c(recommendations, list(list(
       title = "缺失值处理",
@@ -538,16 +527,14 @@ output$sample_match_hint <- renderUI({
       icon("info-circle"), " Green highlighted samples are matched with the uploaded sample info. Samples without fill color are not matched.")
 })
 
-# ==================== 修复：避免 DataTables 列缓存错误 ====================
+# ==================== 修复：移除 server = FALSE ====================
 output$upload_preview <- DT::renderDataTable({
   message("[DEBUG] upload_preview: rv$lfq_cols length = ", length(rv$lfq_cols))
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
   DT::datatable(df,
                 options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE,
-                # 强制客户端模式，避免列名缓存问题
-                server = FALSE)
+                rownames = FALSE)
 })
 
 output$sample_info_preview <- DT::renderDataTable({
@@ -557,8 +544,7 @@ output$sample_info_preview <- DT::renderDataTable({
   df_display <- data.frame(SampleName = rownames(df), df, check.names = FALSE, stringsAsFactors = FALSE)
   DT::datatable(df_display,
                 options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE,
-                server = FALSE)
+                rownames = FALSE)
 })
 
 output$data_summary_ui <- renderUI({
@@ -761,7 +747,7 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ==================== 核心：expression_data 反应式（唯一入口） ====================
+# ==================== 核心：expression_data 反应式 ====================
 expression_data <- reactive({
   message("[DEBUG] expression_data triggered from server/data_upload.R")
   req(rv$clean_data)
@@ -786,7 +772,6 @@ expression_data <- reactive({
   df
 })
 
-# 数据质量专用矩阵（使用简短样本名）
 dq_expr_matrix <- reactive({
   message("[DEBUG] dq_expr_matrix triggered")
   req(rv$clean_data, rv$lfq_cols)
