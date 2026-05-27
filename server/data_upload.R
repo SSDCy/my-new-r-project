@@ -1,5 +1,4 @@
 # server/data_upload.R
-
 # ================== 全局辅助函数 ==================
 extract_sample_names <- function(cols) {
   short <- sub("^(LFQ intensity |Intensity )", "", cols, ignore.case = TRUE)
@@ -327,6 +326,7 @@ calculate_missing_stats <- function(expr_matrix) {
        total_missing_ratio = round(mean(is.na(expr_matrix)) * 100, 2))
 }
 
+# 修改后的样本相关性计算：不再将 NA 替换为 0
 calculate_sample_correlation <- function(expr_matrix) {
   if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) return(NULL)
   log_expr <- log2(expr_matrix + 1)
@@ -336,37 +336,75 @@ calculate_sample_correlation <- function(expr_matrix) {
   log_expr <- log_expr[top_var, , drop = FALSE]
   if (nrow(log_expr) < 2) return(NULL)
   cor_matrix <- cor(log_expr, use = "pairwise.complete.obs")
-  cor_matrix[is.na(cor_matrix)] <- 0
+  # 保留 NA，不在热图中用 0 替代，而是用灰色表示
+  # cor_matrix[is.na(cor_matrix)] <- 0  # 删除此行
   return(cor_matrix)
 }
 
+# 修复后的 PCA 计算（缺失值用 KNN 填充，失败回退极小值）
 calculate_pca <- function(expr_matrix, sample_info = NULL) {
   if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) return(NULL)
-  log_expr <- log2(expr_matrix + 1)
-  log_expr[is.na(log_expr)] <- 0
+  message("[DEBUG] calculate_pca: starting PCA with dim = ", nrow(expr_matrix), " x ", ncol(expr_matrix))
+  
+  filled <- tryCatch({
+    if (requireNamespace("impute", quietly = TRUE)) {
+      message("[DEBUG] calculate_pca: impute package found, using KNN imputation")
+      impute_missing_values(expr_matrix, method = "knn")
+    } else {
+      message("[DEBUG] calculate_pca: impute package not available, falling back to min fill")
+      expr_matrix[is.na(expr_matrix)] <- 1e-4
+      expr_matrix
+    }
+  }, error = function(e) {
+    message("[DEBUG] calculate_pca: imputation error - ", e$message, "; using min fill")
+    expr_matrix[is.na(expr_matrix)] <- 1e-4
+    expr_matrix
+  })
+  
+  log_expr <- log2(filled + 1)
+  message("[DEBUG] calculate_pca: log2 transformation done, missing in log: ", sum(is.na(log_expr)))
+  
   row_vars <- apply(log_expr, 1, var)
-  n_keep <- min(500, nrow(log_expr))
-  top_var <- order(row_vars, decreasing = TRUE)[1:n_keep]
-  log_expr <- log_expr[top_var, , drop = FALSE]
+  log_expr <- log_expr[row_vars > 1e-6, ]
+  
   row_unique <- apply(log_expr, 1, function(x) length(unique(x)))
-  log_expr <- log_expr[row_unique > 1, , drop = FALSE]
-  if (nrow(log_expr) < 2) return(NULL)
+  log_expr <- log_expr[row_unique > 1, ]
+  
+  if (nrow(log_expr) < 2) {
+    message("[DEBUG] calculate_pca: not enough variable rows for PCA")
+    return(NULL)
+  }
+  
   tryCatch({
     pca_result <- prcomp(t(log_expr), scale. = TRUE)
     var_explained <- round(pca_result$sdev^2 / sum(pca_result$sdev^2) * 100, 1)
     pca_df <- as.data.frame(pca_result$x[, 1:2])
     pca_df$Sample <- rownames(pca_df)
+    
     if (!is.null(sample_info) && "Group" %in% colnames(sample_info)) {
       sample_info_short <- sample_info
       rownames(sample_info_short) <- gsub("^(LFQ intensity |Intensity )", "", rownames(sample_info_short))
       common_samples <- intersect(pca_df$Sample, rownames(sample_info_short))
-      if (length(common_samples) > 0) pca_df$Group <- sample_info_short[common_samples, "Group"]
-      else pca_df$Group <- "All"
+      if (length(common_samples) > 0) {
+        pca_df$Group <- sample_info_short[common_samples, "Group"]
+      } else {
+        pca_df$Group <- "All"
+      }
     } else {
       pca_df$Group <- "All"
     }
-    list(pca_df = pca_df, var_explained = var_explained, pc1_var = var_explained[1], pc2_var = var_explained[2])
-  }, error = function(e) NULL)
+    
+    message("[DEBUG] calculate_pca: PCA successful, variance explained = ", var_explained[1], "%, ", var_explained[2], "%")
+    list(
+      pca_df = pca_df,
+      var_explained = var_explained,
+      pc1_var = var_explained[1],
+      pc2_var = var_explained[2]
+    )
+  }, error = function(e) {
+    message("[DEBUG] calculate_pca: prcomp failed - ", e$message)
+    NULL
+  })
 }
 
 render_key_finding <- function(finding) {

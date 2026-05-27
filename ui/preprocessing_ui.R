@@ -21,6 +21,10 @@ preprocessing_ui <- function() {
                 h4("Preprocessing Steps (in order)", style = "margin-top: 0; color: #337ab7; font-weight: bold;"),
                 hr(),
                 h4("1. Missing Value Filter", style = "color: #337ab7;"),
+                selectInput("missing_filter_mode", "Filter Mode",
+                            choices = c("Global (all samples)" = "global",
+                                        "Within Groups" = "group"),
+                            selected = "global"),
                 sliderInput("max_missing_fraction", "Max allowed missing fraction (0-1)",
                             min = 0, max = 1, value = 0.5, step = 0.05, ticks = TRUE),
                 div(style = "margin-bottom: 10px;",
@@ -29,11 +33,15 @@ preprocessing_ui <- function() {
                     actionButton("preset_missing_0.7", "0.7", class = "btn-xs btn-outline-secondary")
                 ),
                 verbatimTextOutput("missing_filter_effect", placeholder = TRUE),
-                helpText("Proteins with missing value proportion > this threshold will be removed. Proteins with missing value ≤ this threshold will be retained. Set to 1 to keep all proteins; set to 0 to only keep proteins with 0 missing values."),
+                helpText("Proteins with missing value proportion > this threshold will be removed. In 'Within Groups' mode, a protein is retained if at least one group has missing rate ≤ threshold."),
                 hr(),
                 h4("2. Minimum Intensity Filter", style = "color: #337ab7;"),
                 numericInput("min_intensity", "Minimum intensity threshold",
                              value = 1e5, step = 1e4, min = 0),
+                # 新增：至少 N 个样本高于阈值
+                numericInput("min_samples_above_intensity", "At least N samples above threshold",
+                             value = 1, min = 1, max = 100, step = 1),
+                helpText("A protein is retained if at least this many samples have intensity above the minimum intensity threshold. Set to 1 for original behavior (max value)."),
                 plotOutput("intensity_dist_plot", height = "250px"),
                 verbatimTextOutput("intensity_filter_effect", placeholder = TRUE),
                 helpText("Set to 0 to skip this filter. Recommended range: 1,000–10,000 to remove low-intensity background noise while preserving valid signals. Use the distribution plot above to identify a suitable cutoff."),
@@ -46,10 +54,11 @@ preprocessing_ui <- function() {
                             selected = "knn"),
                 conditionalPanel(
                   condition = "input.imputation_method == 'knn'",
+                  numericInput("knn_k", "KNN: number of neighbors (k)", value = 10, min = 1, max = 50, step = 1),
                   helpText(style = "color: orange; font-weight: bold;",
                            "Note: KNN imputation requires the 'impute' package.\n",
                            "Please run: BiocManager::install('impute') if not installed.\n",
-                           "Default parameters: k = 10.")
+                           "Default k = 10. Adjust based on sample size (e.g., 3-5 for small datasets).")
                 ),
                 conditionalPanel(
                   condition = "input.imputation_method == 'ppca'",
