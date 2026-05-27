@@ -1,5 +1,4 @@
 # server/data_quality_plots.R
-
 message("[DEBUG] data_quality_plots.R loaded - removed download_missing_cor_stats export")
 
 # ==================== 辅助函数 ====================
@@ -349,7 +348,7 @@ dq_missing_cor_plot_obj <- reactive({
   
   missing_sub <- missing_mat[, common_s, drop = FALSE]
   cor_mat <- cor(missing_sub, use = "pairwise.complete.obs")
-  cor_mat[is.na(cor_mat)] <- 0
+  cor_mat[is.na(cor_mat)] <- 0  # 缺失值相关性热图保留 0 替代 NA（用户已接受）
   
   n_samp <- ncol(cor_mat)
   
@@ -512,11 +511,18 @@ observeEvent(input$help_intensity, {
   showModal(modalDialog(title = "Protein Intensity Distribution", "箱线图展示每个样本中蛋白强度的分布（log2 转换）。", easyClose = TRUE, footer = modalButton("关闭")))
 })
 
-# ==================== 样本相关性热图 ====================
+# ==================== 样本相关性热图（修复图例刻度，添加详细调试） ====================
 dq_cor_heatmap_plot_obj <- reactive({
   req(dq_expr_matrix())
+  message("[DEBUG] dq_cor_heatmap_plot_obj: computing sample correlation")
   cor_mat <- calculate_sample_correlation(dq_expr_matrix())
-  if (is.null(cor_mat)) return(NULL)
+  if (is.null(cor_mat)) {
+    message("[DEBUG] dq_cor_heatmap_plot_obj: correlation matrix is NULL")
+    return(NULL)
+  }
+  
+  message("[DEBUG] dq_cor_heatmap_plot_obj: cor matrix dim = ", nrow(cor_mat), "x", ncol(cor_mat))
+  message("[DEBUG] dq_cor_heatmap_plot_obj: NA count in cor_mat = ", sum(is.na(cor_mat)))
   
   ann_col <- NULL
   ann_colors <- NULL
@@ -526,13 +532,18 @@ dq_cor_heatmap_plot_obj <- reactive({
     sample_info_short <- rv$sample_info
     rownames(sample_info_short) <- extract_sample_names(rownames(sample_info_short))
     common_samples <- intersect(colnames(cor_mat), rownames(sample_info_short))
+    message("[DEBUG] dq_cor_heatmap_plot_obj: common samples with group info = ", length(common_samples))
     if (length(common_samples) > 0) {
       group_vec <- sample_info_short[common_samples, "Group"]
       ann_col <- data.frame(Group = group_vec, row.names = common_samples)
       
       if (ncol(cor_mat) >= 3) {
-        dist_col <- dist(t(cor_mat[common_samples, common_samples]))
-        hc_col <- hclust(dist_col, method = "ward.D2")
+        cor_sub <- cor_mat[common_samples, common_samples, drop = FALSE]
+        # 为聚类创建无 NA 的副本
+        cor_sub_clean <- cor_sub
+        cor_sub_clean[is.na(cor_sub_clean)] <- 0
+        cor_dist <- as.dist(1 - cor_sub_clean)
+        hc_col <- hclust(cor_dist, method = "ward.D2")
         k <- 2
         if (length(common_samples) >= 6) k <- 3
         subcluster <- cutree(hc_col, k = k)
@@ -540,6 +551,7 @@ dq_cor_heatmap_plot_obj <- reactive({
         subcluster_label <- paste0("SubClust", subcluster)
         ann_col$Subcluster <- factor(subcluster_label, levels = unique(subcluster_label))
         subcluster_info <- subcluster
+        message("[DEBUG] dq_cor_heatmap_plot_obj: subclusters created, k = ", k)
       }
       
       groups <- unique(group_vec)
@@ -552,32 +564,57 @@ dq_cor_heatmap_plot_obj <- reactive({
         ann_colors$Subcluster <- sub_colors
       }
       
-      cor_mat <- cor_mat[common_samples, common_samples]
+      cor_mat <- cor_mat[common_samples, common_samples, drop = FALSE]
     }
   }
   
+  # 计算实际数据的 min/max，忽略 NA
   min_cor <- min(cor_mat, na.rm = TRUE)
   max_cor <- max(cor_mat, na.rm = TRUE)
+  message("[DEBUG] dq_cor_heatmap_plot_obj: cor range (actual): [", min_cor, ", ", max_cor, "]")
+  
+  # 若范围过小，稍微扩展防止 breaks 出错
   if (abs(max_cor - min_cor) < 1e-6) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
   
+  # 生成初步的图例刻度（pretty 可能超出数据范围，我们将裁剪）
   n_ticks <- 7
-  legend_breaks <- pretty(c(min_cor, max_cor), n = n_ticks)
-  legend_breaks <- legend_breaks[legend_breaks >= min_cor & legend_breaks <= max_cor]
-  if (length(legend_breaks) < 2) legend_breaks <- seq(min_cor, max_cor, length.out = 5)
+  raw_breaks <- pretty(c(min_cor, max_cor), n = n_ticks)
+  message("[DEBUG] dq_cor_heatmap_plot_obj: raw_breaks from pretty: ", paste(raw_breaks, collapse = ", "))
+  
+  # 裁剪到数据实际范围
+  legend_breaks <- raw_breaks[raw_breaks >= min_cor & raw_breaks <= max_cor]
+  # 如果裁剪后太少，则强制使用实际 min 和 max 构成的线性序列
+  if (length(legend_breaks) < 2) {
+    legend_breaks <- seq(min_cor, max_cor, length.out = 5)
+  }
   legend_labels <- sprintf("%.2f", legend_breaks)
+  message("[DEBUG] dq_cor_heatmap_plot_obj: final legend_breaks: ", paste(legend_breaks, collapse = ", "))
+  
+  # 颜色映射 breaks 基于实际范围
+  color_breaks <- seq(min_cor, max_cor, length.out = 101)
+  
+  # 聚类距离矩阵（基于 1 - cor，NA 暂时用 0 替换以避免 dist 报错）
+  cor_dist_mat <- cor_mat
+  cor_dist_mat[is.na(cor_dist_mat)] <- 0
+  cor_dist <- as.dist(1 - cor_dist_mat)
+  message("[DEBUG] dq_cor_heatmap_plot_obj: clustering distance based on 1 - cor (NAs temporarily replaced by 0)")
   
   main_title <- "样本相关性热图（基于 top 500 高变异蛋白的 log2 强度 Pearson 相关）"
   
   pheatmap::pheatmap(cor_mat,
                      main = main_title,
                      color = colorRampPalette(c("blue", "white", "red"))(100),
-                     breaks = seq(min_cor, max_cor, length.out = 101),
+                     breaks = color_breaks,
                      legend_breaks = legend_breaks,
                      legend_labels = legend_labels,
+                     clustering_distance_rows = cor_dist,
+                     clustering_distance_cols = cor_dist,
+                     clustering_method = "ward.D2",
                      show_rownames = TRUE, show_colnames = TRUE,
                      fontsize_row = 9, fontsize_col = 9,
                      angle_col = 45,
                      annotation_col = ann_col, annotation_colors = ann_colors,
+                     na_col = "grey",   # NA 显示为灰色
                      silent = TRUE)
 })
 
@@ -637,8 +674,10 @@ output$download_cor_matrix <- downloadHandler(
         )
         
         if (ncol(cor_sub) >= 3) {
-          dist_col <- dist(t(cor_sub))
-          hc_col <- hclust(dist_col, method = "ward.D2")
+          cor_sub_clean <- cor_sub
+          cor_sub_clean[is.na(cor_sub_clean)] <- 0
+          cor_dist <- as.dist(1 - cor_sub_clean)
+          hc_col <- hclust(cor_dist, method = "ward.D2")
           k <- 2
           if (length(common_samples) >= 6) k <- 3
           subcluster <- cutree(hc_col, k = k)
@@ -685,7 +724,7 @@ output$download_cor_matrix <- downloadHandler(
       "工作簿说明：",
       "1. 相关性矩阵：基于 top 500 高变异蛋白的 log2 强度计算 Pearson 相关系数，范围为 -1 到 1。",
       "2. 分组相关统计：根据样本信息中 Group 列划分的组内和组间平均相关系数。",
-      "3. 亚簇相关统计：通过列聚类树自动识别的亚簇内和亚簇间平均相关系数。"
+      "3. 亚簇相关统计：通过列聚类树自动识别的亚簇内和亚簇间平均相关系数，聚类距离为 1 - 相关系数。"
     )
     openxlsx::addWorksheet(wb, "说明")
     openxlsx::writeData(wb, "说明", data.frame(说明 = readme_text, stringsAsFactors = FALSE))
@@ -695,27 +734,55 @@ output$download_cor_matrix <- downloadHandler(
 )
 
 observeEvent(input$help_cor_heatmap, {
-  showModal(modalDialog(title = "样本相关性热图", "基于高变异蛋白计算的样本间 Pearson 相关性。热图顶部注释条包括分组和自动识别的亚簇。", easyClose = TRUE, footer = modalButton("关闭")))
+  showModal(modalDialog(title = "样本相关性热图", "基于高变异蛋白计算的样本间 Pearson 相关性。热图顶部注释条包括分组和自动识别的亚簇。聚类基于 1 - 相关系数距离。", easyClose = TRUE, footer = modalButton("关闭")))
 })
 
-# ==================== PCA ====================
+# ==================== 修复后的 PCA（缺失值用 KNN 填充，移除错误过滤） ====================
 dq_pca_full <- reactive({
   req(dq_expr_matrix())
+  message("[DEBUG] dq_pca_full: starting PCA computation")
   expr <- dq_expr_matrix()
-  log_expr <- log2(expr + 1)
-  log_expr[is.na(log_expr)] <- 0
+  
+  filled <- tryCatch({
+    if (requireNamespace("impute", quietly = TRUE)) {
+      message("[DEBUG] dq_pca_full: impute package available, running KNN imputation")
+      impute_missing_values(expr, method = "knn")
+    } else {
+      message("[DEBUG] dq_pca_full: impute not installed, using minimal value fill")
+      expr[is.na(expr)] <- 1e-4
+      expr
+    }
+  }, error = function(e) {
+    message("[DEBUG] dq_pca_full: KNN imputation failed: ", e$message, "; fallback to min fill")
+    expr[is.na(expr)] <- 1e-4
+    expr
+  })
+  
+  log_expr <- log2(filled + 1)
+  message("[DEBUG] dq_pca_full: log2 transformed, checking remaining NAs: ", sum(is.na(log_expr)))
+  
   row_vars <- apply(log_expr, 1, var)
-  n_keep <- min(500, nrow(log_expr))
-  top_var <- order(row_vars, decreasing = TRUE)[1:n_keep]
-  log_expr <- log_expr[top_var, , drop = FALSE]
+  log_expr <- log_expr[row_vars > 1e-12, , drop = FALSE]
   row_unique <- apply(log_expr, 1, function(x) length(unique(x)))
   log_expr <- log_expr[row_unique > 1, , drop = FALSE]
-  if (nrow(log_expr) < 2) return(NULL)
-  pca <- tryCatch(prcomp(t(log_expr), scale. = TRUE), error = function(e) NULL)
+  
+  if (nrow(log_expr) < 2) {
+    message("[DEBUG] dq_pca_full: insufficient variable rows for PCA")
+    return(NULL)
+  }
+  
+  pca <- tryCatch(prcomp(t(log_expr), scale. = TRUE), error = function(e) {
+    message("[DEBUG] dq_pca_full: prcomp error - ", e$message)
+    NULL
+  })
   if (is.null(pca)) return(NULL)
+  
   variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
+  message("[DEBUG] dq_pca_full: PCA computed, PC1 var = ", variance[1], "%, PC2 = ", variance[2], "%")
+  
   scores <- as.data.frame(pca$x[, 1:2])
   scores$Sample <- rownames(scores)
+  
   if (!is.null(rv$sample_info)) {
     si_short <- rv$sample_info
     rownames(si_short) <- extract_sample_names(rownames(si_short))
@@ -729,16 +796,23 @@ dq_pca_full <- reactive({
   } else {
     scores$Group <- "All"; scores$Batch <- NA
   }
+  
   outliers <- get_outlier_samples(list(pca_df = scores, pc1_var = variance[1], pc2_var = variance[2]))
   scores$Outlier <- ifelse(scores$Sample %in% outliers, "Outlier", "Normal")
+  
   list(pca = pca, scores = scores, variance = variance, loadings = pca$rotation)
 })
 
 pca_group_plot_obj <- reactive({
   pca_full <- dq_pca_full()
-  if (is.null(pca_full)) return(NULL)
+  if (is.null(pca_full)) {
+    message("[DEBUG] pca_group_plot_obj: no PCA data")
+    return(NULL)
+  }
   scores <- pca_full$scores
-  scores <- scores[!is.na(scores$Group) & scores$Group != "a", ]
+  scores <- scores[!is.na(scores$Group), ]
+  message("[DEBUG] pca_group_plot_obj: number of samples with valid group: ", nrow(scores))
+  
   group_colors <- c("Control" = "#FF69B4", "Treatment" = "#00CED1")
   all_groups <- unique(scores$Group)
   missing_colors <- setdiff(all_groups, names(group_colors))
@@ -793,7 +867,7 @@ pca_batch_plot_obj <- reactive({
   if (is.null(pca_full)) return(NULL)
   scores <- pca_full$scores
   if (all(is.na(scores$Batch))) return(NULL)
-  scores <- scores[!is.na(scores$Batch) & scores$Batch != "a", ]
+  scores <- scores[!is.na(scores$Batch), ]
   batch_colors <- c("Batch1" = "#E41A1C", "Batch2" = "#00CED1")
   all_batches <- unique(scores$Batch)
   if (length(all_batches) > 2) batch_colors <- setNames(rainbow(length(all_batches)), all_batches)
