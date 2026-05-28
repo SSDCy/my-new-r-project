@@ -1,5 +1,13 @@
 # server/data_quality_plots.R
-message("[DEBUG] data_quality_plots.R loaded - removed download_missing_cor_stats export")
+message("[DEBUG] data_quality_plots.R loaded - optimized user-friendly messages")
+
+# 辅助：安全的 validate，只在条件不满足时传入消息
+`%then%` <- function(a, b) { if (a) b else TRUE }
+validate_condition <- function(condition, message) {
+  if (!condition) {
+    validate(message)
+  }
+}
 
 # ==================== 辅助函数 ====================
 get_outlier_samples <- function(pca_result, z_threshold = 3) {
@@ -13,24 +21,24 @@ get_outlier_samples <- function(pca_result, z_threshold = 3) {
 
 # ==================== 数据质量评分 ====================
 output$dq_score <- renderText({
-  req(dq_expr_matrix())
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   tryCatch(dq_quality_score()$score, error = function(e) paste("Error:", e$message))
 })
 
 output$dq_missing_rate <- renderText({
-  req(dq_expr_matrix())
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   tryCatch(paste0(dq_quality_score()$details$missing_ratio, "%"), error = function(e) paste("Error:", e$message))
 })
 output$dq_missing_score_frac <- renderText({
-  req(dq_expr_matrix())
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   tryCatch(paste0(dq_quality_score()$details$missing_score, " / 30"), error = function(e) paste("Error:", e$message))
 })
 output$dq_consistency_score_frac <- renderText({
-  req(dq_expr_matrix())
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   tryCatch(paste0(dq_quality_score()$details$consistency_score, " / 40"), error = function(e) paste("Error:", e$message))
 })
 output$dq_protein_score_frac <- renderText({
-  req(dq_expr_matrix())
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   tryCatch(paste0(dq_quality_score()$details$protein_score, " / 30"), error = function(e) paste("Error:", e$message))
 })
 
@@ -164,6 +172,7 @@ dq_missing_heatmap_plot_obj <- reactive({
 })
 
 output$dq_missing_heatmap <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   p <- dq_missing_heatmap_plot_obj()
   if (is.null(p)) {
     plot.new(); text(0.5, 0.5, "Please select at least one sample")
@@ -247,7 +256,11 @@ dq_protein_missing_hist <- reactive({
     theme_bw()
 })
 
-output$dq_protein_missing_hist <- renderPlot({ req(dq_protein_missing_hist()); dq_protein_missing_hist() })
+output$dq_protein_missing_hist <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
+  req(dq_protein_missing_hist())
+  dq_protein_missing_hist()
+})
 output$download_protein_missing_hist <- downloadHandler(
   filename = function() "protein_missing_hist.png",
   content = function(file) ggsave(file, plot = dq_protein_missing_hist(), width = 6, height = 4, dpi = 150)
@@ -275,7 +288,11 @@ dq_sample_missing_bar <- reactive({
           axis.title.x = element_blank())
 })
 
-output$dq_sample_missing_bar <- renderPlot({ req(dq_sample_missing_bar()); dq_sample_missing_bar() }, height = 400)
+output$dq_sample_missing_bar <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
+  req(dq_sample_missing_bar())
+  dq_sample_missing_bar()
+}, height = 400)
 output$download_sample_missing_bar <- downloadHandler(
   filename = function() "sample_missing_rate.png",
   content = function(file) {
@@ -298,7 +315,10 @@ dq_valid_plot <- reactive({
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 })
 
-output$dq_valid_values_plot <- renderPlot({ dq_valid_plot() })
+output$dq_valid_values_plot <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
+  dq_valid_plot()
+})
 output$download_valid_bar <- downloadHandler(
   filename = function() "valid_values.png",
   content = function(file) ggsave(file, plot = dq_valid_plot(), width = 8, height = 5, dpi = 150)
@@ -348,7 +368,13 @@ dq_missing_cor_plot_obj <- reactive({
   
   missing_sub <- missing_mat[, common_s, drop = FALSE]
   cor_mat <- cor(missing_sub, use = "pairwise.complete.obs")
-  cor_mat[is.na(cor_mat)] <- 0  # 缺失值相关性热图保留 0 替代 NA（用户已接受）
+  
+  na_count <- sum(is.na(cor_mat))
+  message(sprintf("[DEBUG] dq_missing_cor_plot_obj: cor matrix NA count = %d", na_count))
+  if (na_count > 0) {
+    message("[DEBUG] dq_missing_cor_plot_obj: replacing NAs with 0 for plotting")
+    cor_mat[is.na(cor_mat)] <- 0
+  }
   
   n_samp <- ncol(cor_mat)
   
@@ -363,7 +389,8 @@ dq_missing_cor_plot_obj <- reactive({
   legend_labels <- sprintf("%.2f", legend_breaks)
   message("[DEBUG] Missing cor range: [", round(min_cor,4), ", ", round(max_cor,4), "] Ticks: ", paste(legend_breaks, collapse = ", "))
   
-  dist_mat <- as.dist(1 - cor_mat)
+  cor_dist <- as.dist(1 - cor_mat)
+  cor_dist[is.na(cor_dist)] <- 1
   
   annotation_col <- NULL
   annotation_colors <- NULL
@@ -383,14 +410,19 @@ dq_missing_cor_plot_obj <- reactive({
   subtitle <- if (!is.null(subset_samples)) paste0(" 样本子集（", n_samp, " 个样本）") else paste0(" 全部样本（", n_samp, " 个样本）")
   main_title <- paste0(main_title, subtitle)
   
+  if (any(is.na(cor_mat))) {
+    message("[DEBUG] dq_missing_cor_plot_obj: WARNING - cor_mat still contains NAs after fix, replacing again")
+    cor_mat[is.na(cor_mat)] <- 0
+  }
+  
   pheatmap::pheatmap(cor_mat,
                      main = main_title,
                      color = colorRampPalette(c("blue", "white", "red"))(100),
                      breaks = seq(min_cor, max_cor, length.out = 101),
                      legend_breaks = legend_breaks,
                      legend_labels = legend_labels,
-                     clustering_distance_rows = dist_mat,
-                     clustering_distance_cols = dist_mat,
+                     clustering_distance_rows = cor_dist,
+                     clustering_distance_cols = cor_dist,
                      clustering_method = "ward.D2",
                      show_rownames = TRUE,
                      show_colnames = TRUE,
@@ -407,6 +439,7 @@ dq_missing_cor_plot_obj <- reactive({
 })
 
 output$dq_missing_cor_plot <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   obj <- dq_missing_cor_plot_obj()
   if (!is.null(obj)) {
     grid::grid.newpage()
@@ -465,7 +498,10 @@ dq_intensity_plot <- reactive({
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 })
 
-output$dq_intensity_dist_plot <- renderPlot({ dq_intensity_plot() })
+output$dq_intensity_dist_plot <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
+  dq_intensity_plot()
+})
 output$download_intensity <- downloadHandler(
   filename = function() "intensity_distribution.png",
   content = function(file) ggsave(file, plot = dq_intensity_plot(), width = 10, height = 6, dpi = 150)
@@ -511,7 +547,7 @@ observeEvent(input$help_intensity, {
   showModal(modalDialog(title = "Protein Intensity Distribution", "箱线图展示每个样本中蛋白强度的分布（log2 转换）。", easyClose = TRUE, footer = modalButton("关闭")))
 })
 
-# ==================== 样本相关性热图（修复图例刻度，添加详细调试） ====================
+# ==================== 样本相关性热图 ====================
 dq_cor_heatmap_plot_obj <- reactive({
   req(dq_expr_matrix())
   message("[DEBUG] dq_cor_heatmap_plot_obj: computing sample correlation")
@@ -522,7 +558,10 @@ dq_cor_heatmap_plot_obj <- reactive({
   }
   
   message("[DEBUG] dq_cor_heatmap_plot_obj: cor matrix dim = ", nrow(cor_mat), "x", ncol(cor_mat))
-  message("[DEBUG] dq_cor_heatmap_plot_obj: NA count in cor_mat = ", sum(is.na(cor_mat)))
+  if (any(is.na(cor_mat))) {
+    message("[DEBUG] dq_cor_heatmap_plot_obj: WARNING - cor_mat still has NAs, forcing 0")
+    cor_mat[is.na(cor_mat)] <- 0
+  }
   
   ann_col <- NULL
   ann_colors <- NULL
@@ -539,10 +578,7 @@ dq_cor_heatmap_plot_obj <- reactive({
       
       if (ncol(cor_mat) >= 3) {
         cor_sub <- cor_mat[common_samples, common_samples, drop = FALSE]
-        # 为聚类创建无 NA 的副本
-        cor_sub_clean <- cor_sub
-        cor_sub_clean[is.na(cor_sub_clean)] <- 0
-        cor_dist <- as.dist(1 - cor_sub_clean)
+        cor_dist <- as.dist(1 - cor_sub)
         hc_col <- hclust(cor_dist, method = "ward.D2")
         k <- 2
         if (length(common_samples) >= 6) k <- 3
@@ -568,36 +604,23 @@ dq_cor_heatmap_plot_obj <- reactive({
     }
   }
   
-  # 计算实际数据的 min/max，忽略 NA
   min_cor <- min(cor_mat, na.rm = TRUE)
   max_cor <- max(cor_mat, na.rm = TRUE)
   message("[DEBUG] dq_cor_heatmap_plot_obj: cor range (actual): [", min_cor, ", ", max_cor, "]")
   
-  # 若范围过小，稍微扩展防止 breaks 出错
   if (abs(max_cor - min_cor) < 1e-6) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
   
-  # 生成初步的图例刻度（pretty 可能超出数据范围，我们将裁剪）
   n_ticks <- 7
   raw_breaks <- pretty(c(min_cor, max_cor), n = n_ticks)
-  message("[DEBUG] dq_cor_heatmap_plot_obj: raw_breaks from pretty: ", paste(raw_breaks, collapse = ", "))
-  
-  # 裁剪到数据实际范围
   legend_breaks <- raw_breaks[raw_breaks >= min_cor & raw_breaks <= max_cor]
-  # 如果裁剪后太少，则强制使用实际 min 和 max 构成的线性序列
-  if (length(legend_breaks) < 2) {
-    legend_breaks <- seq(min_cor, max_cor, length.out = 5)
-  }
+  if (length(legend_breaks) < 2) legend_breaks <- seq(min_cor, max_cor, length.out = 5)
   legend_labels <- sprintf("%.2f", legend_breaks)
   message("[DEBUG] dq_cor_heatmap_plot_obj: final legend_breaks: ", paste(legend_breaks, collapse = ", "))
   
-  # 颜色映射 breaks 基于实际范围
   color_breaks <- seq(min_cor, max_cor, length.out = 101)
   
-  # 聚类距离矩阵（基于 1 - cor，NA 暂时用 0 替换以避免 dist 报错）
-  cor_dist_mat <- cor_mat
-  cor_dist_mat[is.na(cor_dist_mat)] <- 0
-  cor_dist <- as.dist(1 - cor_dist_mat)
-  message("[DEBUG] dq_cor_heatmap_plot_obj: clustering distance based on 1 - cor (NAs temporarily replaced by 0)")
+  cor_dist <- as.dist(1 - cor_mat)
+  message("[DEBUG] dq_cor_heatmap_plot_obj: clustering distance computed")
   
   main_title <- "样本相关性热图（基于 top 500 高变异蛋白的 log2 强度 Pearson 相关）"
   
@@ -614,11 +637,12 @@ dq_cor_heatmap_plot_obj <- reactive({
                      fontsize_row = 9, fontsize_col = 9,
                      angle_col = 45,
                      annotation_col = ann_col, annotation_colors = ann_colors,
-                     na_col = "grey",   # NA 显示为灰色
+                     na_col = "grey",
                      silent = TRUE)
 })
 
 output$dq_cor_heatmap <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   obj <- dq_cor_heatmap_plot_obj()
   if (is.null(obj)) { plot.new(); text(0.5, 0.5, "Not enough data") }
   else { grid::grid.newpage(); grid::grid.draw(obj$gtable) }
@@ -674,9 +698,7 @@ output$download_cor_matrix <- downloadHandler(
         )
         
         if (ncol(cor_sub) >= 3) {
-          cor_sub_clean <- cor_sub
-          cor_sub_clean[is.na(cor_sub_clean)] <- 0
-          cor_dist <- as.dist(1 - cor_sub_clean)
+          cor_dist <- as.dist(1 - cor_sub)
           hc_col <- hclust(cor_dist, method = "ward.D2")
           k <- 2
           if (length(common_samples) >= 6) k <- 3
@@ -738,9 +760,10 @@ observeEvent(input$help_cor_heatmap, {
 })
 
 # ==================== 修复后的 PCA（缺失值用 KNN 填充，移除错误过滤） ====================
+# 添加 bindCache 以避免每次数据不变时重复进行昂贵的 KNN 填充
 dq_pca_full <- reactive({
   req(dq_expr_matrix())
-  message("[DEBUG] dq_pca_full: starting PCA computation")
+  message("[DEBUG] dq_pca_full: starting PCA computation (cache key: dq_expr_matrix)")
   expr <- dq_expr_matrix()
   
   filled <- tryCatch({
@@ -801,7 +824,7 @@ dq_pca_full <- reactive({
   scores$Outlier <- ifelse(scores$Sample %in% outliers, "Outlier", "Normal")
   
   list(pca = pca, scores = scores, variance = variance, loadings = pca$rotation)
-})
+}) %>% bindCache(dq_expr_matrix())
 
 pca_group_plot_obj <- reactive({
   pca_full <- dq_pca_full()
@@ -830,7 +853,11 @@ pca_group_plot_obj <- reactive({
     theme_bw() + theme(legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 })
 
-output$dq_pca_group_plot <- renderPlot({ req(pca_group_plot_obj()); pca_group_plot_obj() })
+output$dq_pca_group_plot <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
+  req(pca_group_plot_obj())
+  pca_group_plot_obj()
+})
 output$download_pca_group <- downloadHandler(
   filename = function() "pca_group.png",
   content = function(file) ggsave(file, plot = pca_group_plot_obj(), width = 8, height = 6, dpi = 150)
@@ -881,6 +908,7 @@ pca_batch_plot_obj <- reactive({
 })
 
 output$dq_pca_batch_plot <- renderPlot({
+  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   if (is.null(pca_batch_plot_obj())) { plot.new(); text(0.5, 0.5, "Batch information not available") }
   else { pca_batch_plot_obj() }
 })

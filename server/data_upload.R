@@ -12,6 +12,23 @@ extract_sample_names <- function(cols) {
   short
 }
 
+standardize_sample_name <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  original <- x
+  x <- as.character(x)
+  x <- gsub("[-_]+", ".", x)
+  x <- gsub("\\s+", ".", x)
+  x <- gsub("\\.+", ".", x)
+  x <- gsub("^\\.", "", x)
+  x <- gsub("\\.$", "", x)
+  if (length(x) > 0) {
+    message("[DEBUG] standardize_sample_name: transformed first 3: ",
+            paste(head(original, 3), collapse = ", "), " -> ",
+            paste(head(x, 3), collapse = ", "))
+  }
+  return(x)
+}
+
 get_raw_prefix <- function(type = input$intensity_type) {
   if (type == "LFQ") "LFQ intensity " else "Intensity "
 }
@@ -166,7 +183,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     samples_pca <- pca_df$Sample
     
     if (!is.null(sample_info) && "Batch" %in% colnames(sample_info)) {
-      si_names <- gsub("-", ".", rownames(sample_info))
+      si_names <- standardize_sample_name(rownames(sample_info))
       batch_all <- sample_info$Batch
       batch_vec <- rep(NA_character_, nrow(pca_df))
       for (k in seq_len(nrow(pca_df))) {
@@ -326,22 +343,34 @@ calculate_missing_stats <- function(expr_matrix) {
        total_missing_ratio = round(mean(is.na(expr_matrix)) * 100, 2))
 }
 
-# 修改后的样本相关性计算：不再将 NA 替换为 0
 calculate_sample_correlation <- function(expr_matrix) {
-  if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) return(NULL)
+  if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) {
+    message("[DEBUG] calculate_sample_correlation: expr_matrix is NULL or too small")
+    return(NULL)
+  }
   log_expr <- log2(expr_matrix + 1)
   row_vars <- apply(log_expr, 1, var, na.rm = TRUE)
   n_keep <- min(500, nrow(log_expr))
   top_var <- order(row_vars, decreasing = TRUE)[1:n_keep]
   log_expr <- log_expr[top_var, , drop = FALSE]
-  if (nrow(log_expr) < 2) return(NULL)
+  if (nrow(log_expr) < 2) {
+    message("[DEBUG] calculate_sample_correlation: not enough variable rows")
+    return(NULL)
+  }
   cor_matrix <- cor(log_expr, use = "pairwise.complete.obs")
-  # 保留 NA，不在热图中用 0 替代，而是用灰色表示
-  # cor_matrix[is.na(cor_matrix)] <- 0  # 删除此行
+  
+  na_count <- sum(is.na(cor_matrix))
+  message(sprintf("[DEBUG] calculate_sample_correlation: correlation matrix computed, NA count = %d out of %d elements",
+                  na_count, length(cor_matrix)))
+  
+  if (na_count > 0) {
+    message("[DEBUG] calculate_sample_correlation: replacing NAs with 0 to avoid pheatmap error")
+    cor_matrix[is.na(cor_matrix)] <- 0
+  }
+  
   return(cor_matrix)
 }
 
-# 修复后的 PCA 计算（缺失值用 KNN 填充，失败回退极小值）
 calculate_pca <- function(expr_matrix, sample_info = NULL) {
   if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) return(NULL)
   message("[DEBUG] calculate_pca: starting PCA with dim = ", nrow(expr_matrix), " x ", ncol(expr_matrix))
@@ -383,10 +412,11 @@ calculate_pca <- function(expr_matrix, sample_info = NULL) {
     
     if (!is.null(sample_info) && "Group" %in% colnames(sample_info)) {
       sample_info_short <- sample_info
-      rownames(sample_info_short) <- gsub("^(LFQ intensity |Intensity )", "", rownames(sample_info_short))
-      common_samples <- intersect(pca_df$Sample, rownames(sample_info_short))
-      if (length(common_samples) > 0) {
-        pca_df$Group <- sample_info_short[common_samples, "Group"]
+      rownames(sample_info_short) <- standardize_sample_name(rownames(sample_info_short))
+      pca_sample_std <- standardize_sample_name(pca_df$Sample)
+      common_idx <- match(pca_sample_std, rownames(sample_info_short))
+      if (any(!is.na(common_idx))) {
+        pca_df$Group <- sample_info_short$Group[common_idx]
       } else {
         pca_df$Group <- "All"
       }
@@ -475,6 +505,15 @@ observeEvent(input$intensity_type, {
       showNotification("No matching intensity columns found for the selected type.", type = "error", duration = 5)
     }
   }
+  
+  # 重置热图相关选项并递增数据变化触发器
+  updateRadioButtons(session, "heatmap_data_source", selected = "LFQ")
+  updateRadioButtons(session, "heatmap_protein_mode", selected = "top_n")
+  updateNumericInput(session, "heatmap_top_n", value = 20)
+  updateTextAreaInput(session, "heatmap_custom_ids", value = "")
+  heatmap_raw_groups(NULL)
+  data_changed_trigger(data_changed_trigger() + 1)
+  message("[DEBUG] intensity type changed, data_changed_trigger increased to ", data_changed_trigger())
 }, ignoreInit = TRUE)
 
 observeEvent(input$expression_file, {
@@ -493,6 +532,34 @@ observeEvent(input$expression_file, {
   updateSelectInput(session, "batch_ref_group", choices = character(0))
   updateSelectizeInput(session, "venn_comparisons_select", choices = character(0), selected = character(0))
   updateCheckboxGroupInput(session, "venn_comparisons_checkbox", choices = character(0), selected = character(0))
+  
+  # 重置预处理相关控件为默认值
+  updateSelectInput(session, "missing_filter_mode", selected = "global")
+  updateSliderInput(session, "max_missing_fraction", value = 0.5)
+  updateNumericInput(session, "min_intensity", value = 1e5)
+  updateNumericInput(session, "min_samples_above_intensity", value = 1)
+  updateSelectInput(session, "imputation_method", selected = "knn")
+  updateNumericInput(session, "knn_k", value = 10)
+  updateCheckboxInput(session, "perform_batch_correction", value = FALSE)
+  updateNumericInput(session, "fc_up", value = 1.2)
+  updateNumericInput(session, "fc_down", value = 0.84)
+  updateSelectInput(session, "p_cut", selected = "0.05")
+  updateNumericInput(session, "min_treat_valid", value = 2)
+  updateNumericInput(session, "min_ctrl_valid", value = 2)
+  updateNumericInput(session, "min_rep_ttest", value = 2)
+  updateNumericInput(session, "min_rep_inc", value = 2)
+  updateNumericInput(session, "min_rep_dec", value = 2)
+  updateNumericInput(session, "min_unique_pep", value = 2)
+  
+  # 重置热图相关选项并递增数据变化触发器
+  updateRadioButtons(session, "heatmap_data_source", selected = "LFQ")
+  updateRadioButtons(session, "heatmap_protein_mode", selected = "top_n")
+  updateNumericInput(session, "heatmap_top_n", value = 20)
+  updateTextAreaInput(session, "heatmap_custom_ids", value = "")
+  heatmap_raw_groups(NULL)
+  data_changed_trigger(data_changed_trigger() + 1)
+  message("[DEBUG] expression file uploaded, data_changed_trigger increased to ", data_changed_trigger())
+  
   tryCatch({
     file_path <- input$expression_file$datapath
     data <- fread(file_path, sep = "\t", stringsAsFactors = FALSE, data.table = FALSE, check.names = FALSE, colClasses = "character")
@@ -542,10 +609,12 @@ sample_match_validation <- reactive({
   }
   expr_col_full <- rv$lfq_cols
   info_names_full <- rownames(rv$sample_info)
-  matched_full <- intersect(info_names_full, expr_col_full)
-  unmatched_info_full <- setdiff(info_names_full, expr_col_full)
-  unmatched_expr_full <- setdiff(expr_col_full, info_names_full)
-  matched <- extract_sample_names(matched_full)
+  expr_std <- standardize_sample_name(expr_col_full)
+  info_std <- standardize_sample_name(info_names_full)
+  matched_expr <- expr_col_full[expr_std %in% info_std]
+  unmatched_info_full <- info_names_full[!info_std %in% expr_std]
+  unmatched_expr_full <- expr_col_full[!expr_std %in% info_std]
+  matched <- extract_sample_names(matched_expr)
   unmatched_info <- extract_sample_names(unmatched_info_full)
   unmatched_expr <- extract_sample_names(unmatched_expr_full)
   if (length(unmatched_info) == 0 && length(unmatched_expr) == 0) {
@@ -565,7 +634,6 @@ output$sample_match_hint <- renderUI({
       icon("info-circle"), " Green highlighted samples are matched with the uploaded sample info. Samples without fill color are not matched.")
 })
 
-# ==================== 修复：移除 server = FALSE ====================
 output$upload_preview <- DT::renderDataTable({
   message("[DEBUG] upload_preview: rv$lfq_cols length = ", length(rv$lfq_cols))
   req(rv$clean_data, rv$lfq_cols)
@@ -695,8 +763,28 @@ raw_totals <- reactive({
 })
 
 get_analysis_matrix <- reactive({
+  if (is.null(preprocessing_params$intensity_type_used) || 
+      preprocessing_params$intensity_type_used != input$intensity_type) {
+    message("[DEBUG] get_analysis_matrix: processed data unavailable or intensity type mismatch")
+    showNotification(
+      "Preprocessing data is not available for the current intensity type. Please re-run preprocessing.",
+      type = "warning", duration = 8, id = "preprocess_outdated"
+    )
+    return(NULL)
+  }
+  
   proc <- tryCatch(processed_data(), error = function(e) NULL)
-  if (!is.null(proc)) return(proc) else return(expression_data())
+  if (!is.null(proc)) {
+    message("[DEBUG] get_analysis_matrix: returning processed data")
+    return(proc)
+  } else {
+    message("[DEBUG] get_analysis_matrix: processed_data is NULL")
+    showNotification(
+      "Preprocessing has not been run. Please click 'Run Preprocessing' before generating analysis plots.",
+      type = "warning", duration = 8, id = "preprocess_needed"
+    )
+    return(NULL)
+  }
 })
 
 norm_data_before_batch <- reactive({
@@ -785,7 +873,6 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ==================== 核心：expression_data 反应式 ====================
 expression_data <- reactive({
   message("[DEBUG] expression_data triggered from server/data_upload.R")
   req(rv$clean_data)
