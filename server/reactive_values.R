@@ -20,3 +20,8 @@ rv <- reactiveValues(
 subplot_old_values <- reactiveValues()
 manual_sort_active <- reactiveVal(FALSE)
 clicked_protein <- reactiveVal(NULL)
+
+# 热图数据变化触发器
+data_changed_trigger <- reactiveVal(0)
+# 最近一次成功生成热图时的版本号
+heatmap_generated_version <- reactiveVal(-1)

@@ -1,15 +1,20 @@
 # server/heatmap_plot.R
 # ============================================================
 # 热图数据准备与绘制模块
-# 依赖：expression_data / processed_data (来自 data_upload / preprocessing)
-# 关键假设：rv$lfq_cols 的顺序与 expression_data() 的列顺序完全一致，
-#          因此 all_samples <- rv$sample_names 的顺序也与数据列对应。
-#          这种设计确保了通过逻辑向量筛选时不会错位。
+# 依赖 data_changed_trigger / heatmap_generated_version (reactive_values.R)
+# 最终修复：引入 heatmap_display_data 反应式，解决重绘依赖问题
 # ============================================================
 
-# ---------- 辅助：提取原始强度矩阵并进行 log2 和 Z-score ----------
+# ---------- 辅助函数 ----------
 prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL) {
   message("[DEBUG] prepare_expr_matrix: starting with samples=", length(samples), ", all_cols=", length(all_cols))
+  missing_cols <- setdiff(all_cols, colnames(data_src))
+  if (length(missing_cols) > 0) {
+    msg <- paste("The following columns are missing from the data source:",
+                 paste(missing_cols, collapse = ", "))
+    message("[DEBUG] prepare_expr_matrix: ERROR - ", msg)
+    return(list(error = msg))
+  }
   expr_matrix <- data.matrix(data_src[, all_cols, drop = FALSE])
   rownames(expr_matrix) <- rownames(data_src)
   colnames(expr_matrix) <- samples
@@ -71,8 +76,30 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
 heatmap_raw_sample_names <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
-  if (length(int_cols) == 0) return(character(0))
-  gsub("^Intensity ", "", int_cols)
+  if (length(int_cols) == 0) {
+    message("[DEBUG] heatmap_raw_sample_names: no Intensity columns found")
+    return(character(0))
+  }
+  samples <- gsub("^Intensity ", "", int_cols)
+  message("[DEBUG] heatmap_raw_sample_names: found ", length(samples), " Intensity samples, first 3: ", paste(head(samples, 3), collapse = ", "))
+  samples
+})
+
+heatmap_raw_data <- reactive({
+  req(rv$raw_data)
+  int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
+  if (length(int_cols) == 0) {
+    message("[DEBUG] heatmap_raw_data: no Intensity columns, returning NULL")
+    return(NULL)
+  }
+  mat <- rv$raw_data
+  rownames(mat) <- mat$`Master protein IDs`
+  mat <- mat[, int_cols, drop = FALSE]
+  mat <- suppressWarnings(as.data.frame(lapply(mat, as.numeric)))
+  mat[mat == 0] <- NA
+  colnames(mat) <- gsub("^Intensity ", "", int_cols)
+  message("[DEBUG] heatmap_raw_data: created matrix with dim ", nrow(mat), "x", ncol(mat))
+  mat
 })
 
 observe({
@@ -132,45 +159,30 @@ output$heatmap_group_selection_ui <- renderUI({
                      choices = group_names, selected = group_names, inline = TRUE)
 })
 
-# ---------- 核心热图数据准备 ----------
+# ---------- 核心热图数据准备（仅按钮触发） ----------
 heatmap_data <- eventReactive(input$generate_heatmap, {
-  message("[DEBUG] heatmap_data triggered")
+  message("[DEBUG] heatmap_data triggered by Generate Heatmap button (click=", input$generate_heatmap, ")")
   result <- list(error = NULL, mat = NULL, has_na = FALSE, na_rows_removed = 0)
   
   if (is.null(rv$raw_data)) {
-    result$error <- "No data uploaded. Please upload a file first."
-    return(result)
-  }
-  
-  data_src <- get_analysis_matrix()
-  if (is.null(data_src)) {
-    result$error <- "No expression data available. Please upload data or run preprocessing."
-    return(result)
-  }
-  
-  # ----- 关键：all_lfq_cols 与 all_samples 顺序严格对应 data_src 的列顺序 -----
-  # data_src 来自 expression_data() 或 processed_data()，其列名是 rv$lfq_cols（例如 "LFQ intensity L2.1.1"）。
-  # rv$sample_names 是通过 extract_sample_names(rv$lfq_cols) 得到的简化名，顺序相同。
-  # 因此 all_samples[i] 对应 all_lfq_cols[i]，对应 data_src 的第 i 列。
-  # 下面的逻辑通过 all_samples %in% selected_samples 生成逻辑向量 keep，
-  # 再用 which(keep) 选取列位置，可以安全地引用 data_src[, col_positions]。
-  # 这一依赖关系确保了热图样本列匹配的正确性，任何对 rv$lfq_cols 顺序的修改需同步更新 rv$sample_names。
-  all_lfq_cols <- rv$lfq_cols
-  all_samples  <- rv$sample_names
-  
-  message("[DEBUG] heatmap_data: all_samples length=", length(all_samples),
-          ", first 3 samples: ", paste(head(all_samples, 3), collapse = ", "))
-  
-  if (length(all_lfq_cols) == 0) {
-    result$error <- "No intensity columns found. Please check your Data Upload settings."
+    result$error <- "Please upload an expression matrix file first."
     return(result)
   }
   
   mode <- input$heatmap_protein_mode
   if (is.null(mode)) mode <- "top_n"
   
-  # LFQ 模式：使用预定义分组
   if (input$heatmap_data_source == "LFQ") {
+    data_src <- get_analysis_matrix()
+    if (is.null(data_src)) {
+      result$error <- "Preprocessing has not been run or data is not available for the current intensity type. Please run preprocessing first."
+      return(result)
+    }
+    src_colnames <- colnames(data_src)
+    src_short <- extract_sample_names(src_colnames)
+    message("[DEBUG] heatmap_data LFQ: src_colnames first 3: ", paste(head(src_colnames, 3), collapse = ", "))
+    message("[DEBUG] heatmap_data LFQ: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
+    
     if (is.null(input$heatmap_groups) || length(input$heatmap_groups) == 0) {
       result$error <- "Please select at least one group."
       return(result)
@@ -181,25 +193,32 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       result$error <- "Selected groups contain no samples."
       return(result)
     }
-    keep <- all_samples %in% selected_samples
+    keep <- src_short %in% selected_samples
     message("[DEBUG] heatmap_data LFQ: selected_samples count=", length(selected_samples),
-            ", matched samples=", sum(keep))
+            ", matched in data source=", sum(keep))
     if (!any(keep)) {
-      result$error <- "None of the selected group samples match the columns in the data."
+      result$error <- "None of the selected group samples match the columns in the data source."
       return(result)
     }
-    samples <- all_samples[keep]
-    col_positions <- which(keep)
-    all_cols <- colnames(data_src)[col_positions]
+    samples <- src_short[keep]
+    all_cols <- src_colnames[keep]
     group_vec <- rep("Unassigned", length(samples))
     for (g in groups_sel) group_vec[samples %in% rv$groups[[g]]] <- g
-  } else {   # "Intensity" 模式：使用原始分组或全部样本
+  } else {   # "Intensity" 模式
+    data_src <- heatmap_raw_data()
+    if (is.null(data_src)) {
+      result$error <- "No Intensity columns found in the uploaded data."
+      return(result)
+    }
+    src_short <- colnames(data_src)
+    message("[DEBUG] heatmap_data Intensity: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
+    
     if (mode == "custom") {
-      selected_samples <- all_samples
+      selected_samples <- src_short
     } else {
       groups <- heatmap_raw_groups()
       if (is.null(groups) || is.null(input$heatmap_selected_groups)) {
-        selected_samples <- all_samples
+        selected_samples <- src_short
       } else {
         selected_groups <- input$heatmap_selected_groups
         if (length(selected_groups) == 0) {
@@ -213,16 +232,15 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
         }
       }
     }
-    keep <- all_samples %in% selected_samples
+    keep <- src_short %in% selected_samples
     message("[DEBUG] heatmap_data Intensity: selected_samples count=", length(selected_samples),
-            ", matched samples=", sum(keep))
+            ", matched=", sum(keep))
     if (!any(keep)) {
       result$error <- "None of the selected samples match the columns."
       return(result)
     }
-    samples <- all_samples[keep]
-    col_positions <- which(keep)
-    all_cols <- colnames(data_src)[col_positions]
+    samples <- src_short[keep]
+    all_cols <- samples
     group_vec <- rep("All", length(samples))
     if (mode != "custom" && !is.null(groups)) {
       group_map <- setNames(rep(names(groups), lengths(groups)), unlist(groups))
@@ -233,8 +251,7 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   
   message("[DEBUG] heatmap_data: final samples count=", length(samples),
           ", first 3 samples: ", paste(head(samples, 3), collapse = ", "))
-  message("[DEBUG] heatmap_data: all_cols count=", length(all_cols),
-          ", first 3 all_cols: ", paste(head(all_cols, 3), collapse = ", "))
+  message("[DEBUG] heatmap_data: final all_cols first 3: ", paste(head(all_cols, 3), collapse = ", "))
   
   protein_ids <- NULL
   top_n <- NULL
@@ -272,7 +289,27 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   result$annotation_col <- ann_col
   result$annotation_colors <- ann_colors
   result$show_sample_names <- input$heatmap_show_sample_names
+  
+  # 生成成功后，记录当前数据版本
+  heatmap_generated_version(data_changed_trigger())
+  message("[DEBUG] heatmap_data: successfully generated, heatmap_generated_version set to ", data_changed_trigger())
   result
+})
+
+# ---------- 显示数据反应式（整合版本判断） ----------
+heatmap_display_data <- reactive({
+  current_trigger <- data_changed_trigger()
+  dat <- heatmap_data()
+  
+  if (is.null(dat)) {
+    return(list(error = "Click 'Generate Heatmap' to start"))
+  }
+  
+  if (current_trigger != heatmap_generated_version()) {
+    return(list(error = "Data has changed. Please click 'Generate Heatmap' to update."))
+  }
+  
+  dat
 })
 
 make_heatmap_breaks <- function(mat, n_colors = 100) {
@@ -284,10 +321,11 @@ make_heatmap_breaks <- function(mat, n_colors = 100) {
 }
 
 output$heatmap_plot <- renderPlot({
-  dat <- heatmap_data()
-  if (is.null(dat) || (!is.null(dat$error) && dat$error != "")) {
+  dat <- heatmap_display_data()
+  
+  if (!is.null(dat$error)) {
     plot.new()
-    text(0.5, 0.5, ifelse(is.null(dat), "No data returned.", dat$error), cex = 1.2)
+    text(0.5, 0.5, dat$error, cex = 1.2)
     return()
   }
   if (is.null(dat$mat) || nrow(dat$mat) == 0 || ncol(dat$mat) == 0) {
@@ -324,8 +362,8 @@ output$heatmap_plot <- renderPlot({
 output$download_heatmap_png <- downloadHandler(
   filename = function() paste0("Heatmap_", Sys.Date(), ".png"),
   content = function(file) {
-    dat <- heatmap_data()
-    if (!is.null(dat$error) && dat$error != "") {
+    dat <- heatmap_display_data()
+    if (!is.null(dat$error)) {
       png(file, width = 1200, height = 1000, res = 150)
       plot.new(); text(0.5, 0.5, dat$error, cex = 1.5)
       dev.off()
