@@ -210,6 +210,127 @@ step_indicator <- function(steps, current_step) {
 }
 
 # =====================================================
+# 缺失值填充函数（全局定义，所有模块可直接调用）
+# 添加详细调试信息，并返回实际使用方法
+# 修改：minvalue 使用固定值填充，而非样本最小值
+# =====================================================
+impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4,
+                                  quantile_prob = 0.01) {
+  message("[DEBUG] impute_missing_values (global): method = ", method,
+          ", k = ", k, ", min_value = ", min_value,
+          ", quantile_prob = ", quantile_prob)
+  
+  if (method == "none") {
+    attr(data, "actual_method") <- "none"
+    message("[DEBUG] impute_missing_values: no imputation (none)")
+    return(data)
+  }
+  
+  data_matrix <- as.matrix(data)
+  actual_method <- method
+  
+  if (method == "knn") {
+    if (!requireNamespace("impute", quietly = TRUE))
+      stop("impute package required for KNN. Run BiocManager::install('impute')")
+    message("[DEBUG] impute_missing_values: KNN imputation with k = ", k)
+    suppressMessages({
+      impute_result <- impute::impute.knn(data_matrix, k = k)
+    })
+    data_matrix <- impute_result$data
+    actual_method <- "knn"
+    
+  } else if (method == "ppca") {
+    if (!requireNamespace("pcaMethods", quietly = TRUE))
+      stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
+    
+    orig_rows <- rownames(data)
+    orig_cols <- colnames(data)
+    
+    na_rows <- which(rowSums(is.na(data_matrix)) == ncol(data_matrix))
+    na_cols <- which(colSums(is.na(data_matrix)) == nrow(data_matrix))
+    constant_cols <- which(apply(data_matrix, 2, var, na.rm = TRUE) == 0)
+    remove_cols <- unique(c(na_cols, constant_cols))
+    
+    clean <- data_matrix
+    if (length(na_rows) > 0) clean <- clean[-na_rows, , drop = FALSE]
+    if (length(remove_cols) > 0) clean <- clean[, -remove_cols, drop = FALSE]
+    
+    if (nrow(clean) < 2 || ncol(clean) < 2) {
+      message("[DEBUG] impute_missing_values: PPCA not feasible, falling back to KNN")
+      result <- impute_missing_values(data, method = "knn", k = k)
+      attr(result, "actual_method") <- "knn (fallback from ppca)"
+      return(result)
+    }
+    
+    success <- FALSE
+    tryCatch({
+      pc <- pcaMethods::ppca(clean, nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
+      imputed_clean <- as.matrix(pcaMethods::completeObs(pc))
+      success <- TRUE
+    }, error = function(e) {
+      message("[DEBUG] PPCA imputation failed, automatically switching to KNN: ", e$message)
+    })
+    
+    if (!success) {
+      message("[DEBUG] impute_missing_values: PPCA failed, now using KNN as fallback")
+      result <- impute_missing_values(data, method = "knn", k = k)
+      attr(result, "actual_method") <- "knn (fallback from ppca)"
+      return(result)
+    }
+    
+    full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
+    rownames(full_matrix) <- orig_rows
+    colnames(full_matrix) <- orig_cols
+    
+    row_idx <- setdiff(seq_len(nrow(data_matrix)), na_rows)
+    col_idx <- setdiff(seq_len(ncol(data_matrix)), remove_cols)
+    full_matrix[row_idx, col_idx] <- imputed_clean
+    
+    if (length(na_rows) > 0) full_matrix[na_rows, ] <- min_value
+    if (length(na_cols) > 0) full_matrix[, na_cols] <- min_value
+    if (length(constant_cols) > 0) {
+      for (j in constant_cols) {
+        full_matrix[, j] <- data_matrix[, j]
+      }
+    }
+    data_matrix <- full_matrix
+    actual_method <- "ppca"
+    
+  } else if (method == "minvalue") {
+    # 使用用户指定的固定值填充，而非样本最小值
+    val <- if (is.null(min_value) || is.na(min_value)) 1e-4 else min_value
+    message("[DEBUG] impute_missing_values: minvalue imputation with fixed value = ", val)
+    data_matrix[is.na(data_matrix)] <- val
+    actual_method <- "minvalue"
+    
+  } else if (method == "quantile") {
+    qp <- quantile_prob
+    if (is.null(qp) || is.na(qp) || qp <= 0 || qp >= 1) qp <- 0.01
+    message("[DEBUG] impute_missing_values: quantile imputation with prob = ", qp)
+    for (j in seq_len(ncol(data_matrix))) {
+      col_vals <- data_matrix[, j]
+      na_idx <- which(is.na(col_vals))
+      if (length(na_idx) == 0) next
+      qval <- quantile(col_vals, probs = qp, na.rm = TRUE)
+      if (!is.finite(qval) || length(qval) == 0) qval <- min_value
+      data_matrix[na_idx, j] <- qval
+      message(sprintf("[DEBUG] quantile: column %d: %d NAs replaced with %g (prob=%.3f)", j, length(na_idx), qval, qp))
+    }
+    actual_method <- "quantile"
+    
+  } else {
+    stop("Unknown imputation method.")
+  }
+  
+  rownames(data_matrix) <- rownames(data)
+  colnames(data_matrix) <- colnames(data)
+  result <- as.data.frame(data_matrix)
+  attr(result, "actual_method") <- actual_method
+  message("[DEBUG] impute_missing_values (global): completed with actual method = ", actual_method)
+  return(result)
+}
+
+# =====================================================
 # 调试信息：global.R 加载完成
 # =====================================================
-message("[DEBUG] global.R loaded successfully.")
+message("[DEBUG] global.R loaded successfully (with impute_missing_values).")

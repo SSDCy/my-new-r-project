@@ -33,6 +33,8 @@ observeEvent(input$add_comparison, {
   comp_id <- as.character(rv$comp_id_counter)
   rv$comparisons[[length(rv$comparisons) + 1]] <- list(id = comp_id, treat = treat, ctrl = ctrl, name = comp_name)
   updateTextInput(session, "comp_name", value = "")
+  # 添加比较后，自动排序失效
+  message("[DEBUG] comparison_setup: add_comparison -> manual_sort_active(FALSE)")
   manual_sort_active(FALSE)
   showNotification("Comparison added.", type = "message", duration = 2)
 })
@@ -58,6 +60,7 @@ observeEvent(input$batch_add_pairwise, {
     rv$comparisons[[length(rv$comparisons) + 1]] <- list(id = comp_id, treat = other, ctrl = ref_group, name = comp_name)
     added <- added + 1
   }
+  message("[DEBUG] comparison_setup: batch_add_pairwise -> manual_sort_active(FALSE)")
   manual_sort_active(FALSE)
   showNotification(paste("Added", added, "pairwise comparisons."), type = "message", duration = 3, id = "comp_msg")
 })
@@ -74,7 +77,10 @@ sort_comparisons <- function(comps) {
 }
 
 sorted_comps <- reactive({
-  if (manual_sort_active()) rv$comparisons else sort_comparisons(rv$comparisons)
+  # 根据 manual_sort_active 决定是否重新排序
+  active <- manual_sort_active()
+  message("[DEBUG] comparison_setup: sorted_comps called, manual_sort_active = ", active)
+  if (active) rv$comparisons else sort_comparisons(rv$comparisons)
 })
 
 # 比较列表UI
@@ -121,12 +127,15 @@ observeEvent(input$comparison_drag, {
   else if (insert_pos > length(comps)) comps <- c(comps, list(elem))
   else comps <- c(comps[1:(insert_pos-1)], list(elem), comps[insert_pos:length(comps)])
   rv$comparisons <- comps
+  # 拖放后启用手动排序
+  message("[DEBUG] comparison_setup: drag -> manual_sort_active(TRUE)")
   manual_sort_active(TRUE)
   showNotification("Comparison order updated.", type = "message", duration = 1)
 })
 
 # 自动排序
 observeEvent(input$auto_sort_comparisons, {
+  message("[DEBUG] comparison_setup: auto_sort -> manual_sort_active(FALSE)")
   manual_sort_active(FALSE)
   showNotification("Comparisons re-sorted naturally.", type = "message", duration = 2)
 })
@@ -140,6 +149,7 @@ observe({
       remove_btn <- paste0("remove_comp_", comp_id)
       observeEvent(input[[remove_btn]], {
         rv$comparisons <- Filter(function(x) x$id != comp_id, rv$comparisons)
+        message("[DEBUG] comparison_setup: remove_comp -> manual_sort_active(FALSE)")
         manual_sort_active(FALSE)
         showNotification("Comparison removed.", type = "message", duration = 2)
       }, ignoreInit = TRUE, once = TRUE)
@@ -150,6 +160,7 @@ observe({
 # 清除所有比较
 observeEvent(input$clear_comparisons, {
   rv$comparisons <- list()
+  message("[DEBUG] comparison_setup: clear_comparisons -> manual_sort_active(FALSE)")
   manual_sort_active(FALSE)
   showNotification("All comparisons cleared.", type = "message", duration = 2)
 })
@@ -172,6 +183,3 @@ observeEvent(input$goto_comparisons, {
 })
 
 # ===== 以下与Venn/Upset相关的输出和观察者已完全移除 =====
-# 删除了: output$export_comparisons_ui, output$upset_comparisons_checkbox_ui
-# 删除了: observeEvent(input$select_toggle_upset, ...)
-# 删除了: 更新 venn_comparisons_select 的 observer

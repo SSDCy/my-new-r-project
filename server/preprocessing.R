@@ -3,8 +3,7 @@
 # 注意：expression_data 反应式已在 server/data_upload.R 中定义，
 # 本文件直接使用 expression_data()，不再重复定义。
 # 样本名标准化统一使用 standardize_sample_name()（定义在 data_upload.R）
-# 修复：impute_missing_values 在回退时返回 actual_method 属性，
-#       processed_data 据此记录实际方法，避免报告错误。
+# 修复：impute_missing_values 已移至 global.R，此处不再定义。
 # 修复：imputation_comparison_data 和 filter_comparison_data 增加一致性检查，
 #       但 filter_comparison_data 的检查移到过滤之后，避免误判。
 # 修复：batch_pca_plot 增加显式颜色映射，防止点全灰。
@@ -246,93 +245,6 @@ output$pre_raw_missing_plot <- renderPlot({
   })
 })
 
-# ---------- 缺失值填充函数（增加 k 参数，并返回实际使用的方法属性）----------
-impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4) {
-  if (method == "none") {
-    attr(data, "actual_method") <- "none"
-    return(data)
-  }
-  
-  data_matrix <- as.matrix(data)
-  actual_method <- method
-  
-  if (method == "knn") {
-    if (!requireNamespace("impute", quietly = TRUE))
-      stop("impute package required for KNN. Run BiocManager::install('impute')")
-    message("[DEBUG] impute_missing_values: KNN imputation with k = ", k)
-    suppressMessages({
-      impute_result <- impute::impute.knn(data_matrix, k = k)
-    })
-    data_matrix <- impute_result$data
-    actual_method <- "knn"
-  } else if (method == "ppca") {
-    if (!requireNamespace("pcaMethods", quietly = TRUE))
-      stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
-    
-    orig_rows <- rownames(data)
-    orig_cols <- colnames(data)
-    
-    na_rows <- which(rowSums(is.na(data_matrix)) == ncol(data_matrix))
-    na_cols <- which(colSums(is.na(data_matrix)) == nrow(data_matrix))
-    constant_cols <- which(apply(data_matrix, 2, var, na.rm = TRUE) == 0)
-    remove_cols <- unique(c(na_cols, constant_cols))
-    
-    clean <- data_matrix
-    if (length(na_rows) > 0) clean <- clean[-na_rows, , drop = FALSE]
-    if (length(remove_cols) > 0) clean <- clean[, -remove_cols, drop = FALSE]
-    
-    if (nrow(clean) < 2 || ncol(clean) < 2) {
-      message("[DEBUG] impute_missing_values: PPCA not feasible, falling back to KNN")
-      result <- impute_missing_values(data, method = "knn", k = k)
-      attr(result, "actual_method") <- "knn (fallback from ppca)"
-      return(result)
-    }
-    
-    success <- FALSE
-    tryCatch({
-      pc <- pcaMethods::ppca(clean, nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
-      imputed_clean <- as.matrix(pcaMethods::completeObs(pc))
-      success <- TRUE
-    }, error = function(e) {
-      message("[DEBUG] PPCA imputation failed, automatically switching to KNN: ", e$message)
-    })
-    
-    if (!success) {
-      message("[DEBUG] impute_missing_values: PPCA failed, now using KNN as fallback")
-      result <- impute_missing_values(data, method = "knn", k = k)
-      attr(result, "actual_method") <- "knn (fallback from ppca)"
-      return(result)
-    }
-    
-    full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
-    rownames(full_matrix) <- orig_rows
-    colnames(full_matrix) <- orig_cols
-    
-    row_idx <- setdiff(seq_len(nrow(data_matrix)), na_rows)
-    col_idx <- setdiff(seq_len(ncol(data_matrix)), remove_cols)
-    full_matrix[row_idx, col_idx] <- imputed_clean
-    
-    if (length(na_rows) > 0) full_matrix[na_rows, ] <- min_value
-    if (length(na_cols) > 0) full_matrix[, na_cols] <- min_value
-    if (length(constant_cols) > 0) {
-      for (j in constant_cols) {
-        full_matrix[, j] <- data_matrix[, j]
-      }
-    }
-    data_matrix <- full_matrix
-    actual_method <- "ppca"
-  } else {
-    stop("Unknown imputation method.")
-  }
-  
-  rownames(data_matrix) <- rownames(data)
-  colnames(data_matrix) <- colnames(data)
-  result <- as.data.frame(data_matrix)
-  attr(result, "actual_method") <- actual_method
-  message("[DEBUG] impute_missing_values: completed with actual method = ", actual_method)
-  return(result)
-}
-
 # ---------- ComBat 批次校正 ----------
 combat_correction <- function(data, batch) {
   if (!requireNamespace("sva", quietly = TRUE))
@@ -389,10 +301,12 @@ preprocessing_params <- reactiveValues(
   missing_filter_mode = "global",
   missing_filtered_by_group = 0,
   knn_k = 10,
+  min_value = 1e-4,
+  quantile_prob = 0.01,
   intensity_min_samples = 1,
   missing_filter_fallback = FALSE,
   missing_filter_fallback_unmatched = 0,
-  intensity_type_used = NULL   # 记录预处理时使用的强度类型
+  intensity_type_used = NULL
 )
 
 # ============ 智能批次诊断 ============
@@ -454,7 +368,6 @@ batch_diagnostic <- reactive({
   })
 })
 
-# 自动启用批次校正的观察者
 observe({
   diag <- batch_diagnostic()
   req(diag)
@@ -494,7 +407,6 @@ output$batch_correction_performed <- reactive({
 })
 outputOptions(output, "batch_correction_performed", suspendWhenHidden = FALSE)
 
-# ============ 冲突管理：禁止 None 填充 + 批次校正同时启用 ============
 observe({
   message("[DEBUG] conflict check: imputation = ", input$imputation_method, ", batch = ", input$perform_batch_correction)
   if (identical(input$imputation_method, "none")) {
@@ -508,7 +420,6 @@ observe({
   }
 })
 
-# ============ 辅助函数：根据模式过滤缺失值（增强：提示回退） ============
 apply_missing_filter <- function(data, threshold, mode, sample_info = NULL, sample_names_short = NULL) {
   if (threshold >= 1) return(data)
   fallback_triggered <- FALSE
@@ -547,7 +458,6 @@ apply_missing_filter <- function(data, threshold, mode, sample_info = NULL, samp
   return(result)
 }
 
-# ============ 辅助函数：强度过滤 ============
 apply_intensity_filter <- function(data, threshold, min_samples) {
   if (threshold <= 0) return(data)
   above_counts <- apply(data, 1, function(x) sum(x > threshold, na.rm = TRUE))
@@ -556,14 +466,13 @@ apply_intensity_filter <- function(data, threshold, min_samples) {
   data[keep, , drop = FALSE]
 }
 
-# ============ 核心预处理反应式 ============
+# ============ 核心预处理反应式（传递新参数） ============
 processed_data <- eventReactive(input$run_preprocessing, {
   showNotification("Running preprocessing...", type = "message", duration = NULL, id = "preprocess_notif")
   tryCatch({
     data <- expression_data()
     message("[DEBUG] processed_data: starting preprocessing")
     
-    # 记录本次预处理对应的强度类型
     preprocessing_params$intensity_type_used <- input$intensity_type
     message("[DEBUG] processed_data: intensity type recorded: ", input$intensity_type)
     
@@ -573,31 +482,20 @@ processed_data <- eventReactive(input$run_preprocessing, {
     preprocessing_params$missing_filter_fallback_unmatched <- 0
     message("[DEBUG] missing filter mode: ", filter_mode)
     
-    # 1. 缺失值过滤（可能触发回退）
-    data <- apply_missing_filter(
-      data, 
-      threshold = input$max_missing_fraction,
-      mode = filter_mode,
-      sample_info = rv$sample_info,
-      sample_names_short = rv$sample_names
-    )
+    data <- apply_missing_filter(data, threshold = input$max_missing_fraction, mode = filter_mode,
+                                 sample_info = rv$sample_info, sample_names_short = rv$sample_names)
     fallback_triggered <- attr(data, "fallback_triggered")
     unmatched_count <- attr(data, "unmatched_count")
     if (isTRUE(fallback_triggered)) {
       preprocessing_params$missing_filter_fallback <- TRUE
       preprocessing_params$missing_filter_fallback_unmatched <- unmatched_count
-      showNotification(
-        paste0("⚠️ 分组缺失值过滤：", unmatched_count, " 个样本未匹配到任何组，已自动切换为全局模式过滤。"),
-        type = "warning", duration = 10, id = "missing_fallback_notif"
-      )
-      # 更新UI下拉框为 global
+      showNotification(paste0("⚠️ 分组缺失值过滤：", unmatched_count, " 个样本未匹配到任何组，已自动切换为全局模式过滤。"),
+                       type = "warning", duration = 10, id = "missing_fallback_notif")
       updateSelectInput(session, "missing_filter_mode", selected = "global")
       message("[DEBUG] processed_data: missing filter fell back to global, UI updated")
     }
-    
     if (nrow(data) == 0) stop("No proteins left after missing value filter. Relax the threshold.")
     
-    # 2. 强度过滤
     max_int <- apply(data, 1, max, na.rm = TRUE)
     keep_finite <- is.finite(max_int)
     preprocessing_params$inf_filtered_count <- sum(!keep_finite)
@@ -610,26 +508,32 @@ processed_data <- eventReactive(input$run_preprocessing, {
       if (is.na(min_samples) || min_samples < 1) min_samples <- 1
       preprocessing_params$intensity_min_samples <- min_samples
       data <- apply_intensity_filter(data, input$min_intensity, min_samples)
-      if (nrow(data) == 0) stop("No proteins left after intensity filter. Lower the threshold or reduce the required number of samples.")
+      if (nrow(data) == 0) stop("No proteins left after intensity filter.")
     }
     
-    # 3. 缺失值填补
+    # 3. 缺失值填补：传递新参数
+    impute_method <- input$imputation_method
     knn_k <- input$knn_k
     if (is.null(knn_k) || is.na(knn_k) || knn_k < 1) knn_k <- 10
+    quantile_prob <- if (impute_method == "quantile") input$quantile_prob %||% 0.01 else 0.01
+    min_val <- if (impute_method == "minvalue") input$minvalue_fixed %||% 1e-4 else 1e-4
     preprocessing_params$knn_k <- knn_k
+    preprocessing_params$min_value <- min_val
+    preprocessing_params$quantile_prob <- quantile_prob
     
-    if (input$imputation_method == "none") {
+    if (impute_method == "none") {
       preprocessing_params$imputation_method <- "none"
       message("[DEBUG] imputation: skipped (none)")
     } else {
-      data <- impute_missing_values(data, method = input$imputation_method, k = knn_k)
+      data <- impute_missing_values(data, method = impute_method, k = knn_k,
+                                    min_value = min_val, quantile_prob = quantile_prob)
       actual_method <- attr(data, "actual_method")
-      if (is.null(actual_method)) actual_method <- input$imputation_method
+      if (is.null(actual_method)) actual_method <- impute_method
       preprocessing_params$imputation_method <- actual_method
-      message("[DEBUG] imputation: performed with method recorded as '", actual_method, "' (user selected: ", input$imputation_method, ")")
+      message("[DEBUG] imputation: performed with method recorded as '", actual_method, "' (user selected: ", impute_method, ")")
     }
     
-    # 4. 批次校正
+    # 4. 批次校正（保持不变）
     preprocessing_params$batch_performed <- FALSE
     preprocessing_params$batch_corrected_cols <- NULL
     preprocessing_params$batch_uncorrected_cols <- NULL
@@ -642,58 +546,24 @@ processed_data <- eventReactive(input$run_preprocessing, {
         info_rows <- rownames(rv$sample_info)
         expr_norm <- standardize_sample_name(expr_cols)
         info_norm <- standardize_sample_name(info_rows)
-        
         message("[DEBUG] batch correction: matching samples...")
         message("[DEBUG] expr_norm (first 5): ", paste(head(expr_norm, 5), collapse = ", "))
         message("[DEBUG] info_norm (first 5): ", paste(head(info_norm, 5), collapse = ", "))
-        
         match_idx <- match(expr_norm, info_norm)
         n_total <- length(expr_cols)
         n_matched <- sum(!is.na(match_idx))
         n_unmatched <- n_total - n_matched
-        matched_samples <- expr_cols[!is.na(match_idx)]
-        unmatched_samples <- if (n_unmatched > 0) expr_cols[is.na(match_idx)] else character(0)
-        
-        match_summary <- list(
-          total = n_total,
-          matched = n_matched,
-          unmatched = n_unmatched,
-          matched_samples = matched_samples,
-          unmatched_samples = unmatched_samples
-        )
-        preprocessing_params$batch_match_summary <- match_summary
-        
-        message("[DEBUG] batch correction: total samples = ", n_total, ", matched = ", n_matched, ", unmatched = ", n_unmatched)
-        if (n_unmatched > 0) {
-          if (length(unmatched_samples) > 5) {
-            message("[DEBUG] unmatched samples (first 5): ", paste(head(unmatched_samples, 5), collapse = ", "), " ... and ", length(unmatched_samples)-5, " more")
-          } else {
-            message("[DEBUG] unmatched samples: ", paste(unmatched_samples, collapse = ", "))
-          }
-        }
-        
         if (n_matched == 0) {
-          showNotification(
-            paste0("⚠️ 批次校正跳过：没有样本能匹配到样本信息表。请检查样本名是否一致。"),
-            type = "error", duration = 10, id = "batch_match_notif"
-          )
-        } else if (n_unmatched > 0) {
-          sample_list <- if (length(unmatched_samples) > 5) {
-            paste0(paste(head(unmatched_samples, 5), collapse = ", "), " ...等", length(unmatched_samples), "个")
-          } else {
-            paste(unmatched_samples, collapse = ", ")
+          showNotification("⚠️ 批次校正跳过：没有样本能匹配到样本信息表。", type = "error", duration = 10)
+        } else {
+          if (n_unmatched > 0) {
+            showNotification(paste0("⚠️ 批次校正：", n_unmatched, " 个样本无法匹配（共 ", n_total, " 个）。未匹配样本：",
+                                    paste(if (n_unmatched > 5) paste(head(expr_cols[is.na(match_idx)], 5), collapse = ", ") else expr_cols[is.na(match_idx)], collapse = ", ")),
+                             type = "warning", duration = 10)
           }
-          showNotification(
-            paste0("⚠️ 批次校正：", n_unmatched, " 个样本无法匹配（共 ", n_total, " 个）。未匹配样本：", sample_list),
-            type = "warning", duration = 10, id = "batch_match_notif"
-          )
-        }
-        
-        if (n_matched > 0) {
           keep_samples <- !is.na(match_idx)
           batch_info <- rv$sample_info[match_idx[keep_samples], "Batch"]
-          unique_vals <- unique(batch_info)
-          if (length(unique_vals) < 2) {
+          if (length(unique(batch_info)) < 2) {
             showNotification("批次校正跳过：匹配后的样本仅有一个批次值。", type = "warning", duration = 8)
           } else {
             preprocessing_params$pre_batch_data <- data[, keep_samples, drop = FALSE]
@@ -704,12 +574,13 @@ processed_data <- eventReactive(input$run_preprocessing, {
             data[, keep_samples] <- corrected_part
             preprocessing_params$batch_performed <- TRUE
             preprocessing_params$batch_corrected_cols <- expr_cols[keep_samples]
-            preprocessing_params$batch_uncorrected_cols <- if (n_unmatched > 0) unmatched_samples else NULL
+            preprocessing_params$batch_uncorrected_cols <- if (n_unmatched > 0) expr_cols[is.na(match_idx)] else NULL
             preprocessing_params$post_batch_data <- data
-            showNotification(
-              paste0("批次校正完成：校正了 ", n_matched, " 个样本", if (n_unmatched > 0) paste0("，", n_unmatched, " 个样本未校正")),
-              type = "message", duration = 5, id = "batch_done_notif"
-            )
+            preprocessing_params$batch_match_summary <- list(total = n_total, matched = n_matched, unmatched = n_unmatched,
+                                                             matched_samples = expr_cols[keep_samples],
+                                                             unmatched_samples = if (n_unmatched > 0) expr_cols[is.na(match_idx)] else character(0))
+            showNotification(paste0("批次校正完成：校正了 ", n_matched, " 个样本", if (n_unmatched > 0) paste0("，", n_unmatched, " 个样本未校正")),
+                             type = "message", duration = 5, id = "batch_done_notif")
           }
         }
       } else {
@@ -732,7 +603,6 @@ processed_data <- eventReactive(input$run_preprocessing, {
   })
 })
 
-# 在数据上传或强度类型切换时重置预处理相关状态，使其失效
 observeEvent(input$expression_file, {
   message("[DEBUG] expression file uploaded, resetting batch params and invalidating processed data")
   preprocessing_params$batch_performed <- FALSE
@@ -781,6 +651,8 @@ output$pre_processed_summary <- renderPrint({
     method_display <- switch(preprocessing_params$imputation_method,
                              knn = "K近邻填补法",
                              ppca = "概率主成分分析填补法",
+                             minvalue = paste0("最小值填充（固定值 ", preprocessing_params$min_value, "）"),
+                             quantile = paste0("分位数填充（概率 ", preprocessing_params$quantile_prob, "）"),
                              "knn (fallback from ppca)" = "K近邻填补法（因PPCA失败自动回退）",
                              none = "无（跳过填充）")
     cat("缺失值处理方式：", method_display, "\n")
@@ -871,12 +743,8 @@ filter_comparison_data <- reactive({
   threshold <- input$max_missing_fraction
   message("[DEBUG] filter_comparison_data: mode = ", filter_mode, ", threshold = ", threshold)
   
-  # 对原始数据应用相同的过滤
-  before <- apply_missing_filter(
-    before, threshold, filter_mode,
-    sample_info = rv$sample_info,
-    sample_names_short = rv$sample_names
-  )
+  before <- apply_missing_filter(before, threshold, filter_mode,
+                                 sample_info = rv$sample_info, sample_names_short = rv$sample_names)
   max_int <- apply(before, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_int)
   before <- before[keep_finite, , drop = FALSE]
@@ -887,7 +755,6 @@ filter_comparison_data <- reactive({
   
   message("[DEBUG] filter_comparison_data: after filters, before dim = ", nrow(before), "x", ncol(before))
   
-  # 提取蛋白ID
   protein_ids <- rv$clean_data$`Master protein IDs`
   if (is.null(protein_ids) || length(protein_ids) != nrow(before)) {
     protein_ids <- rownames(before)
@@ -922,14 +789,9 @@ filter_comparison_data <- reactive({
   
   raw_for_export <- cbind(Protein_ID = protein_ids, before)
   
-  # 填充缺失值以便可视化比较
   before_impute <- impute_missing_values(before, method = "knn")
   after_impute <- after
   
-  message("[DEBUG] filter_comparison_data: before_impute dim = ", nrow(before_impute), "x", ncol(before_impute),
-          "; after_impute dim = ", nrow(after_impute), "x", ncol(after_impute))
-  
-  # 检查过滤并填充后的数据是否维度一致
   if (nrow(before_impute) != nrow(after_impute) || ncol(before_impute) != ncol(after_impute)) {
     message("[DEBUG] filter_comparison_data: imputed dimension mismatch! Check preprocessing parameters.")
     return(NULL)
@@ -939,12 +801,7 @@ filter_comparison_data <- reactive({
   before_impute <- before_impute[, common_cols, drop = FALSE]
   after_impute <- after_impute[, common_cols, drop = FALSE]
   
-  list(
-    detailed = detailed,
-    raw_before = raw_for_export,
-    before_impute = before_impute,
-    after_impute = after_impute
-  )
+  list(detailed = detailed, raw_before = raw_for_export, before_impute = before_impute, after_impute = after_impute)
 })
 
 output$filter_boxplot <- renderPlot({
@@ -959,23 +816,17 @@ output$filter_boxplot <- renderPlot({
   }
   before_log <- log2(as.matrix(dat$before_impute) + 1)
   after_log <- log2(as.matrix(dat$after_impute) + 1)
-  
   before_df <- data.frame(Sample = rep(colnames(before_log), each = nrow(before_log)),
-                          Intensity = as.vector(before_log),
-                          Stage = "Before Filtering")
+                          Intensity = as.vector(before_log), Stage = "Before Filtering")
   after_df <- data.frame(Sample = rep(colnames(after_log), each = nrow(after_log)),
-                         Intensity = as.vector(after_log),
-                         Stage = "After Filtering")
+                         Intensity = as.vector(after_log), Stage = "After Filtering")
   plot_df <- rbind(before_df, after_df)
   plot_df$Stage <- factor(plot_df$Stage, levels = c("Before Filtering", "After Filtering"))
-  
   ggplot(plot_df, aes(x = Sample, y = Intensity, fill = Stage)) +
     geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
     scale_fill_manual(values = c("Before Filtering" = "#3498db", "After Filtering" = "#2ecc71")) +
-    labs(title = "Intensity Distribution (log2) Before and After Filtering",
-         y = "log2(Intensity)", x = "") +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+    labs(title = "Intensity Distribution (log2) Before and After Filtering", y = "log2(Intensity)", x = "") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 })
 
 safe_pca <- function(mat, scale = TRUE) {
@@ -1003,154 +854,97 @@ output$filter_pca_plot <- renderPlot({
   after_ids <- rownames(dat$after_impute)
   before_sub <- dat$before_impute[after_ids, , drop = FALSE]
   after_sub <- dat$after_impute[after_ids, , drop = FALSE]
-  
   if (nrow(before_sub) < 3) {
-    plot.new()
-    text(0.5, 0.5, "Not enough common proteins for PCA.")
+    plot.new(); text(0.5, 0.5, "Not enough common proteins for PCA.")
     return()
   }
-  
   before_log <- log2(as.matrix(before_sub) + 1)
   after_log <- log2(as.matrix(after_sub) + 1)
-  
   pca_before <- safe_pca(before_log)
   pca_after <- safe_pca(after_log)
-  
   if (is.null(pca_before) || is.null(pca_after)) {
-    plot.new()
-    text(0.5, 0.5, "PCA failed due to insufficient variability or missing values.")
+    plot.new(); text(0.5, 0.5, "PCA failed.")
     return()
   }
-  
   var_before <- round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1)
   var_after <- round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
-  
   df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before")
   df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After")
   pca_df <- rbind(df_before, df_after)
-  
   ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
     geom_point(alpha = 0.6, size = 2) +
     stat_ellipse(type = "norm", level = 0.95) +
     scale_color_manual(values = c("Before" = "#3498db", "After" = "#2ecc71")) +
-    labs(title = "PCA: Before vs After Filtering (common proteins)",
-         x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
+    labs(title = "PCA: Before vs After Filtering", x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
          y = paste0("PC2 (Before: ", var_before[2], "%, After: ", var_after[2], "%)")) +
-    theme_bw() +
-    theme(legend.position = "bottom")
+    theme_bw() + theme(legend.position = "bottom")
 })
 
 output$filter_summary_table <- DT::renderDT({
-  if (is.null(processed_data())) {
-    return(DT::datatable(data.frame(Message = "Please run preprocessing first.")))
-  }
+  if (is.null(processed_data())) return(DT::datatable(data.frame(Message = "Please run preprocessing first.")))
   dat <- filter_comparison_data()
-  if (is.null(dat)) {
-    return(DT::datatable(data.frame(Message = "Data mismatch. Please re-run preprocessing.")))
-  }
-  detailed <- dat$detailed
-  DT::datatable(detailed, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  if (is.null(dat)) return(DT::datatable(data.frame(Message = "Data mismatch. Please re-run preprocessing.")))
+  DT::datatable(dat$detailed, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$download_filter_table <- downloadHandler(
   filename = function() paste0("Filter_Comparison_", Sys.Date(), ".xlsx"),
   content = function(file) {
-    if (is.null(processed_data())) {
-      showNotification("Please run preprocessing first.", type = "error")
-      return()
-    }
+    if (is.null(processed_data())) { showNotification("Please run preprocessing first.", type = "error"); return() }
     dat <- filter_comparison_data()
-    if (is.null(dat)) {
-      showNotification("Data mismatch. Please re-run preprocessing.", type = "error")
-      return()
-    }
+    if (is.null(dat)) { showNotification("Data mismatch.", type = "error"); return() }
     detailed <- dat$detailed
     raw_before <- dat$raw_before
-    
     wb <- openxlsx::createWorkbook()
     openxlsx::addWorksheet(wb, "Raw Data Before Filtering")
     openxlsx::writeData(wb, "Raw Data Before Filtering", raw_before)
-    
     total_proteins <- nrow(detailed)
     inf_removed <- sum(!detailed$Pass_Inf_Filter)
     missing_removed <- sum(detailed$Pass_Inf_Filter & !detailed$Pass_Missing_Filter)
     intensity_removed <- sum(detailed$Pass_Inf_Filter & detailed$Pass_Missing_Filter & !detailed$Pass_Intensity_Filter)
     retained <- sum(detailed$Retained_After_Filter)
-    
     summary_rows <- data.frame(
       Metric = c("Total Proteins (Before Filtering)", "Inf Value Filter Removed",
                  "Missing Rate Filter Removed", "Intensity Filter Removed", "Final Retained Proteins"),
       Count = c(total_proteins, inf_removed, missing_removed, intensity_removed, retained),
       stringsAsFactors = FALSE
     )
-    
     openxlsx::addWorksheet(wb, "Protein Details")
     openxlsx::writeData(wb, "Protein Details", summary_rows, startRow = 1, startCol = 1, colNames = TRUE)
     detail_start_row <- nrow(summary_rows) + 3
     openxlsx::writeData(wb, "Protein Details", detailed, startRow = detail_start_row, startCol = 1, colNames = TRUE)
-    
     now_time <- Sys.time()
     uploaded_name <- if (!is.null(input$expression_file)) input$expression_file$name else "Unknown"
     n_samples <- length(rv$sample_names)
-    if (is.null(n_samples)) n_samples <- ncol(dat$before_impute)
-    
     miss_threshold <- input$max_missing_fraction
     inten_threshold <- input$min_intensity
-    
-    log_items <- c(
-      "Experiment Name", "Number of Samples", "Analysis Time", "Analyst", "",
-      "--- Filtering Procedure (applied in order) ---",
-      "Step 1: Inf/Abnormal Value Filter", "  Rule", "  Filtered Protein Count",
-      "Step 2: Missing Rate Filter", "  Formula (Missing Rate = missing samples / total samples)",
-      "  Threshold (max allowed fraction)", "  Filtered Protein Count",
-      "Step 3: Intensity Filter", "  Formula (Intensity = max expression value across all samples)",
-      "  Threshold (min intensity)", "  Filtered Protein Count", "",
-      "--- Column Definitions ---",
-      "Missing_Rate_Before: Missing rate = missing sample count / total sample count",
-      "Max_Intensity_Before: Maximum intensity among all samples for each protein",
-      "Mean_Intensity_Before: Average intensity across samples",
-      "Median_Intensity_Before: Median intensity across samples",
-      "Pass_Inf_Filter: TRUE if max intensity is finite (not Inf/NaN)",
-      "Pass_Missing_Filter: TRUE if missing rate <= threshold",
-      "Pass_Intensity_Filter: TRUE if max intensity > intensity threshold",
-      "Retained_After_Filter: TRUE if protein meets ALL three conditions",
-      "Missing_Fraction_Threshold: user-set missing fraction cutoff",
-      "Intensity_Threshold: user-set minimum intensity cutoff"
-    )
-    
-    log_values <- c(
-      uploaded_name, as.character(n_samples), format(now_time, "%Y-%m-%d %H:%M:%S"), "Not provided", "", "", "",
-      "Proteins with non-finite (Inf/NaN) maximum intensity are removed",
-      as.character(inf_removed), "", "", as.character(miss_threshold), as.character(missing_removed),
-      "", "", as.character(inten_threshold), as.character(intensity_removed), "", "",
-      "", "", "", "", "", "", "", "", "", ""
-    )
-    
-    stopifnot(length(log_items) == length(log_values))
+    log_items <- c("Experiment Name", "Number of Samples", "Analysis Time", "Analyst", "",
+                   "--- Filtering Procedure ---", "Step 1: Inf Filter", "  Rule", "  Count",
+                   "Step 2: Missing Rate Filter", "  Threshold", "  Count",
+                   "Step 3: Intensity Filter", "  Threshold", "  Count", "",
+                   "--- Column Definitions ---", "...")
+    log_values <- c(uploaded_name, as.character(n_samples), format(now_time, "%Y-%m-%d %H:%M:%S"), "Not provided", "", "", "",
+                    "Proteins with non-finite max intensity removed", as.character(inf_removed), "", "",
+                    as.character(miss_threshold), as.character(missing_removed), "", "",
+                    as.character(inten_threshold), as.character(intensity_removed), "", "", "...")
     log_df <- data.frame(Item = log_items, Value = log_values, stringsAsFactors = FALSE)
-    
     openxlsx::addWorksheet(wb, "Filtering Log")
     openxlsx::writeData(wb, "Filtering Log", log_df)
     openxlsx::setColWidths(wb, "Filtering Log", cols = 1, widths = 60)
     openxlsx::setColWidths(wb, "Filtering Log", cols = 2, widths = 40)
-    
     openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
   }
 )
 
 # ============ 缺失值填补前后对比 ============
-
 pre_imputation_matrix <- reactive({
   req(processed_data())
   data <- expression_data()
   filter_mode <- preprocessing_params$missing_filter_mode
   threshold <- input$max_missing_fraction
   message("[DEBUG] pre_imputation_matrix: mode = ", filter_mode, ", threshold = ", threshold)
-  data <- apply_missing_filter(
-    data, threshold, filter_mode,
-    sample_info = rv$sample_info,
-    sample_names_short = rv$sample_names
-  )
+  data <- apply_missing_filter(data, threshold, filter_mode,
+                               sample_info = rv$sample_info, sample_names_short = rv$sample_names)
   max_int <- apply(data, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_int)
   data <- data[keep_finite, , drop = FALSE]
@@ -1165,28 +959,22 @@ imputation_comparison_data <- reactive({
   req(processed_data(), pre_imputation_matrix())
   before_imp <- pre_imputation_matrix()
   after_imp <- processed_data()
-  
   if (nrow(before_imp) != nrow(after_imp) || ncol(before_imp) != ncol(after_imp)) {
-    message("[DEBUG] imputation_comparison_data: dimension mismatch. Before: ", nrow(before_imp), "x", ncol(before_imp), "; After: ", nrow(after_imp), "x", ncol(after_imp))
+    message("[DEBUG] imputation_comparison_data: dimension mismatch")
     return(NULL)
   }
-  
   message("[DEBUG] imputation_comparison_data: before rows = ", nrow(before_imp), ", after rows = ", nrow(after_imp))
   
   all_ids <- rv$clean_data$`Master protein IDs`
   expr_ids <- rownames(expression_data())
   before_ids <- rownames(before_imp)
   idx <- match(before_ids, expr_ids)
-  protein_ids <- all_ids[idx]
-  if (any(is.na(protein_ids))) {
-    protein_ids <- before_ids
-  }
+  protein_ids <- if (any(is.na(all_ids[idx]))) before_ids else all_ids[idx]
   
   missing_before <- rowSums(is.na(before_imp))
   missing_rate_before <- rowMeans(is.na(before_imp))
   mean_before <- rowMeans(before_imp, na.rm = TRUE)
   median_before <- apply(before_imp, 1, median, na.rm = TRUE)
-  
   mean_after <- rowMeans(as.matrix(after_imp), na.rm = TRUE)
   median_after <- apply(after_imp, 1, median, na.rm = TRUE)
   
@@ -1210,37 +998,17 @@ imputation_comparison_data <- reactive({
   total_missing_before <- sum(missing_before)
   missing_after <- sum(is.na(after_imp))
   method <- preprocessing_params$imputation_method
-  params <- if (grepl("knn", method)) {
-    paste0("k = ", preprocessing_params$knn_k)
-  } else if (method == "ppca") {
-    "nPcs = 2, scale = 'uv', center = TRUE"
-  } else {
-    method
-  }
+  params <- if (grepl("knn", method)) paste0("k = ", preprocessing_params$knn_k) else method
   
-  list(
-    detailed = detailed,
-    before_vis = before_vis,
-    after_vis = after_vis,
-    total_missing_before = total_missing_before,
-    missing_after = missing_after,
-    method = method,
-    params = params,
-    n_proteins = nrow(before_imp),
-    n_samples = ncol(before_imp)
-  )
+  list(detailed = detailed, before_vis = before_vis, after_vis = after_vis,
+       total_missing_before = total_missing_before, missing_after = missing_after,
+       method = method, params = params, n_proteins = nrow(before_imp), n_samples = ncol(before_imp))
 })
 
 output$imputation_stats_text <- renderPrint({
-  if (is.null(processed_data())) {
-    cat("Please run preprocessing first.\n")
-    return()
-  }
+  if (is.null(processed_data())) { cat("Please run preprocessing first.\n"); return() }
   dat <- imputation_comparison_data()
-  if (is.null(dat)) {
-    cat("Data mismatch. Please re-run preprocessing.\n")
-    return()
-  }
+  if (is.null(dat)) { cat("Data mismatch.\n"); return() }
   cat("Total missing values before imputation:", dat$total_missing_before, "\n")
   cat("Missing values after imputation:", dat$missing_after, "\n")
   cat("Imputation method:", dat$method, "\n")
@@ -1248,94 +1016,41 @@ output$imputation_stats_text <- renderPrint({
 })
 
 output$imputation_boxplot <- renderPlot({
-  if (is.null(processed_data())) {
-    plot.new(); text(0.5, 0.5, "Please run preprocessing first.", cex = 1.2)
-    return()
-  }
+  if (is.null(processed_data())) { plot.new(); text(0.5, 0.5, "Please run preprocessing first."); return() }
   dat <- imputation_comparison_data()
-  if (is.null(dat)) {
-    plot.new(); text(0.5, 0.5, "Data mismatch. Please re-run preprocessing.", cex = 1.2)
-    return()
-  }
+  if (is.null(dat)) { plot.new(); text(0.5, 0.5, "Data mismatch."); return() }
   before_log <- log2(as.matrix(dat$before_vis) + 1)
   after_log <- log2(as.matrix(dat$after_vis) + 1)
-  
   before_df <- data.frame(Sample = rep(colnames(before_log), each = nrow(before_log)),
-                          Intensity = as.vector(before_log),
-                          Stage = "Before Imputation")
+                          Intensity = as.vector(before_log), Stage = "Before Imputation")
   after_df <- data.frame(Sample = rep(colnames(after_log), each = nrow(after_log)),
-                         Intensity = as.vector(after_log),
-                         Stage = "After Imputation")
+                         Intensity = as.vector(after_log), Stage = "After Imputation")
   plot_df <- rbind(before_df, after_df)
   plot_df$Stage <- factor(plot_df$Stage, levels = c("Before Imputation", "After Imputation"))
-  
-  sample_names <- colnames(before_log)
-  group_levels <- gsub("\\..*", "", sample_names)
-  plot_df$Group <- rep(group_levels, each = nrow(before_log))
-  
-  n_proteins <- nrow(before_log)
-  n_samples <- length(sample_names)
-  method_display <- switch(dat$method, knn = "KNN", ppca = "PPCA", "knn (fallback from ppca)" = "KNN (fallback)", none = "None", dat$method)
-  subtitle_text <- paste0(method_display, " Imputation | ", n_proteins, " proteins | ", n_samples, " samples")
-  
-  group_summary <- data.frame(
-    Sample = sample_names,
-    Group = group_levels,
-    stringsAsFactors = FALSE
-  )
-  
-  max_y <- max(plot_df$Intensity, na.rm = TRUE)
-  y_tile <- max_y * 1.08
-  tile_height <- max_y * 0.02
-  
   ggplot(plot_df, aes(x = Sample, y = Intensity, fill = Stage)) +
     geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
     labs(title = "Intensity Distribution (log2) Before and After Imputation",
-         subtitle = subtitle_text,
          y = "log2(Intensity)", x = "") +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
-          legend.position = "bottom")
+    theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), legend.position = "bottom")
 })
 
 output$imputation_pca_plot <- renderPlot({
-  if (is.null(processed_data())) {
-    plot.new(); text(0.5, 0.5, "Please run preprocessing first.", cex = 1.2)
-    return()
-  }
+  if (is.null(processed_data())) { plot.new(); text(0.5, 0.5, "Please run preprocessing first."); return() }
   dat <- imputation_comparison_data()
-  if (is.null(dat)) {
-    plot.new(); text(0.5, 0.5, "Data mismatch. Please re-run preprocessing.", cex = 1.2)
-    return()
-  }
+  if (is.null(dat)) { plot.new(); text(0.5, 0.5, "Data mismatch."); return() }
   before_sub <- dat$before_vis
   after_sub <- dat$after_vis
-  
-  if (nrow(before_sub) < 3) {
-    plot.new()
-    text(0.5, 0.5, "Not enough proteins for PCA.")
-    return()
-  }
-  
+  if (nrow(before_sub) < 3) { plot.new(); text(0.5, 0.5, "Not enough proteins for PCA."); return() }
   before_log <- log2(as.matrix(before_sub) + 1)
   after_log <- log2(as.matrix(after_sub) + 1)
-  
   pca_before <- safe_pca(before_log)
   pca_after <- safe_pca(after_log)
-  
-  if (is.null(pca_before) || is.null(pca_after)) {
-    plot.new()
-    text(0.5, 0.5, "PCA failed due to insufficient variability or missing values.")
-    return()
-  }
-  
+  if (is.null(pca_before) || is.null(pca_after)) { plot.new(); text(0.5, 0.5, "PCA failed."); return() }
   var_before <- round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1)
   var_after <- round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
-  
   df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before Imputation")
   df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After Imputation")
   pca_df <- rbind(df_before, df_after)
-  
   ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
     geom_point(alpha = 0.6, size = 2) +
     stat_ellipse(type = "norm", level = 0.95) +
@@ -1343,75 +1058,47 @@ output$imputation_pca_plot <- renderPlot({
     labs(title = "PCA: Before vs After Imputation",
          x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
          y = paste0("PC2 (Before: ", var_before[2], "%, After: ", var_after[2], "%)")) +
-    theme_bw() +
-    theme(legend.position = "bottom")
+    theme_bw() + theme(legend.position = "bottom")
 })
 
 output$imputation_qq_plot <- renderPlot({
-  if (is.null(processed_data())) {
-    plot.new(); text(0.5, 0.5, "Please run preprocessing first.", cex = 1.2)
-    return()
-  }
+  if (is.null(processed_data())) { plot.new(); text(0.5, 0.5, "Please run preprocessing first."); return() }
   dat <- imputation_comparison_data()
-  if (is.null(dat)) {
-    plot.new(); text(0.5, 0.5, "Data mismatch. Please re-run preprocessing.", cex = 1.2)
-    return()
-  }
+  if (is.null(dat)) { plot.new(); text(0.5, 0.5, "Data mismatch."); return() }
   before_log <- log2(as.matrix(dat$before_vis) + 1)
   after_log <- log2(as.matrix(dat$after_vis) + 1)
-  
   qq_before <- data.frame(Intensity = as.vector(before_log), Stage = "Before Imputation")
   qq_after <- data.frame(Intensity = as.vector(after_log), Stage = "After Imputation")
   qq_df <- rbind(qq_before, qq_after)
-  
   ggplot(qq_df, aes(sample = Intensity, color = Stage)) +
-    stat_qq(size = 0.5, alpha = 0.5) +
-    stat_qq_line() +
+    stat_qq(size = 0.5, alpha = 0.5) + stat_qq_line() +
     scale_color_manual(values = c("Before Imputation" = "#e67e22", "After Imputation" = "#9b59b6")) +
-    labs(title = "Q-Q Plot: Normality Check Before and After Imputation",
-         subtitle = paste("Log2 Intensity Distribution"),
-         x = "Theoretical Quantiles",
-         y = "Sample Quantiles") +
-    theme_bw() +
-    theme(legend.position = "bottom")
+    labs(title = "Q-Q Plot: Before vs After Imputation", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+    theme_bw() + theme(legend.position = "bottom")
 })
 
 output$imputation_summary_table <- DT::renderDT({
-  if (is.null(processed_data())) {
-    return(DT::datatable(data.frame(Message = "Please run preprocessing first.")))
-  }
+  if (is.null(processed_data())) return(DT::datatable(data.frame(Message = "Please run preprocessing first.")))
   dat <- imputation_comparison_data()
-  if (is.null(dat)) {
-    return(DT::datatable(data.frame(Message = "Data mismatch. Please re-run preprocessing.")))
-  }
-  DT::datatable(dat$detailed,
-                options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  if (is.null(dat)) return(DT::datatable(data.frame(Message = "Data mismatch.")))
+  DT::datatable(dat$detailed, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$download_imputation_table <- downloadHandler(
   filename = function() paste0("Imputation_Comparison_", Sys.Date(), ".xlsx"),
   content = function(file) {
-    if (is.null(processed_data())) {
-      showNotification("Please run preprocessing first.", type = "error")
-      return()
-    }
+    if (is.null(processed_data())) { showNotification("Please run preprocessing first.", type = "error"); return() }
     dat <- imputation_comparison_data()
-    if (is.null(dat)) {
-      showNotification("Data mismatch. Please re-run preprocessing.", type = "error")
-      return()
-    }
+    if (is.null(dat)) { showNotification("Data mismatch.", type = "error"); return() }
     detailed <- dat$detailed
-    
     wb <- openxlsx::createWorkbook()
     openxlsx::addWorksheet(wb, "Imputation Details")
-    
     total <- nrow(detailed)
     na_count <- sum(detailed$Missing_Count_Before > 0)
-    na_pct <- round(na_count / total * 100, 1)
+    na_pct <- round(na_count/total*100,1)
     total_missing <- dat$total_missing_before
     total_cells <- dat$n_proteins * dat$n_samples
-    missing_pct <- round(total_missing / total_cells * 100, 1)
-    
+    missing_pct <- round(total_missing/total_cells*100,1)
     summary_labels <- c(
       paste0("Total Proteins: ", total),
       paste0("Proteins with NA before imputation: ", na_count, " (", na_pct, "%)"),
@@ -1420,79 +1107,34 @@ output$download_imputation_table <- downloadHandler(
       paste0("Imputation method: ", dat$method),
       paste0("Parameters: ", dat$params)
     )
-    summary_rows <- data.frame(Metric = summary_labels, stringsAsFactors = FALSE)
-    
-    openxlsx::writeData(wb, "Imputation Details", summary_rows, startRow = 1, startCol = 1, colNames = TRUE)
-    openxlsx::writeData(wb, "Imputation Details", detailed, startRow = nrow(summary_rows) + 3, startCol = 1, colNames = TRUE)
-    
+    openxlsx::writeData(wb, "Imputation Details", data.frame(Metric = summary_labels), startRow = 1, startCol = 1, colNames = TRUE)
+    openxlsx::writeData(wb, "Imputation Details", detailed, startRow = length(summary_labels)+3, startCol = 1, colNames = TRUE)
     now_time <- Sys.time()
-    log_items <- c(
-      "Experiment Name", "Analysis Time", "Imputation Method", "Parameters",
-      "", "--- Column Definitions ---",
-      "Missing_Count_Before: Number of missing values per protein before imputation",
-      "Missing_Rate_Before: Missing rate before imputation",
-      "Mean_Intensity_Before: Average intensity before imputation (NA ignored)",
-      "Median_Intensity_Before: Median intensity before imputation (NA ignored)",
-      "Mean_Intensity_After: Average intensity after imputation",
-      "Median_Intensity_After: Median intensity after imputation"
-    )
-    log_values <- c(
-      if (!is.null(input$expression_file)) input$expression_file$name else "Unknown",
-      format(now_time, "%Y-%m-%d %H:%M:%S"),
-      dat$method,
-      dat$params,
-      "", "", "", "", "", "", "", ""
-    )
-    log_df <- data.frame(Item = log_items, Value = log_values, stringsAsFactors = FALSE)
-    
+    log_items <- c("Experiment Name", "Analysis Time", "Imputation Method", "Parameters")
+    log_values <- c(if (!is.null(input$expression_file)) input$expression_file$name else "Unknown",
+                    format(now_time, "%Y-%m-%d %H:%M:%S"), dat$method, dat$params)
+    log_df <- data.frame(Item = log_items, Value = log_values)
     openxlsx::addWorksheet(wb, "Imputation Log")
     openxlsx::writeData(wb, "Imputation Log", log_df)
     openxlsx::setColWidths(wb, "Imputation Log", cols = 1, widths = 50)
     openxlsx::setColWidths(wb, "Imputation Log", cols = 2, widths = 40)
-    
     openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
   }
 )
 
 # ============ 跳过填充时的专属图表 ============
-
 output$missing_heatmap_skipped <- renderPlot({
   req(pre_imputation_matrix())
   mat <- pre_imputation_matrix()
   miss_mat <- is.na(as.matrix(mat)) * 1
-  rownames(miss_mat) <- rownames(mat)
-  colnames(miss_mat) <- colnames(mat)
-  
   sample_groups <- gsub("\\..*", "", colnames(mat))
-  sample_groups <- factor(sample_groups, levels = unique(sample_groups))
-  ann_col <- data.frame(Group = sample_groups, row.names = colnames(mat))
-  
-  group_levels <- levels(sample_groups)
-  if (length(group_levels) <= 8) {
-    group_color_vec <- RColorBrewer::brewer.pal(length(group_levels), "Set2")
-  } else {
-    group_color_vec <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(length(group_levels))
-  }
-  names(group_color_vec) <- group_levels
-  ann_colors <- list(Group = group_color_vec)
-  
-  if (nrow(miss_mat) > 1000) {
-    set.seed(123)
-    miss_mat <- miss_mat[sample(1:nrow(miss_mat), 1000), ]
-  }
-  
-  pheatmap::pheatmap(miss_mat,
-                     color = c("#3498db", "#e74c3c"),
-                     legend_breaks = c(0, 1),
-                     legend_labels = c("Present", "Missing"),
-                     cluster_rows = TRUE,
-                     cluster_cols = TRUE,
-                     show_rownames = FALSE,
-                     show_colnames = TRUE,
-                     annotation_col = ann_col,
-                     annotation_colors = ann_colors,
-                     main = "Missing Value Heatmap (Blue = Present, Red = Missing)",
-                     fontsize_col = 8)
+  ann_col <- data.frame(Group = factor(sample_groups), row.names = colnames(mat))
+  ann_colors <- list(Group = setNames(RColorBrewer::brewer.pal(length(unique(sample_groups)), "Set2"), unique(sample_groups)))
+  pheatmap::pheatmap(miss_mat, color = c("#3498db", "#e74c3c"),
+                     legend_breaks = c(0, 1), legend_labels = c("Present", "Missing"),
+                     cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE,
+                     show_colnames = TRUE, annotation_col = ann_col, annotation_colors = ann_colors,
+                     main = "Missing Value Heatmap", fontsize_col = 8)
 })
 
 output$valid_barplot_skipped <- renderPlot({
@@ -1500,113 +1142,64 @@ output$valid_barplot_skipped <- renderPlot({
   mat <- pre_imputation_matrix()
   valid_pct <- (1 - colMeans(is.na(mat))) * 100
   df <- data.frame(Sample = names(valid_pct), ValidPct = valid_pct)
-  df$Sample <- factor(df$Sample, levels = df$Sample)
-  
-  ggplot(df, aes(x = Sample, y = ValidPct)) +
-    geom_col(fill = "#3498db", alpha = 0.8) +
-    geom_hline(yintercept = 70, color = "red", linetype = "dashed", linewidth = 1) +
-    annotate("text", x = 1, y = 72, label = "70% threshold", color = "red", hjust = 0) +
-    labs(title = "Valid Values per Sample", y = "Valid Percentage (%)", x = "") +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+  ggplot(df, aes(x = Sample, y = ValidPct)) + geom_col(fill = "#3498db", alpha = 0.8) +
+    geom_hline(yintercept = 70, color = "red", linetype = "dashed") +
+    labs(title = "Valid Values per Sample", y = "Valid Percentage (%)") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
 })
 
 output$missing_summary_table_skipped <- renderTable({
   req(pre_imputation_matrix())
   mat <- pre_imputation_matrix()
-  n_prot <- nrow(mat)
-  n_samp <- ncol(mat)
-  overall_na <- round(mean(is.na(mat)) * 100, 1)
+  n_prot <- nrow(mat); n_samp <- ncol(mat)
+  overall_na <- round(mean(is.na(mat))*100, 1)
   na_proteins <- sum(rowSums(is.na(mat)) > 0)
-  avg_valid <- round(mean(1 - colMeans(is.na(mat))) * 100, 1)
-  
-  data.frame(
-    Metric = c("Total Proteins", "Total Samples", "Overall Missing Rate",
-               "Proteins with Missing Values", "Average Valid Value % per Sample"),
-    Value = c(n_prot, n_samp, paste0(overall_na, "%"), na_proteins, paste0(avg_valid, "%")),
-    Description = c("Number of proteins after filtering",
-                    "Number of samples",
-                    "Percentage of all protein-sample pairs with NA",
-                    "Number of proteins with at least one missing value",
-                    "Mean of valid value percentages across samples"),
-    stringsAsFactors = FALSE
-  )
+  avg_valid <- round(mean(1 - colMeans(is.na(mat)))*100, 1)
+  data.frame(Metric = c("Total Proteins", "Total Samples", "Overall Missing Rate",
+                        "Proteins with Missing Values", "Average Valid Value % per Sample"),
+             Value = c(n_prot, n_samp, paste0(overall_na,"%"), na_proteins, paste0(avg_valid,"%")),
+             stringsAsFactors = FALSE)
 }, striped = TRUE, bordered = TRUE, width = "100%")
 
-# ============ 批次校正前后 PCA 对比（修复颜色） ============
+# ============ 批次校正前后 PCA 对比 ============
 batch_comparison_pca <- reactive({
   req(processed_data(), preprocessing_params$batch_performed)
   before <- preprocessing_params$pre_batch_data
   after <- preprocessing_params$post_batch_data
   if (is.null(before) || is.null(after)) return(NULL)
-  
   common_cols <- intersect(colnames(before), colnames(after))
-  before <- before[, common_cols, drop = FALSE]
-  after <- after[, common_cols, drop = FALSE]
-  
-  before_t <- t(log2(as.matrix(before) + 1))
-  after_t <- t(log2(as.matrix(after) + 1))
-  
-  before_ok <- apply(before_t, 2, function(x) all(is.finite(x)))
-  after_ok <- apply(after_t, 2, function(x) all(is.finite(x)))
-  keep_cols <- which(before_ok & after_ok)
-  if (length(keep_cols) < 2) return(NULL)
-  before_t <- before_t[, keep_cols, drop = FALSE]
-  after_t <- after_t[, keep_cols, drop = FALSE]
-  
-  before_var <- apply(before_t, 2, var)
-  after_var <- apply(after_t, 2, var)
-  keep_var <- which(before_var > 1e-12 & after_var > 1e-12)
-  if (length(keep_var) < 2) return(NULL)
-  before_t <- before_t[, keep_var, drop = FALSE]
-  after_t <- after_t[, keep_var, drop = FALSE]
-  
+  before <- before[, common_cols, drop = FALSE]; after <- after[, common_cols, drop = FALSE]
+  before_t <- t(log2(as.matrix(before) + 1)); after_t <- t(log2(as.matrix(after) + 1))
+  ok <- apply(before_t, 2, function(x) all(is.finite(x))) & apply(after_t, 2, function(x) all(is.finite(x)))
+  before_t <- before_t[, ok, drop = FALSE]; after_t <- after_t[, ok, drop = FALSE]
+  before_t <- before_t[, apply(before_t, 2, var) > 1e-12, drop = FALSE]
+  after_t <- after_t[, apply(after_t, 2, var) > 1e-12, drop = FALSE]
+  if (ncol(before_t) < 2 || ncol(after_t) < 2) return(NULL)
   pca_before <- tryCatch(prcomp(before_t, scale. = TRUE), error = function(e) NULL)
   pca_after <- tryCatch(prcomp(after_t, scale. = TRUE), error = function(e) NULL)
   if (is.null(pca_before) || is.null(pca_after)) return(NULL)
-  
-  sample_info_short <- rv$sample_info
-  rownames(sample_info_short) <- standardize_sample_name(rownames(sample_info_short))
-  before_norm <- standardize_sample_name(colnames(before))
-  after_norm <- standardize_sample_name(colnames(after))
-  batch_before <- sample_info_short[before_norm, "Batch"]
-  batch_after <- sample_info_short[after_norm, "Batch"]
-  
-  list(
-    pca_before = pca_before,
-    pca_after = pca_after,
-    batch_before = batch_before,
-    batch_after = batch_after,
-    var_before = round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1),
-    var_after = round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
-  )
+  si <- rv$sample_info; rownames(si) <- standardize_sample_name(rownames(si))
+  batch_before <- si[standardize_sample_name(colnames(before)), "Batch"]
+  batch_after <- si[standardize_sample_name(colnames(after)), "Batch"]
+  list(pca_before = pca_before, pca_after = pca_after, batch_before = batch_before, batch_after = batch_after,
+       var_before = round(pca_before$sdev^2 / sum(pca_before$sdev^2)*100, 1),
+       var_after = round(pca_after$sdev^2 / sum(pca_after$sdev^2)*100, 1))
 })
 
 output$batch_pca_plot <- renderPlot({
   dat <- batch_comparison_pca()
-  if (is.null(dat)) {
-    plot.new(); text(0.5, 0.5, "PCA not available")
-    return()
-  }
+  if (is.null(dat)) { plot.new(); text(0.5, 0.5, "PCA not available"); return() }
   df_before <- data.frame(PC1 = dat$pca_before$x[,1], PC2 = dat$pca_before$x[,2],
                           Batch = dat$batch_before, Stage = "Before Correction")
   df_after <- data.frame(PC1 = dat$pca_after$x[,1], PC2 = dat$pca_after$x[,2],
                          Batch = dat$batch_after, Stage = "After Correction")
   pca_df <- rbind(df_before, df_after)
   pca_df$Stage <- factor(pca_df$Stage, levels = c("Before Correction", "After Correction"))
-  
-  batches <- unique(na.omit(c(as.character(dat$batch_before), as.character(dat$batch_after))))
-  if (length(batches) > 8) {
-    batch_colors <- setNames(rainbow(length(batches)), batches)
-  } else {
-    batch_colors <- setNames(RColorBrewer::brewer.pal(length(batches), "Set1"), batches)
-  }
-  
+  batches <- unique(na.omit(c(dat$batch_before, dat$batch_after)))
+  batch_colors <- setNames(rainbow(length(batches)), batches)
   ggplot(pca_df, aes(x = PC1, y = PC2, color = Batch)) +
-    geom_point(size = 3, alpha = 0.8) +
-    stat_ellipse(type = "norm", level = 0.95) +
-    scale_color_manual(values = batch_colors) +
-    facet_wrap(~ Stage) +
+    geom_point(size = 3, alpha = 0.8) + stat_ellipse(type = "norm", level = 0.95) +
+    scale_color_manual(values = batch_colors) + facet_wrap(~ Stage) +
     labs(title = "PCA Before and After ComBat Batch Correction",
          x = paste0("PC1 (Before: ", dat$var_before[1], "%, After: ", dat$var_after[1], "%)"),
          y = paste0("PC2 (Before: ", dat$var_before[2], "%, After: ", dat$var_after[2], "%)")) +
@@ -1615,11 +1208,8 @@ output$batch_pca_plot <- renderPlot({
 
 output$batch_pca_interpretation <- renderUI({
   diag <- batch_diagnostic()
-  if (diag$status == "significant") {
-    p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布出现分离趋势，提示存在批次效应，建议启用校正。")
-  } else {
-    p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布无明显聚类，说明无显著批次效应，无需校正。")
-  }
+  if (diag$status == "significant") p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布出现分离趋势。")
+  else p("图注：红色 = Batch1，青色 = Batch2。校正前后批次样本分布无明显聚类。")
 })
 
 output$download_batch_pca <- downloadHandler(
@@ -1633,23 +1223,12 @@ output$download_batch_pca <- downloadHandler(
                            Batch = dat$batch_after, Stage = "After Correction")
     pca_df <- rbind(df_before, df_after)
     pca_df$Stage <- factor(pca_df$Stage, levels = c("Before Correction", "After Correction"))
-    
-    batches <- unique(na.omit(c(as.character(dat$batch_before), as.character(dat$batch_after))))
-    if (length(batches) > 8) {
-      batch_colors <- setNames(rainbow(length(batches)), batches)
-    } else {
-      batch_colors <- setNames(RColorBrewer::brewer.pal(length(batches), "Set1"), batches)
-    }
-    
+    batches <- unique(na.omit(c(dat$batch_before, dat$batch_after)))
+    batch_colors <- setNames(rainbow(length(batches)), batches)
     plot <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Batch)) +
-      geom_point(size = 3, alpha = 0.8) +
-      stat_ellipse(type = "norm", level = 0.95) +
-      scale_color_manual(values = batch_colors) +
-      facet_wrap(~ Stage) +
-      labs(title = "PCA Before and After ComBat Batch Correction",
-           x = paste0("PC1 (Before: ", dat$var_before[1], "%, After: ", dat$var_after[1], "%)"),
-           y = paste0("PC2 (Before: ", dat$var_before[2], "%, After: ", dat$var_after[2], "%)")) +
-      theme_bw() + theme(legend.position = "bottom")
+      geom_point(size = 3, alpha = 0.8) + stat_ellipse(type = "norm", level = 0.95) +
+      scale_color_manual(values = batch_colors) + facet_wrap(~ Stage) +
+      labs(title = "PCA Before and After ComBat Batch Correction") + theme_bw() + theme(legend.position = "bottom")
     ggsave(file, plot = plot, width = 12, height = 6, dpi = 150)
   }
 )
