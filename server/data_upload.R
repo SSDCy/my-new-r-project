@@ -52,7 +52,7 @@ get_group_colors <- function(groups) {
   setNames(pal[1:length(groups)], groups)
 }
 
-# ================== 数据质量分析辅助函数（添加详细调试） ==================
+# ================== 数据质量分析辅助函数（已修改，填充后计算相关性） ==================
 calculate_data_quality_score <- function(expr_matrix) {
   message("[DEBUG] calculate_data_quality_score: starting, dim = ", 
           if (!is.null(expr_matrix)) paste(nrow(expr_matrix), "x", ncol(expr_matrix)) else "NULL")
@@ -67,11 +67,32 @@ calculate_data_quality_score <- function(expr_matrix) {
   missing_score <- max(0, 30 * (1 - missing_ratio * 2))
   message(sprintf("[DEBUG] calculate_data_quality_score: missing_ratio=%.3f, missing_score=%.1f", missing_ratio, missing_score))
   
-  sample_cor <- cor(expr_matrix, use = "pairwise.complete.obs")
+  # ---- 修改：先填充缺失值再计算样本相关性 ----
+  # 记录原始缺失值数量
+  original_na <- sum(is.na(expr_matrix))
+  message("[DEBUG] calculate_data_quality_score: original NA count = ", original_na)
+  
+  # 使用 KNN 填充
+  filled <- tryCatch({
+    message("[DEBUG] calculate_data_quality_score: attempting KNN imputation for correlation")
+    impute_missing_values(as.data.frame(expr_matrix), method = "knn")
+  }, error = function(e) {
+    message("[DEBUG] calculate_data_quality_score: KNN failed (", e$message, "), using simple min fill")
+    expr_matrix[is.na(expr_matrix)] <- 1e-4
+    return(expr_matrix)
+  })
+  filled <- as.matrix(filled)
+  after_na <- sum(is.na(filled))
+  message("[DEBUG] calculate_data_quality_score: after imputation, NA count = ", after_na)
+  
+  # 计算样本相关性（所有蛋白对使用相同样本集）
+  sample_cor <- cor(filled, use = "complete.obs")
   diag(sample_cor) <- NA
   avg_cor <- mean(sample_cor, na.rm = TRUE)
+  message(sprintf("[DEBUG] calculate_data_quality_score: avg_cor (post-imputation) = %.3f", avg_cor))
+  
   consistency_score <- max(0, 40 * pmin(1, avg_cor / 0.8))
-  message(sprintf("[DEBUG] calculate_data_quality_score: avg_cor=%.3f, consistency_score=%.1f", avg_cor, consistency_score))
+  message(sprintf("[DEBUG] calculate_data_quality_score: consistency_score=%.1f", consistency_score))
   
   protein_valid <- rowSums(!is.na(expr_matrix)) >= 2
   protein_valid_ratio <- mean(protein_valid)
@@ -104,28 +125,34 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
   recommendations <- list()
   special_note <- ""
   
+  # 缺失率评估
   if (details$missing_ratio < 10) {
     key_findings <- c(key_findings, list(list(
-      type = "success", title = "✅ 低缺失率",
+      type = "success",
+      title = "✅ 低缺失率",
       content = paste0("数据缺失率仅为 ", details$missing_ratio, "%，完整性非常好，可直接进行下游分析。\n→ 对应预处理操作：无需特殊处理，或设置缺失值过滤阈值为 0.3 进行轻度过滤")
     )))
   } else if (details$missing_ratio < 20) {
     key_findings <- c(key_findings, list(list(
-      type = "success", title = "✅ 较低缺失率",
+      type = "success",
+      title = "✅ 较低缺失率",
       content = paste0("数据缺失率为 ", details$missing_ratio, "%，整体完整性较好，不影响主要分析。\n→ 对应预处理操作：建议设置缺失值过滤阈值为 0.5，并执行 KNN 填充")
     )))
   } else if (details$missing_ratio < 40) {
     key_findings <- c(key_findings, list(list(
-      type = "warning", title = "⚠️ 中等缺失率",
+      type = "warning",
+      title = "⚠️ 中等缺失率",
       content = paste0("数据缺失率为 ", details$missing_ratio, "%，会降低部分统计方法的效力。\n→ 对应预处理操作：设置缺失值过滤阈值为 0.5，并执行 KNN 或 PPCA 填充")
     )))
   } else {
     key_findings <- c(key_findings, list(list(
-      type = "danger", title = "高缺失率",
+      type = "danger",
+      title = "高缺失率",
       content = paste0("数据缺失率高达 ", details$missing_ratio, "%，会直接影响后续差异分析、聚类的可靠性。\n→ 对应预处理操作：缺失值过滤（阈值 0.5）+ 缺失值填充（KNN/PPCA）")
     )))
   }
   
+  # 样本一致性
   if (details$avg_correlation > 0.9) {
     key_findings <- c(key_findings, list(list(
       type = "success", title = "✅ 优秀的样本一致性",
@@ -148,6 +175,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
+  # 蛋白有效检出率
   if (details$protein_valid_ratio > 80) {
     key_findings <- c(key_findings, list(list(
       type = "success", title = "蛋白有效检出率高",
@@ -165,6 +193,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     )))
   }
   
+  # PCA 相关的深入分析
   message("[DEBUG] generate_quality_report: running PCA analysis...")
   pca_result <- calculate_pca(expr_matrix, sample_info)
   if (!is.null(pca_result)) {
@@ -173,6 +202,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     pc2 <- pca_df$PC2
     samples_pca <- pca_df$Sample
     
+    # 批次效应检测
     if (!is.null(sample_info) && "Batch" %in% colnames(sample_info)) {
       message("[DEBUG] generate_quality_report: checking batch effect...")
       si_names <- standardize_sample_name(rownames(sample_info))
@@ -202,6 +232,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       }
     }
     
+    # 异常样本检测
     z1 <- abs((pc1 - mean(pc1)) / sd(pc1))
     z2 <- abs((pc2 - mean(pc2)) / sd(pc2))
     outlier_mask <- (z1 > 3 | z2 > 3)
@@ -213,6 +244,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
       )))
     }
     
+    # 分组效果
     if (!is.null(pca_df) && "Group" %in% colnames(pca_df) && length(unique(pca_df$Group)) >= 2) {
       groups_pca <- pca_df$Group
       group_means <- tapply(pc1, groups_pca, mean)
@@ -236,6 +268,7 @@ generate_quality_report <- function(quality_score, expr_matrix, sample_info = NU
     message("[DEBUG] generate_quality_report: PCA returned NULL, skipping deeper checks.")
   }
   
+  # 推荐操作
   if (details$missing_ratio > 20) {
     recommendations <- c(recommendations, list(list(
       title = "缺失值处理", tag = "推荐", tag_type = "danger",
@@ -278,7 +311,6 @@ calculate_missing_stats <- function(expr_matrix) {
        total_missing_ratio = round(mean(is.na(expr_matrix)) * 100, 2))
 }
 
-# ---------- 修改后的 calculate_sample_correlation（先填充再计算） ----------
 calculate_sample_correlation <- function(expr_matrix) {
   message("[DEBUG] calculate_sample_correlation: dim = ", nrow(expr_matrix), "x", ncol(expr_matrix))
   if (is.null(expr_matrix) || nrow(expr_matrix) < 2 || ncol(expr_matrix) < 2) {
@@ -286,11 +318,9 @@ calculate_sample_correlation <- function(expr_matrix) {
     return(NULL)
   }
   
-  # 统计原始缺失值数量
   original_na_count <- sum(is.na(expr_matrix))
   message("[DEBUG] calculate_sample_correlation: original NA count = ", original_na_count)
   
-  # 使用 KNN 填充缺失值，确保所有蛋白在全部样本中有值
   filled <- tryCatch({
     message("[DEBUG] calculate_sample_correlation: attempting KNN imputation")
     impute_missing_values(as.data.frame(expr_matrix), method = "knn")
@@ -303,26 +333,20 @@ calculate_sample_correlation <- function(expr_matrix) {
   new_na_count <- sum(is.na(filled))
   message("[DEBUG] calculate_sample_correlation: after imputation, NA count = ", new_na_count)
   
-  # log2 转换
   log_expr <- log2(filled + 1)
-  
-  # 选取高变异蛋白（top 500）
   row_vars <- apply(log_expr, 1, var, na.rm = TRUE)
   n_keep <- min(500, nrow(log_expr))
   top_var <- order(row_vars, decreasing = TRUE)[1:n_keep]
   log_expr <- log_expr[top_var, , drop = FALSE]
-  
   if (nrow(log_expr) < 2) {
-    message("[DEBUG] calculate_sample_correlation: not enough variable rows after filtering, return NULL")
+    message("[DEBUG] calculate_sample_correlation: not enough variable rows, return NULL")
     return(NULL)
   }
-  
-  # 现在所有样本对使用完全相同的蛋白集合，可以使用 complete.obs 计算
   cor_matrix <- cor(log_expr, use = "complete.obs")
   na_count <- sum(is.na(cor_matrix))
-  message(sprintf("[DEBUG] calculate_sample_correlation: cor matrix computed (post-imputation), NA count=%d", na_count))
+  message(sprintf("[DEBUG] calculate_sample_correlation: cor matrix computed, NA count=%d", na_count))
   if (na_count > 0) {
-    message("[DEBUG] calculate_sample_correlation: replacing remaining NAs with 0")
+    message("[DEBUG] calculate_sample_correlation: replacing NAs with 0")
     cor_matrix[is.na(cor_matrix)] <- 0
   }
   return(cor_matrix)
@@ -818,7 +842,7 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ---------- 核心：expression_data 反应式（带详细调试信息） ----------
+# ---------- 核心：expression_data 反应式 ----------
 expression_data <- reactive({
   message("[DEBUG] expression_data (from server/data_upload.R) triggered")
   req(rv$clean_data)

@@ -210,9 +210,7 @@ step_indicator <- function(steps, current_step) {
 }
 
 # =====================================================
-# 缺失值填充函数（全局定义，所有模块可直接调用）
-# 添加详细调试信息，并返回实际使用方法
-# 修改：minvalue 使用固定值填充，而非样本最小值
+# 缺失值填充函数（最终版：使用 pcaMethods::pca 避免 ppca 参数问题）
 # =====================================================
 impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4,
                                   quantile_prob = 0.01) {
@@ -243,41 +241,64 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
     if (!requireNamespace("pcaMethods", quietly = TRUE))
       stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
     
+    message("[DEBUG] impute_missing_values: PPCA started")
     orig_rows <- rownames(data)
     orig_cols <- colnames(data)
+    
+    storage.mode(data_matrix) <- "numeric"
     
     na_rows <- which(rowSums(is.na(data_matrix)) == ncol(data_matrix))
     na_cols <- which(colSums(is.na(data_matrix)) == nrow(data_matrix))
     constant_cols <- which(apply(data_matrix, 2, var, na.rm = TRUE) == 0)
     remove_cols <- unique(c(na_cols, constant_cols))
     
+    message("[DEBUG] impute_missing_values: PPCA - na_rows=", length(na_rows),
+            ", na_cols=", length(na_cols), ", constant_cols=", length(constant_cols))
+    
     clean <- data_matrix
     if (length(na_rows) > 0) clean <- clean[-na_rows, , drop = FALSE]
     if (length(remove_cols) > 0) clean <- clean[, -remove_cols, drop = FALSE]
     
+    message("[DEBUG] impute_missing_values: PPCA - clean matrix dim=", nrow(clean), "x", ncol(clean))
+    
     if (nrow(clean) < 2 || ncol(clean) < 2) {
-      message("[DEBUG] impute_missing_values: PPCA not feasible, falling back to KNN")
+      message("[DEBUG] impute_missing_values: PPCA not feasible (dim too small), falling back to KNN")
       result <- impute_missing_values(data, method = "knn", k = k)
-      attr(result, "actual_method") <- "knn (fallback from ppca)"
+      attr(result, "actual_method") <- "knn (fallback from ppca, small dim)"
       return(result)
+    }
+    
+    if (anyNA(clean)) {
+      message("[DEBUG] impute_missing_values: PPCA - clean matrix still has NAs, pre-filling with KNN")
+      clean <- impute_missing_values(as.data.frame(clean), method = "knn", k = min(k, ncol(clean)-1))
+      clean <- as.matrix(clean)
+      if (anyNA(clean)) {
+        message("[DEBUG] impute_missing_values: PPCA - still NAs after KNN prefill, falling back")
+        result <- impute_missing_values(data, method = "knn", k = k)
+        attr(result, "actual_method") <- "knn (fallback from ppca, NAs remain)"
+        return(result)
+      }
     }
     
     success <- FALSE
     tryCatch({
-      pc <- pcaMethods::ppca(clean, nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
+      # 使用 pcaMethods::pca 泛型函数，指定 method = "ppca"
+      pc <- pcaMethods::pca(clean, method = "ppca", nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
       imputed_clean <- as.matrix(pcaMethods::completeObs(pc))
       success <- TRUE
+      message("[DEBUG] impute_missing_values: PPCA succeeded via pcaMethods::pca")
     }, error = function(e) {
-      message("[DEBUG] PPCA imputation failed, automatically switching to KNN: ", e$message)
+      message("[DEBUG] impute_missing_values: PPCA failed with error: ", e$message)
     })
     
     if (!success) {
-      message("[DEBUG] impute_missing_values: PPCA failed, now using KNN as fallback")
+      message("[DEBUG] impute_missing_values: PPCA failed, falling back to KNN")
       result <- impute_missing_values(data, method = "knn", k = k)
       attr(result, "actual_method") <- "knn (fallback from ppca)"
       return(result)
     }
     
+    # 重构完整矩阵
     full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
     rownames(full_matrix) <- orig_rows
     colnames(full_matrix) <- orig_cols
@@ -293,11 +314,11 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
         full_matrix[, j] <- data_matrix[, j]
       }
     }
+    
     data_matrix <- full_matrix
     actual_method <- "ppca"
     
   } else if (method == "minvalue") {
-    # 使用用户指定的固定值填充，而非样本最小值
     val <- if (is.null(min_value) || is.na(min_value)) 1e-4 else min_value
     message("[DEBUG] impute_missing_values: minvalue imputation with fixed value = ", val)
     data_matrix[is.na(data_matrix)] <- val
