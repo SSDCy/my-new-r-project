@@ -38,7 +38,6 @@ preprocessing_ui <- function() {
                 h4("2. Minimum Intensity Filter", style = "color: #337ab7;"),
                 numericInput("min_intensity", "Minimum intensity threshold",
                              value = 1e5, step = 1e4, min = 0),
-                # 新增：至少 N 个样本高于阈值
                 numericInput("min_samples_above_intensity", "At least N samples above threshold",
                              value = 1, min = 1, max = 100, step = 1),
                 helpText("A protein is retained if at least this many samples have intensity above the minimum intensity threshold. Set to 1 for original behavior (max value)."),
@@ -50,6 +49,8 @@ preprocessing_ui <- function() {
                 selectInput("imputation_method", "Imputation method",
                             choices = c("k-Nearest Neighbors (KNN)" = "knn",
                                         "Probabilistic PCA (PPCA)" = "ppca",
+                                        "Minimum Value (Fixed)" = "minvalue",
+                                        "Quantile (e.g. 1% quantile)" = "quantile",
                                         "None (skip imputation)" = "none"),
                             selected = "knn"),
                 conditionalPanel(
@@ -68,11 +69,20 @@ preprocessing_ui <- function() {
                            "Default parameters: nPcs = 2.")
                 ),
                 conditionalPanel(
+                  condition = "input.imputation_method == 'minvalue'",
+                  numericInput("minvalue_fixed", "Fixed minimum value", value = 1e-4, min = 0, step = 1e-5),
+                  helpText("Replace missing values with this constant value. Commonly used: 1e-4 or 1e-3. Suitable for MNAR (left-censored missing data).")
+                ),
+                conditionalPanel(
+                  condition = "input.imputation_method == 'quantile'",
+                  numericInput("quantile_prob", "Quantile (e.g. 0.01 for 1%)", value = 0.01, min = 0.001, max = 0.5, step = 0.01),
+                  helpText("Value below which data are considered low-abundance. Commonly used: 0.01 (1%) or 0.05 (5%).")
+                ),
+                conditionalPanel(
                   condition = "input.imputation_method == 'none'",
                   helpText("No imputation will be performed. Missing values will remain as NA (may affect downstream analysis).")
                 ),
                 hr(),
-                # ========== 4. Batch Correction (Optional) ==========
                 h4("4. Batch Correction (Optional)", style = "color: #337ab7;"),
                 checkboxInput("perform_batch_correction", "启用 ComBat 批次校正", value = FALSE),
                 verbatimTextOutput("batch_diagnostic_message", placeholder = TRUE),
