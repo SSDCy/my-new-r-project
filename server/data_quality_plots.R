@@ -1,7 +1,7 @@
 # server/data_quality_plots.R
 message("[DEBUG] data_quality_plots.R loaded - optimized user-friendly messages")
 
-# 辅助：安全的 validate，只在条件不满足时传入消息
+# 辅助：安全的 validate
 `%then%` <- function(a, b) { if (a) b else TRUE }
 validate_condition <- function(condition, message) {
   if (!condition) {
@@ -288,7 +288,6 @@ dq_missing_cor_plot_obj <- reactive({
   cor_mat <- cor(missing_sub, use = "pairwise.complete.obs")
   cor_mat[is.na(cor_mat)] <- 0
   
-  n_samp <- ncol(cor_mat)
   min_cor <- min(cor_mat, na.rm = TRUE)
   max_cor <- max(cor_mat, na.rm = TRUE)
   if (abs(max_cor - min_cor) < 1e-6) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
@@ -468,7 +467,11 @@ output$download_intensity_data <- downloadHandler(
   }
 )
 observeEvent(input$help_intensity, {
-  showModal(modalDialog(title = "Protein Intensity Distribution", "箱线图展示每个样本中蛋白强度的分布（log2 转换）。", easyClose = TRUE, footer = modalButton("关闭")))
+  showModal(modalDialog(
+    title = "Protein Intensity Distribution",
+    "箱线图展示每个样本中蛋白强度的分布（log2 转换）。",
+    easyClose = TRUE, footer = modalButton("关闭")
+  ))
 })
 
 # ==================== 样本相关性热图 ====================
@@ -722,23 +725,52 @@ output$dq_group_missing_test <- renderPrint({
   if (pval < 0.05) cat("Significant difference among groups.") else cat("No significant difference.")
 })
 
-# ==================== PCA（始终使用原始数据 + KNN，并显示累计方差解释率） ====================
+# ==================== PCA（基于 expression_data，绝对稳定） ====================
 dq_pca_full <- reactive({
-  message("[DEBUG] dq_pca_full: starting PCA computation (using raw data + KNN)")
-  req(dq_expr_matrix())
+  message("[DEBUG] dq_pca_full: starting PCA computation")
   
-  expr <- dq_expr_matrix()
+  # 1. 获取基础矩阵（始终可用）
+  expr <- tryCatch({
+    mat <- expression_data()
+    message("[DEBUG] dq_pca_full: expression_data() returned dim=", nrow(mat), "x", ncol(mat))
+    mat
+  }, error = function(e) {
+    message("[DEBUG] dq_pca_full: expression_data() error - ", e$message)
+    NULL
+  })
+  
+  if (is.null(expr)) {
+    message("[DEBUG] dq_pca_full: expression_data() is NULL, abort")
+    return(NULL)
+  }
+  
+  # 2. 尝试使用预处理后的数据替换（如果可用且强度类型匹配）
+  proc_mat <- tryCatch(get_analysis_matrix(), error = function(e) NULL)
+  if (!is.null(proc_mat)) {
+    message("[DEBUG] dq_pca_full: using preprocessed data (dim=", nrow(proc_mat), "x", ncol(proc_mat), ")")
+    expr <- proc_mat
+    data_source <- "Preprocessed"
+  } else {
+    message("[DEBUG] dq_pca_full: using raw expression_data")
+    data_source <- "Raw"
+  }
+  
+  # 3. 统一列名为短样本名
   sample_short <- extract_sample_names(colnames(expr))
   colnames(expr) <- sample_short
+  message("[DEBUG] dq_pca_full: columns standardized, first 3: ", paste(head(sample_short, 3), collapse = ", "))
   
+  # 4. 填充缺失值
   filled <- tryCatch({
     if (requireNamespace("impute", quietly = TRUE)) {
+      message("[DEBUG] dq_pca_full: running KNN imputation")
       impute_missing_values(expr, method = "knn")
     } else {
       expr[is.na(expr)] <- 1e-4
       expr
     }
   }, error = function(e) {
+    message("[DEBUG] dq_pca_full: KNN failed, min fill - ", e$message)
     expr[is.na(expr)] <- 1e-4
     expr
   })
@@ -749,8 +781,10 @@ dq_pca_full <- reactive({
   row_unique <- apply(log_expr, 1, function(x) length(unique(x)))
   log_expr <- log_expr[row_unique > 1, , drop = FALSE]
   
+  message("[DEBUG] dq_pca_full: rows after filtering: ", nrow(log_expr))
+  
   if (nrow(log_expr) < 2) {
-    message("[DEBUG] dq_pca_full: insufficient variable rows")
+    message("[DEBUG] dq_pca_full: too few variable rows")
     return(NULL)
   }
   
@@ -761,8 +795,7 @@ dq_pca_full <- reactive({
   if (is.null(pca)) return(NULL)
   
   variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
-  cum_variance <- cumsum(variance)   # 累计方差解释率
-  
+  cum_variance <- cumsum(variance)
   message(sprintf("[DEBUG] dq_pca_full: PC1=%.1f%%, PC2=%.1f%%, cumulative=%.1f%%", 
                   variance[1], variance[2], cum_variance[2]))
   
@@ -786,17 +819,22 @@ dq_pca_full <- reactive({
   outliers <- get_outlier_samples(list(pca_df = scores, pc1_var = variance[1], pc2_var = variance[2]))
   scores$Outlier <- ifelse(scores$Sample %in% outliers, "Outlier", "Normal")
   
-  message("[DEBUG] dq_pca_full: PCA computed successfully")
-  list(pca = pca, scores = scores, variance = variance, cum_variance = cum_variance, loadings = pca$rotation, data_source = "Raw")
+  message("[DEBUG] dq_pca_full: PCA completed, data_source = ", data_source)
+  list(pca = pca, scores = scores, variance = variance, cum_variance = cum_variance, loadings = pca$rotation, data_source = data_source)
 })
 
 output$pca_data_source_note <- renderUI({
   pca_full <- dq_pca_full()
   if (is.null(pca_full)) {
-    return(div(style = "margin-bottom: 10px; color: #e74c3c;", "PCA 计算失败，请检查数据。"))
+    return(div(style = "margin-bottom: 10px; color: #e74c3c;", "PCA 计算失败，请检查数据或运行预处理。"))
   }
-  div(style = "margin-bottom: 10px; color: #e67e22; font-weight: bold;",
-      icon("exclamation-triangle"), " PCA 数据来源：原始数据（KNN 填充）。最终的 PCA 结果请查看预处理页面。")
+  if (pca_full$data_source == "Preprocessed") {
+    div(style = "margin-bottom: 10px; color: #27ae60; font-weight: bold;",
+        icon("check-circle"), " PCA 数据来源：预处理后的数据")
+  } else {
+    div(style = "margin-bottom: 10px; color: #e67e22; font-weight: bold;",
+        icon("exclamation-triangle"), " PCA 数据来源：原始数据（KNN 填充），运行预处理后将自动切换")
+  }
 })
 
 pca_group_plot_obj <- reactive({
@@ -814,7 +852,6 @@ pca_group_plot_obj <- reactive({
     names(extra_colors) <- missing_colors
     group_colors <- c(group_colors, extra_colors)
   }
-  # 构建轴标签，包含累计方差解释率
   pc1_label <- sprintf("PC1 (%.1f%%, cum. %.1f%%)", pca_full$variance[1], pca_full$cum_variance[1])
   pc2_label <- sprintf("PC2 (%.1f%%, cum. %.1f%%)", pca_full$variance[2], pca_full$cum_variance[2])
   
@@ -831,7 +868,7 @@ output$dq_pca_group_plot <- renderPlot({
   validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   p <- pca_group_plot_obj()
   if (is.null(p)) {
-    plot.new(); text(0.5, 0.5, "PCA not available (check data)")
+    plot.new(); text(0.5, 0.5, "PCA not available")
   } else {
     print(p)
   }
@@ -871,7 +908,7 @@ pca_batch_plot_obj <- reactive({
 output$dq_pca_batch_plot <- renderPlot({
   validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   p <- pca_batch_plot_obj()
-  if (is.null(p)) { plot.new(); text(0.5, 0.5, "Batch information not available or PCA failed") }
+  if (is.null(p)) { plot.new(); text(0.5, 0.5, "Batch info not available") }
   else { print(p) }
 })
 output$download_pca_batch <- downloadHandler(
@@ -879,13 +916,13 @@ output$download_pca_batch <- downloadHandler(
   content = function(file) {
     p <- pca_batch_plot_obj()
     if (!is.null(p)) ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
-    else showNotification("PCA batch plot not available", type = "error")
+    else showNotification("PCA batch not available", type = "error")
   }
 )
 
 observeEvent(input$help_pca_group, {
-  showModal(modalDialog(title = "PCA by Group", "按实验分组着色，用于观察组间分离程度。轴标签显示各主成分的方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
+  showModal(modalDialog(title = "PCA by Group", "按实验分组着色，轴标签包含方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
 })
 observeEvent(input$help_pca_batch, {
-  showModal(modalDialog(title = "PCA by Batch", "按实验批次着色，用于检测批次效应。轴标签显示各主成分的方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
+  showModal(modalDialog(title = "PCA by Batch", "按实验批次着色，轴标签包含方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
 })
