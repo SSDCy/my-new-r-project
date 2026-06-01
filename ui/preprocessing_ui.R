@@ -1,6 +1,6 @@
 # ui/preprocessing_ui.R
 
-message("[DEBUG] preprocessing_ui.R loaded - added imputation neighbors lookup")
+message("[DEBUG] preprocessing_ui.R loaded - added PPCA visualization panel with explanations")
 
 preprocessing_ui <- function() {
   tabPanel(
@@ -92,7 +92,7 @@ preprocessing_ui <- function() {
                   helpText(style = "color: orange; font-weight: bold;",
                            "Note: PPCA imputation requires the 'pcaMethods' package.\n",
                            "Please run: BiocManager::install('pcaMethods') if not installed.\n",
-                           "Default parameters: nPcs = 2.")
+                           "Default parameters: nPcs = 2, with automatic log2 transformation to improve accuracy.")
                 ),
                 conditionalPanel(
                   condition = "input.imputation_method == 'minvalue'",
@@ -116,6 +116,26 @@ preprocessing_ui <- function() {
                   selectizeInput("knn_lookup_protein", "Select or type a protein ID to view its neighbors",
                                  choices = NULL, multiple = FALSE, width = "100%"),
                   DT::dataTableOutput("knn_lookup_table")
+                ),
+                # ---- PPCA Visualization (仅PPCA模式且预处理完成) ----
+                conditionalPanel(
+                  condition = "input.imputation_method == 'ppca' && output.preprocessing_done == true",
+                  hr(),
+                  h5("PPCA Visualization", style = "color: #2c3e50;"),
+                  tags$div(
+                    style = "background: #f9f9f9; border-radius: 8px; padding: 10px; margin-bottom: 15px;",
+                    h6(icon("chart-line"), " Score Plot (PC1 vs PC2)"),
+                    p("Each dot is a sample. The distance between dots reflects how similar their overall protein expression patterns are. The red arrow points in the direction of the largest variation in the data – think of it as the main “trend” that distinguishes your samples."),
+                    p("If dots of the same color (same experimental group) cluster together, it means the biological differences are stronger than random noise.", style = "font-size: 12px;"),
+                    plotOutput("ppca_score_plot", height = "300px")
+                  ),
+                  tags$div(
+                    style = "background: #f9f9f9; border-radius: 8px; padding: 10px;",
+                    h6(icon("chart-bar"), " Distribution of Original vs. Imputed Values"),
+                    p("Blue bars show the values that were originally present. Green bars show the values that PPCA filled in. When the two distributions overlap well (as they do now after log2‑transformation), it means the imputed values are realistic and consistent with the measured data."),
+                    p("If the green bars were only on the far left (near zero), the imputation would be poor – it would indicate the algorithm couldn't learn the real data pattern.", style = "font-size: 12px;"),
+                    plotOutput("ppca_imputation_hist", height = "250px")
+                  )
                 ),
                 # ---- 导出填补结果 ----
                 conditionalPanel(

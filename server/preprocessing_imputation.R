@@ -1,5 +1,5 @@
 # server/preprocessing_imputation.R
-message("[DEBUG] preprocessing_imputation.R loaded - imputation detail with valid neighbors and correct average")
+message("[DEBUG] preprocessing_imputation.R loaded - academic English for export sheets")
 
 # ---------- 填补前数据矩阵 ----------
 pre_imputation_matrix <- reactive({
@@ -49,7 +49,7 @@ pre_imputation_with_ids <- reactive({
   list(before = mat, ids = protein_ids)
 })
 
-# ---------- 全局缺失率过滤后的矩阵（用于邻居搜索，保证一致性） ----------
+# ---------- 全局缺失率过滤后的矩阵（仅用于KNN邻居搜索） ----------
 knn_input_data <- reactive({
   if (input$imputation_method != "knn" || is.null(pre_imputation_with_ids())) return(NULL)
   pre <- pre_imputation_with_ids()
@@ -64,7 +64,7 @@ knn_input_data <- reactive({
   list(mat = mat_filtered, ids = ids_filtered)
 })
 
-# ---------- 全局邻居信息（基于皮尔逊相关系数，快速稳定） ----------
+# ---------- 全局邻居信息（基于皮尔逊相关系数） ----------
 knn_neighbors_data <- reactive({
   input_data <- knn_input_data()
   if (is.null(input_data)) {
@@ -156,6 +156,143 @@ output$knn_lookup_table <- DT::renderDT({
     DT::formatStyle("Distance", color = "gray")
 })
 
+# ---------- 真正的PPCA填补函数（log2转换 + 反转换） ----------
+true_ppca_impute <- function(data, nPcs = 2) {
+  message("[DEBUG] true_ppca_impute: starting PPCA with log2 transformation")
+  if (!requireNamespace("pcaMethods", quietly = TRUE))
+    stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
+  
+  data_matrix <- as.matrix(data)
+  message("[DEBUG] true_ppca_impute: original data range = [", min(data_matrix, na.rm = TRUE), ", ", max(data_matrix, na.rm = TRUE), "]")
+  
+  log_data <- log2(data_matrix + 1)
+  message("[DEBUG] true_ppca_impute: log2 transformed data range = [", min(log_data, na.rm = TRUE), ", ", max(log_data, na.rm = TRUE), "]")
+  
+  na_rows <- which(rowSums(is.na(log_data)) == ncol(log_data))
+  na_cols <- which(colSums(is.na(log_data)) == nrow(log_data))
+  if (length(na_rows) > 0 || length(na_cols) > 0) {
+    message("[DEBUG] true_ppca_impute: removing all-NA rows/cols")
+    if (length(na_rows) > 0) log_data <- log_data[-na_rows, , drop = FALSE]
+    if (length(na_cols) > 0) log_data <- log_data[, -na_cols, drop = FALSE]
+  }
+  
+  pc <- pcaMethods::pca(log_data, method = "ppca", nPcs = nPcs, scale = "uv", center = TRUE)
+  imputed_log <- as.matrix(pcaMethods::completeObs(pc))
+  message("[DEBUG] true_ppca_impute: PPCA on log2 data succeeded")
+  
+  imputed_original <- 2^imputed_log - 1
+  imputed_original[imputed_original < 0] <- 0
+  message("[DEBUG] true_ppca_impute: back-transformed range = [", min(imputed_original, na.rm = TRUE), ", ", max(imputed_original, na.rm = TRUE), "]")
+  
+  return(imputed_original)
+}
+
+# ---------- PPCA 可视化数据 ----------
+ppca_visualization_data <- reactive({
+  message("[DEBUG] ppca_visualization_data: triggered. Method = ", input$imputation_method, 
+          ", processed_data exists = ", !is.null(processed_data()))
+  if (input$imputation_method != "ppca" || is.null(processed_data())) {
+    message("[DEBUG] ppca_visualization_data: not PPCA or no processed_data, returning NULL")
+    return(NULL)
+  }
+  pre <- pre_imputation_with_ids()
+  if (is.null(pre)) {
+    message("[DEBUG] ppca_visualization_data: pre_imputation_with_ids is NULL")
+    return(NULL)
+  }
+  mat <- as.matrix(pre$before)
+  message("[DEBUG] ppca_visualization_data: matrix dim = ", nrow(mat), " x ", ncol(mat))
+  
+  if (!requireNamespace("pcaMethods", quietly = TRUE)) {
+    message("[DEBUG] ppca_visualization_data: pcaMethods not installed")
+    return(NULL)
+  }
+  
+  tryCatch({
+    log_mat <- log2(mat + 1)
+    message("[DEBUG] ppca_visualization_data: starting pcaMethods::pca on log2 matrix")
+    pc <- pcaMethods::pca(log_mat, method = "ppca", nPcs = 2, scale = "uv", center = TRUE)
+    message("[DEBUG] ppca_visualization_data: PCA complete")
+    
+    scores <- as.data.frame(pcaMethods::scores(pc))
+    scores$Sample <- rownames(scores)
+    message("[DEBUG] ppca_visualization_data: scores dim = ", nrow(scores), " x ", ncol(scores))
+    
+    loadings <- as.data.frame(pcaMethods::loadings(pc))
+    loadings$Protein <- rownames(loadings)
+    
+    imputed_log <- as.matrix(pcaMethods::completeObs(pc))
+    imputed_original <- 2^imputed_log - 1
+    imputed_original[imputed_original < 0] <- 0
+    
+    message("[DEBUG] ppca_visualization_data: imputed matrix dim = ", nrow(imputed_original), " x ", ncol(imputed_original))
+    
+    list(scores = scores, loadings = loadings, imputed = imputed_original, original = mat)
+  }, error = function(e) {
+    message("[DEBUG] ppca_visualization_data error: ", e$message)
+    NULL
+  })
+})
+
+# ---------- PPCA 得分图 ----------
+output$ppca_score_plot <- renderPlot({
+  message("[DEBUG] ppca_score_plot: rendering")
+  data <- ppca_visualization_data()
+  if (is.null(data)) {
+    plot.new(); text(0.5, 0.5, "PPCA visualization not available. Please run preprocessing first with PPCA method.")
+    message("[DEBUG] ppca_score_plot: data is NULL")
+    return()
+  }
+  
+  ggplot(data$scores, aes(x = PC1, y = PC2)) +
+    geom_point(size = 3, color = "#3498db") +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    labs(title = "PPCA Score Plot (PC1 vs PC2) - on log2 scale",
+         subtitle = "Samples plotted in the space of the first two principal components.",
+         x = "Principal Component 1", y = "Principal Component 2") +
+    annotate("text", x = max(data$scores$PC1)*0.7, y = max(data$scores$PC2)*0.7, 
+             label = "Main trend\n→", color = "red", size = 5) +
+    theme_bw()
+})
+
+# ---------- PPCA 填补值分布图 ----------
+output$ppca_imputation_hist <- renderPlot({
+  message("[DEBUG] ppca_imputation_hist: rendering")
+  data <- ppca_visualization_data()
+  if (is.null(data)) {
+    plot.new(); text(0.5, 0.5, "Histogram not available.")
+    message("[DEBUG] ppca_imputation_hist: data is NULL")
+    return()
+  }
+  
+  original_vals <- as.vector(data$original)
+  imputed_vals <- as.vector(data$imputed)
+  
+  na_positions <- is.na(data$original)
+  filled_vals <- imputed_vals[na_positions]
+  non_missing <- original_vals[!is.na(original_vals)]
+  
+  df <- data.frame(
+    Value = c(non_missing, filled_vals),
+    Type = c(rep("Original (non-missing)", length(non_missing)),
+             rep("Imputed", length(filled_vals)))
+  )
+  
+  message("[DEBUG] ppca_imputation_hist: non-missing count = ", length(non_missing), 
+          ", filled count = ", length(filled_vals))
+  message("[DEBUG] ppca_imputation_hist: filled range = [", min(filled_vals), ", ", max(filled_vals), "]")
+  message("[DEBUG] ppca_imputation_hist: original non-missing range = [", min(non_missing), ", ", max(non_missing), "]")
+  
+  ggplot(df, aes(x = Value, fill = Type)) +
+    geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+    scale_fill_manual(values = c("Original (non-missing)" = "#3498db", "Imputed" = "#2ecc71")) +
+    labs(title = "Distribution of Original vs Imputed Values (log2 PPCA)",
+         subtitle = "Imputed values after log2 transformation and back-transformation.",
+         x = "Expression Value", y = "Frequency") +
+    theme_bw() + theme(legend.position = "bottom")
+})
+
 # ---------- 填补比较数据 ----------
 imputation_comparison_data <- reactive({
   req(processed_data(), pre_imputation_matrix())
@@ -209,7 +346,7 @@ imputation_comparison_data <- reactive({
   params <- if (grepl("knn", method)) {
     paste0("k = ", preprocessing_params$knn_k)
   } else if (method == "ppca") {
-    "nPcs = 2, scale = 'uv', center = TRUE"
+    "nPcs = 2, log2 transform applied"
   } else {
     method
   }
@@ -519,7 +656,7 @@ output$missing_summary_table_skipped <- renderTable({
   )
 }, striped = TRUE, bordered = TRUE, width = "100%")
 
-# ============ 导出填补结果 Excel（含详细填补细节及 Valid 标记） ============
+# ============ 导出填补结果 Excel（学术英文说明） ============
 output$download_imputation_excel <- downloadHandler(
   filename = function() {
     paste0("Imputation_Result_", Sys.Date(), ".xlsx")
@@ -534,18 +671,21 @@ output$download_imputation_excel <- downloadHandler(
     pre_data <- pre_imputation_with_ids()
     before_mat <- as.matrix(pre_data$before)
     protein_ids <- pre_data$ids
-    thr <- input$max_missing_fraction
-    
-    missing_frac <- rowMeans(is.na(before_mat))
-    keep <- missing_frac <= thr
-    before_mat <- before_mat[keep, , drop = FALSE]
-    protein_ids <- protein_ids[keep]
-    message("[DEBUG] download_imputation_excel: after global filter, rows = ", nrow(before_mat))
-    
     method <- input$imputation_method
+    thr <- input$max_missing_fraction
     k_val <- input$knn_k
     minval <- input$minvalue_fixed
     quant <- input$quantile_prob
+    
+    if (method == "knn") {
+      missing_frac <- rowMeans(is.na(before_mat))
+      keep <- missing_frac <= thr
+      before_mat <- before_mat[keep, , drop = FALSE]
+      protein_ids <- protein_ids[keep]
+      message("[DEBUG] KNN mode: after global filter, rows = ", nrow(before_mat))
+    } else {
+      message("[DEBUG] Method ", method, ": keeping all rows = ", nrow(before_mat))
+    }
     
     after_mat <- NULL
     neighbors <- NULL
@@ -553,6 +693,7 @@ output$download_imputation_excel <- downloadHandler(
     
     tryCatch({
       if (method == "knn") {
+        message("[DEBUG] Running impute.knn with k = ", k_val)
         knn_result <- impute::impute.knn(before_mat, k = k_val)
         after_mat <- knn_result$data
         
@@ -571,13 +712,17 @@ output$download_imputation_excel <- downloadHandler(
         neighbors <- neigh_mat
         correlations <- cor_mat_neighbors
       } else if (method == "ppca") {
-        after_mat <- as.matrix(impute_missing_values(before_mat, method = "ppca"))
+        message("[DEBUG] Running true PPCA imputation (with log2 transform)")
+        after_mat <- true_ppca_impute(before_mat)
       } else if (method == "minvalue") {
+        message("[DEBUG] Running minvalue imputation with value = ", minval)
         after_mat <- before_mat
         after_mat[is.na(after_mat)] <- minval
       } else if (method == "quantile") {
+        message("[DEBUG] Running quantile imputation with prob = ", quant)
         after_mat <- as.matrix(impute_missing_values(before_mat, method = "quantile", quantile_prob = quant))
       } else {
+        message("[DEBUG] No imputation (method = none)")
         after_mat <- before_mat
       }
     }, error = function(e) {
@@ -596,90 +741,80 @@ output$download_imputation_excel <- downloadHandler(
     total_imputed <- sum(na_positions)
     message("[DEBUG] total imputed cells = ", total_imputed)
     
-    # ---------- 构建详细填补表（新增 Valid 列） ----------
-    detail_list <- list()
-    if (method == "knn" && !is.null(neighbors)) {
-      sample_names <- colnames(before_mat)
-      for (i in seq_len(nrow(before_mat))) {
-        pid <- protein_ids[i]
-        missing_cols <- which(na_positions[i, ])
-        if (length(missing_cols) == 0) next
-        neigh_idx <- neighbors[i, ]
-        neigh_cor <- correlations[i, ]
-        for (col in missing_cols) {
-          neighbor_values <- before_mat[neigh_idx, col]
-          valid_neighbors <- !is.na(neighbor_values)
-          # 计算有效邻居的平均值
-          if (any(valid_neighbors)) {
-            imputed_value <- mean(neighbor_values[valid_neighbors])
-          } else {
-            imputed_value <- NA
-          }
-          for (rank in seq_along(neigh_idx)) {
-            nv <- neighbor_values[rank]
-            detail_list[[length(detail_list) + 1]] <- data.frame(
-              ProteinID = pid,
-              Sample = sample_names[col],
-              ImputedValue = round(imputed_value, 4),
-              NeighborRank = rank,
-              NeighborProteinID = protein_ids[neigh_idx[rank]],
-              NeighborValue = if (!is.na(nv)) round(nv, 4) else NA,
-              Valid = valid_neighbors[rank],
-              Correlation = round(neigh_cor[rank], 4),
-              stringsAsFactors = FALSE
-            )
-          }
-        }
-      }
-      message("[DEBUG] Built detail list with ", length(detail_list), " rows")
-    }
-    
-    # 公式说明
-    if (method == "knn") {
-      formula_text <- paste0("KNN imputation (k=", k_val, "): each missing value is replaced by the average of the k nearest neighbors (based on Pearson correlation). Neighbors with missing values in the corresponding sample are excluded from the average (Valid = FALSE).")
-    } else {
-      formula_text <- paste0("Imputation method: ", method)
-    }
-    
     wb <- openxlsx::createWorkbook()
     
-    # ---- Imputation_Info ----
+    # ---- Imputation_Info (English, academic style) ----
     openxlsx::addWorksheet(wb, "Imputation_Info")
+    if (method == "knn") {
+      desc_text <- paste0("K-Nearest Neighbors imputation (k = ", k_val, "). For each missing value, the algorithm identifies the k proteins with the most similar expression profiles (based on Pearson correlation across available samples). The missing value is replaced by the average of the k neighbors' values in the corresponding sample. Neighbors with missing data in that sample are excluded from the average.")
+    } else if (method == "ppca") {
+      desc_text <- "Probabilistic Principal Component Analysis (PPCA). The data are first log2(x+1) transformed to satisfy the normality assumption of the model. A PPCA model with 2 principal components is then fitted to the log2-transformed data using the Expectation-Maximization algorithm, which simultaneously estimates the principal components and the missing values. The imputed log2 matrix is back-transformed to the original scale (2^x - 1). This method accounts for the global covariance structure and does not rely on local neighbors."
+    } else if (method == "minvalue") {
+      desc_text <- paste0("Fixed minimum value imputation. All missing values are replaced with the constant value ", minval, ". This method is suitable when missingness is assumed to result from left-censoring at a detection limit.")
+    } else if (method == "quantile") {
+      desc_text <- paste0("Quantile imputation. For each sample column, missing values are replaced by the ", quant*100, "th percentile of the observed (non-missing) values in that column. This method assumes that missing values fall below the chosen quantile of the observed distribution.")
+    } else {
+      desc_text <- "No imputation was applied."
+    }
+    
     info_text <- c(
       "Missing Value Imputation Export",
-      paste("Data source: After Missing Value Filter (mode:", preprocessing_params$missing_filter_mode,
+      paste("Data source: after missing value filter (mode:", preprocessing_params$missing_filter_mode, 
             ", threshold:", input$max_missing_fraction, ")"),
-      "After Inf/Non-finite Filter",
-      paste("After Minimum Intensity Filter (threshold:", input$min_intensity,
+      "After Inf/Non-finite filter",
+      paste("After minimum intensity filter (threshold:", input$min_intensity,
             ", min samples:", input$min_samples_above_intensity, ")"),
-      paste("Note: Data further filtered to ensure global missing rate ≤", thr, "for KNN compatibility."),
+      if (method == "knn") paste("Additional filtering: proteins with global missing rate >", thr, "were removed to ensure sufficient observations for KNN."),
       "",
       paste("Imputation method:", method),
       "Parameters:",
       if (method == "knn") paste("  k =", k_val),
+      if (method == "ppca") "  nPcs = 2; data were log2(x+1) transformed before imputation and back-transformed afterwards.",
+      if (method == "minvalue") paste("  fixed value =", minval),
+      if (method == "quantile") paste("  quantile =", quant),
       "",
-      "Formula:",
-      formula_text,
+      "Method description:",
+      desc_text,
       "",
-      "Sheets:",
-      "- Imputation_Info: this information",
-      "- Before_Imputation: matrix with NAs before imputation",
-      "- After_Imputation: filled matrix (imputed cells highlighted in red)",
-      "- KNN_Neighbors: protein-level neighbor list (Correlation & Distance)",
-      if (!is.null(detail_list)) "- Missing_Imputation_Detail: each imputed cell with neighbor values and Valid flag",
-      "",
-      "Understanding Missing_Imputation_Detail:",
-      "  - ProteinID & Sample: location of missing value",
-      "  - ImputedValue: final filled value (average of valid neighbors)",
-      "  - NeighborRank: rank of neighbor (1 = most correlated)",
-      "  - NeighborProteinID: ID of the neighbor protein",
-      "  - NeighborValue: expression of neighbor in this sample (NA if missing)",
-      "  - Valid: TRUE if neighbor value was used in average; FALSE if neighbor was missing",
-      "  - Correlation: Pearson correlation between target and neighbor protein"
+      "Workbook sheets:",
+      "- Imputation_Info: this information.",
+      "- Before_Imputation: matrix before imputation (NA = missing).",
+      "- After_Imputation: matrix after imputation. Cells that were imputed are highlighted in red.",
+      if (method == "ppca") "- Imputation_Steps: step-by-step description of the PPCA algorithm including log2 transformation.",
+      if (!is.null(neighbors)) "- KNN_Neighbors: protein-level list of nearest neighbors (Correlation and Distance).",
+      if (!is.null(neighbors)) "- Missing_Imputation_Detail: detailed view of each imputed cell with neighbor values and validity flag."
     )
     info_df <- data.frame(Info = info_text, stringsAsFactors = FALSE)
     openxlsx::writeData(wb, "Imputation_Info", info_df)
-    openxlsx::setColWidths(wb, "Imputation_Info", cols = 1, widths = 90)
+    openxlsx::setColWidths(wb, "Imputation_Info", cols = 1, widths = 100)
+    
+    # ---- Imputation_Steps (English, for PPCA) ----
+    if (method == "ppca") {
+      openxlsx::addWorksheet(wb, "Imputation_Steps")
+      steps <- c(
+        "PPCA Imputation Procedure",
+        "",
+        "1. Log2 transformation: y = log2(x + 1) is applied to the original expression matrix to reduce skewness and approximate normality.",
+        "2. Centering and scaling: columns (samples) are centered to mean = 0 and scaled to unit variance.",
+        "3. Model fitting: a PPCA model with 2 principal components is fitted to the transformed data via the Expectation-Maximization (EM) algorithm.",
+        "   - E-step: estimates the posterior distribution of the latent variables given the current parameter estimates.",
+        "   - M-step: updates the model parameters (loadings, residual variance) by maximizing the expected complete-data log-likelihood.",
+        "   - Missing values are treated as additional latent variables and estimated during the EM iterations.",
+        "4. Imputation in log2 space: after convergence, the complete log2 matrix is reconstructed from the latent scores and loadings.",
+        "5. Back-transformation: x = 2^y - 1 restores the original expression scale.",
+        "6. Negative values arising from back-transformation are set to zero.",
+        "",
+        "Advantages:",
+        "- Utilizes the global covariance structure across all proteins and samples.",
+        "- Does not rely on a limited set of neighbors, reducing bias from outlier proteins.",
+        "- Particularly suitable for data where missing values are MAR or MCAR.",
+        "",
+        "Reference: Tipping, M. E., & Bishop, C. M. (1999). Probabilistic principal component analysis. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 61(3), 611-622."
+      )
+      steps_df <- data.frame(Step = steps, stringsAsFactors = FALSE)
+      openxlsx::writeData(wb, "Imputation_Steps", steps_df)
+      openxlsx::setColWidths(wb, "Imputation_Steps", cols = 1, widths = 100)
+    }
     
     # ---- Before_Imputation ----
     before_df <- cbind(ProteinID = protein_ids, before_mat, stringsAsFactors = FALSE)
@@ -701,8 +836,8 @@ output$download_imputation_excel <- downloadHandler(
     }
     message("[DEBUG] Applied red styles to ", total_imputed, " cells")
     
-    # ---- KNN_Neighbors (protein-level) ----
-    if (!is.null(neighbors)) {
+    # ---- KNN specific sheets ----
+    if (method == "knn" && !is.null(neighbors)) {
       message("[DEBUG] Building KNN_Neighbors sheet")
       neighbor_list <- list()
       n_k <- ncol(neighbors)
@@ -729,14 +864,42 @@ output$download_imputation_excel <- downloadHandler(
         openxlsx::writeData(wb, "KNN_Neighbors", neighbor_df)
         message("[DEBUG] KNN_Neighbors sheet written with ", nrow(neighbor_df), " rows")
       }
-    }
-    
-    # ---- Missing_Imputation_Detail ----
-    if (length(detail_list) > 0) {
-      detail_df <- do.call(rbind, detail_list)
-      openxlsx::addWorksheet(wb, "Missing_Imputation_Detail")
-      openxlsx::writeData(wb, "Missing_Imputation_Detail", detail_df)
-      message("[DEBUG] Missing_Imputation_Detail sheet written with ", nrow(detail_df), " rows")
+      
+      # Missing_Imputation_Detail
+      detail_list <- list()
+      sample_names <- colnames(before_mat)
+      for (i in seq_len(nrow(before_mat))) {
+        pid <- protein_ids[i]
+        missing_cols <- which(na_positions[i, ])
+        if (length(missing_cols) == 0) next
+        neigh_idx <- neighbors[i, ]
+        neigh_cor <- correlations[i, ]
+        for (col in missing_cols) {
+          imputed_val <- after_mat[i, col]
+          neighbor_values <- before_mat[neigh_idx, col]
+          valid_neighbors <- !is.na(neighbor_values)
+          for (rank in seq_along(neigh_idx)) {
+            nv <- neighbor_values[rank]
+            detail_list[[length(detail_list) + 1]] <- data.frame(
+              ProteinID = pid,
+              Sample = sample_names[col],
+              ImputedValue = round(imputed_val, 4),
+              NeighborRank = rank,
+              NeighborProteinID = protein_ids[neigh_idx[rank]],
+              NeighborValue = if (!is.na(nv)) round(nv, 4) else NA,
+              Valid = valid_neighbors[rank],
+              Correlation = round(neigh_cor[rank], 4),
+              stringsAsFactors = FALSE
+            )
+          }
+        }
+      }
+      if (length(detail_list) > 0) {
+        detail_df <- do.call(rbind, detail_list)
+        openxlsx::addWorksheet(wb, "Missing_Imputation_Detail")
+        openxlsx::writeData(wb, "Missing_Imputation_Detail", detail_df)
+        message("[DEBUG] Missing_Imputation_Detail sheet written with ", nrow(detail_df), " rows")
+      }
     }
     
     openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
