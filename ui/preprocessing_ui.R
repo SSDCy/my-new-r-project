@@ -1,5 +1,7 @@
 # ui/preprocessing_ui.R
 
+message("[DEBUG] preprocessing_ui.R loaded - added imputation neighbors lookup")
+
 preprocessing_ui <- function() {
   tabPanel(
     title = div(icon("filter"), "Data Preprocessing"),
@@ -17,14 +19,28 @@ preprocessing_ui <- function() {
         div(style = "padding: 20px;",
             sidebarLayout(
               sidebarPanel(
-                width = 3,
+                width = 4,
+                style = "word-break: break-word; overflow-wrap: break-word;",
                 h4("Preprocessing Steps (in order)", style = "margin-top: 0; color: #337ab7; font-weight: bold;"),
                 hr(),
+                # ========== 1. Missing Value Filter ==========
                 h4("1. Missing Value Filter", style = "color: #337ab7;"),
                 selectInput("missing_filter_mode", "Filter Mode",
                             choices = c("Global (all samples)" = "global",
                                         "Within Groups" = "group"),
                             selected = "global"),
+                tags$details(
+                  tags$summary("Mode Help", style = "cursor: pointer; color: #2c3e50; font-weight: bold;"),
+                  div(style = "background: #f8f9fa; padding: 10px; border-radius: 5px; margin-top: 5px;",
+                      p(strong("Global (all samples):"), " Calculate missing rate across all samples. A protein is removed if it is missing in more than the allowed fraction of ALL samples."),
+                      p(strong("Within Groups:"), " Calculate missing rate within each group separately. A protein is kept if it satisfies the missing rate threshold in AT LEAST ONE group. This is useful when some groups have systematically more missing values (e.g., a treatment that reduces protein detection)."),
+                      p(icon("exclamation-triangle"), strong("Note:"), " Within Groups mode requires that your sample info file contains a 'Group' column and that all samples are matched. Unmatched samples will trigger automatic fallback to Global mode."),
+                      uiOutput("filter_mode_group_match_ui")
+                  )
+                ),
+                div(style = "margin-top: 10px;",
+                    verbatimTextOutput("missing_filter_comparison", placeholder = TRUE)
+                ),
                 sliderInput("max_missing_fraction", "Max allowed missing fraction (0-1)",
                             min = 0, max = 1, value = 0.5, step = 0.05, ticks = TRUE),
                 div(style = "margin-bottom: 10px;",
@@ -33,8 +49,13 @@ preprocessing_ui <- function() {
                     actionButton("preset_missing_0.7", "0.7", class = "btn-xs btn-outline-secondary")
                 ),
                 verbatimTextOutput("missing_filter_effect", placeholder = TRUE),
+                div(style = "margin-top: 15px;",
+                    downloadButton("download_missing_filter_excel", "Export Missing Filter Results (Excel)",
+                                   class = "btn-success btn-block")
+                ),
                 helpText("Proteins with missing value proportion > this threshold will be removed. In 'Within Groups' mode, a protein is retained if at least one group has missing rate ≤ threshold."),
                 hr(),
+                # ========== 2. Minimum Intensity Filter ==========
                 h4("2. Minimum Intensity Filter", style = "color: #337ab7;"),
                 numericInput("min_intensity", "Minimum intensity threshold",
                              value = 1e5, step = 1e4, min = 0),
@@ -43,8 +64,13 @@ preprocessing_ui <- function() {
                 helpText("A protein is retained if at least this many samples have intensity above the minimum intensity threshold. Set to 1 for original behavior (max value)."),
                 plotOutput("intensity_dist_plot", height = "250px"),
                 verbatimTextOutput("intensity_filter_effect", placeholder = TRUE),
+                div(style = "margin-top: 15px;",
+                    downloadButton("download_intensity_filter_excel", "Export Intensity Filter Results (Excel)",
+                                   class = "btn-success btn-block")
+                ),
                 helpText("Set to 0 to skip this filter. Recommended range: 1,000–10,000 to remove low-intensity background noise while preserving valid signals. Use the distribution plot above to identify a suitable cutoff."),
                 hr(),
+                # ========== 3. Missing Value Imputation ==========
                 h4("3. Missing Value Imputation", style = "color: #337ab7;"),
                 selectInput("imputation_method", "Imputation method",
                             choices = c("k-Nearest Neighbors (KNN)" = "knn",
@@ -82,9 +108,32 @@ preprocessing_ui <- function() {
                   condition = "input.imputation_method == 'none'",
                   helpText("No imputation will be performed. Missing values will remain as NA (may affect downstream analysis).")
                 ),
+                # ---- KNN Neighbor Lookup (仅KNN模式且预处理完成) ----
+                conditionalPanel(
+                  condition = "input.imputation_method == 'knn' && output.preprocessing_done == true",
+                  hr(),
+                  h5("KNN Neighbor Lookup"),
+                  selectizeInput("knn_lookup_protein", "Select or type a protein ID to view its neighbors",
+                                 choices = NULL, multiple = FALSE, width = "100%"),
+                  DT::dataTableOutput("knn_lookup_table")
+                ),
+                # ---- 导出填补结果 ----
+                conditionalPanel(
+                  condition = "output.preprocessing_done == true",
+                  div(style = "margin-top: 15px;",
+                      downloadButton("download_imputation_excel", "Export Imputation Results (Excel)",
+                                     class = "btn-success btn-block")
+                  )
+                ),
+                conditionalPanel(
+                  condition = "output.preprocessing_done == false",
+                  div(style = "margin-top: 15px; color: #999; font-style: italic;",
+                      "Run preprocessing to enable imputation export.")
+                ),
                 hr(),
+                # ========== 4. Batch Correction ==========
                 h4("4. Batch Correction (Optional)", style = "color: #337ab7;"),
-                checkboxInput("perform_batch_correction", "启用 ComBat 批次校正", value = FALSE),
+                checkboxInput("perform_batch_correction", "Enable ComBat Batch Correction", value = FALSE),
                 verbatimTextOutput("batch_diagnostic_message", placeholder = TRUE),
                 uiOutput("batch_help_text"),
                 hr(),
@@ -93,7 +142,7 @@ preprocessing_ui <- function() {
                 helpText("Click to execute all steps in the above order.")
               ),
               mainPanel(
-                width = 9,
+                width = 8,
                 tabsetPanel(
                   id = "preprocessing_tabs",
                   tabPanel("Pre-Raw Overview", value = "pre_raw_overview",
