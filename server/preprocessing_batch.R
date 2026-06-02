@@ -1,6 +1,7 @@
 # server/preprocessing_batch.R
-message("[DEBUG] preprocessing_batch.R loaded")
+message("[DEBUG] preprocessing_batch.R loaded - step-by-step batch visualization")
 
+# ---------- 批次诊断 ----------
 batch_diagnostic <- reactive({
   if (is.null(rv$sample_info) || !"Batch" %in% colnames(rv$sample_info)) {
     return(list(status = "warning", message = "⚠️ 批次诊断失败：样本信息表中缺少 Batch 列。"))
@@ -59,6 +60,12 @@ batch_diagnostic <- reactive({
   })
 })
 
+output$batch_diagnostic_ready <- reactive({
+  diag <- batch_diagnostic()
+  !is.null(rv$sample_info) && "Batch" %in% colnames(rv$sample_info) && length(unique(rv$sample_info$Batch)) >= 2
+})
+outputOptions(output, "batch_diagnostic_ready", suspendWhenHidden = FALSE)
+
 observe({
   diag <- batch_diagnostic()
   req(diag)
@@ -93,11 +100,313 @@ output$batch_help_text <- renderUI({
   }
 })
 
-output$batch_correction_performed <- reactive({
-  !is.null(processed_data()) && preprocessing_params$batch_performed
+# ---------- 更新批次选择下拉框 ----------
+observe({
+  if (!is.null(rv$sample_info) && "Batch" %in% colnames(rv$sample_info)) {
+    batches <- unique(rv$sample_info$Batch)
+    updateSelectInput(session, "batch_verification_batch1", choices = batches, selected = batches[1])
+    updateSelectInput(session, "batch_verification_batch2", choices = batches, selected = if(length(batches)>1) batches[2] else batches[1])
+    message("[DEBUG] batch verification choices updated: ", paste(batches, collapse = ", "))
+  }
 })
-outputOptions(output, "batch_correction_performed", suspendWhenHidden = FALSE)
 
+# ---------- 批次验证：准备数据（返回中间矩阵供可视化使用） ----------
+batch_verification_data <- reactive({
+  req(input$batch_verification_batch1, input$batch_verification_batch2)
+  if (input$batch_verification_batch1 == input$batch_verification_batch2) {
+    message("[DEBUG] batch_verification_data: same batch selected")
+    return(NULL)
+  }
+  if (is.null(expression_data())) {
+    message("[DEBUG] batch_verification_data: no expression data")
+    return(NULL)
+  }
+  
+  tryCatch({
+    mat <- expression_data()
+    original_proteins <- nrow(mat)
+    if (input$max_missing_fraction < 1) {
+      missing_frac <- rowMeans(is.na(mat))
+      mat <- mat[missing_frac <= input$max_missing_fraction, , drop = FALSE]
+    }
+    after_missing <- nrow(mat)
+    max_int <- apply(mat, 1, max, na.rm = TRUE)
+    keep_finite <- is.finite(max_int)
+    mat <- mat[keep_finite, , drop = FALSE]
+    after_inf <- nrow(mat)
+    if (!is.null(input$min_intensity) && !is.na(input$min_intensity) && input$min_intensity > 0) {
+      max_int_finite <- apply(mat, 1, max, na.rm = TRUE)
+      mat <- mat[max_int_finite > input$min_intensity, , drop = FALSE]
+    }
+    after_intensity <- nrow(mat)
+    if (nrow(mat) < 2) {
+      message("[DEBUG] batch_verification_data: not enough proteins after filtering")
+      return(NULL)
+    }
+    
+    # 保存过滤后的原始强度矩阵
+    raw_filtered <- mat
+    
+    suppressMessages({
+      filled <- impute_missing_values(mat, method = "knn")
+    })
+    filled <- as.matrix(filled)
+    log_mat <- log2(filled + 1)
+    
+    # 转置，使样本为行，蛋白为列
+    mat_t <- t(log_mat)
+    before_var_filter <- ncol(mat_t)
+    mat_t <- mat_t[, apply(mat_t, 2, var) > 1e-12, drop = FALSE]
+    after_var_filter <- ncol(mat_t)
+    if (ncol(mat_t) < 2) {
+      message("[DEBUG] batch_verification_data: not enough variable proteins")
+      return(NULL)
+    }
+    
+    pca <- prcomp(mat_t, scale. = TRUE)
+    pc1 <- pca$x[,1]
+    pc2 <- pca$x[,2]
+    sample_names_full <- rownames(mat_t)
+    
+    # 匹配批次信息
+    si <- rv$sample_info
+    info_norm <- standardize_sample_name(rownames(si))
+    sample_norm <- standardize_sample_name(sample_names_full)
+    idx <- match(sample_norm, info_norm)
+    if (all(is.na(idx))) {
+      message("[DEBUG] batch_verification_data: cannot match any sample to batch info")
+      return(NULL)
+    }
+    
+    batch <- si$Batch[idx]
+    sample_display <- extract_sample_names(sample_names_full)
+    
+    b1 <- input$batch_verification_batch1
+    b2 <- input$batch_verification_batch2
+    
+    pc1_b1 <- pc1[batch == b1]
+    pc1_b2 <- pc1[batch == b2]
+    names(pc1_b1) <- sample_display[batch == b1]
+    names(pc1_b2) <- sample_display[batch == b2]
+    
+    # 为可视化准备 data.frame
+    pca_scores <- data.frame(PC1 = pc1, PC2 = pc2, Batch = batch, Sample = sample_display,
+                             stringsAsFactors = FALSE)
+    
+    message("[DEBUG] batch_verification_data: matched ", length(pc1_b1), " samples to ", b1,
+            ", ", length(pc1_b2), " samples to ", b2)
+    
+    list(
+      batch1 = b1, batch2 = b2,
+      pc1_b1 = pc1_b1, pc1_b2 = pc1_b2,
+      sample_names_b1 = names(pc1_b1),
+      sample_names_b2 = names(pc1_b2),
+      raw_filtered = raw_filtered,        # 原始过滤后强度
+      log_mat = log_mat,                  # log2 转换后矩阵（蛋白×样本）
+      pca_obj = pca,
+      pca_scores = pca_scores,
+      n_original_proteins = original_proteins,
+      n_after_missing = after_missing,
+      n_after_inf = after_inf,
+      n_after_intensity = after_intensity,
+      n_proteins_used = nrow(mat),
+      n_variable_proteins = after_var_filter,
+      n_removed_low_var = before_var_filter - after_var_filter
+    )
+  }, error = function(e) {
+    message("[DEBUG] batch_verification_data error: ", e$message)
+    NULL
+  })
+})
+
+# ---------- 样本 PC1 值表格 ----------
+output$batch_verification_table <- renderTable({
+  data <- batch_verification_data()
+  req(data)
+  df1 <- data.frame(Sample = data$sample_names_b1, Batch = data$batch1, PC1 = round(data$pc1_b1, 4), stringsAsFactors = FALSE)
+  df2 <- data.frame(Sample = data$sample_names_b2, Batch = data$batch2, PC1 = round(data$pc1_b2, 4), stringsAsFactors = FALSE)
+  rbind(df1, df2)
+}, striped = TRUE, bordered = TRUE, width = "100%")
+
+# ---------- 小提琴图/箱线图 ----------
+output$batch_verification_plot <- renderPlot({
+  data <- batch_verification_data()
+  req(data)
+  
+  df <- data.frame(
+    PC1 = c(data$pc1_b1, data$pc1_b2),
+    Batch = c(rep(data$batch1, length(data$pc1_b1)), rep(data$batch2, length(data$pc1_b2))),
+    stringsAsFactors = FALSE
+  )
+  
+  ggplot(df, aes(x = Batch, y = PC1, fill = Batch)) +
+    geom_violin(alpha = 0.5, draw_quantiles = 0.5) +
+    geom_jitter(width = 0.1, height = 0, size = 2, alpha = 0.8) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "red") +
+    labs(title = "PC1 Distribution by Batch",
+         subtitle = "Red diamond: mean. Horizontal line: median.",
+         y = "PC1 score") +
+    theme_bw() + theme(legend.position = "none")
+})
+
+# ---------- 详细计算过程（包含 PC1 计算说明） ----------
+output$batch_verification_details <- renderPrint({
+  data <- batch_verification_data()
+  req(data)
+  
+  b1 <- data$batch1; b2 <- data$batch2
+  x <- data$pc1_b1; y <- data$pc1_b2
+  n1 <- length(x); n2 <- length(y)
+  mean1 <- mean(x); mean2 <- mean(y)
+  var1 <- var(x); var2 <- var(y)
+  sp <- sqrt(((n1-1)*var1 + (n2-1)*var2) / (n1+n2-2))
+  se <- sp * sqrt(1/n1 + 1/n2)
+  t_stat <- (mean1 - mean2) / se
+  df <- n1 + n2 - 2
+  p_val <- 2 * pt(abs(t_stat), df, lower.tail = FALSE)
+  
+  cat("===========================================================================\n")
+  cat("Step 1: Data preparation\n")
+  cat("===========================================================================\n")
+  cat("Original proteins: ", data$n_original_proteins, "\n", sep = "")
+  cat("After missing value filter (threshold ", input$max_missing_fraction, "): ", data$n_after_missing, "\n", sep = "")
+  cat("After Inf/non‑finite filter: ", data$n_after_inf, "\n", sep = "")
+  if (!is.null(input$min_intensity) && input$min_intensity > 0)
+    cat("After minimum intensity filter (threshold ", input$min_intensity, "): ", data$n_after_intensity, "\n", sep = "")
+  cat("Proteins used: ", data$n_proteins_used, "\n", sep = "")
+  cat("Samples: ", n1 + n2, "\n\n", sep = "")
+  
+  cat("===========================================================================\n")
+  cat("Step 2: Log2 transformation\n")
+  cat("===========================================================================\n")
+  cat("Each expression value x is transformed: y = log2(x + 1)\n")
+  cat("This reduces skewness and brings data closer to a normal distribution.\n\n")
+  
+  cat("===========================================================================\n")
+  cat("Step 3: Remove low‑variance proteins\n")
+  cat("===========================================================================\n")
+  cat("Proteins with variance ≤ 1e-12 across samples are removed.\n")
+  cat("Removed: ", data$n_removed_low_var, " low‑variance proteins.\n")
+  cat("Variable proteins retained: ", data$n_variable_proteins, "\n\n", sep = "")
+  
+  cat("===========================================================================\n")
+  cat("Step 4: Principal Component Analysis (PCA)\n")
+  cat("===========================================================================\n")
+  cat("PCA is performed on the samples × variable‑proteins matrix,\n")
+  cat("with columns centered to mean = 0 and scaled to unit variance.\n")
+  cat("The first principal component (PC1) captures the largest variance\n")
+  cat("direction among the samples.\n")
+  cat("Variance explained by PC1: ", round(summary(data$pca_obj)$importance[2,1]*100, 1), "%\n\n", sep = "")
+  
+  cat("===========================================================================\n")
+  cat("Step 5: Extract PC1 scores\n")
+  cat("===========================================================================\n")
+  cat("Each sample receives a PC1 score, which is its projection onto\n")
+  cat("the first principal axis. The scores are centered around 0.\n\n")
+  
+  cat("--- Sample PC1 values ---\n")
+  cat(paste(b1, ": ", paste(sprintf("%.4f", x), collapse = ", "), "\n"))
+  cat(paste(b2, ": ", paste(sprintf("%.4f", y), collapse = ", "), "\n\n"))
+  
+  cat("===========================================================================\n")
+  cat("Step 6: Independent Samples t‑test on PC1\n")
+  cat("===========================================================================\n")
+  cat("Batch 1 (", b1, "): n1 = ", n1, "\n", sep = "")
+  cat("Batch 2 (", b2, "): n2 = ", n2, "\n\n", sep = "")
+  
+  cat("--- Means ---\n")
+  cat(sprintf("mean1 = %.4f\n", mean1))
+  cat(sprintf("mean2 = %.4f\n\n", mean2))
+  
+  cat("--- Variances ---\n")
+  cat(sprintf("var1 = %.4f\n", var1))
+  cat(sprintf("var2 = %.4f\n\n", var2))
+  
+  cat("--- Pooled standard deviation ---\n")
+  cat(sprintf("sp = sqrt[((n1-1)*var1 + (n2-1)*var2) / (n1+n2-2)]\n"))
+  cat(sprintf("sp = sqrt[((%d-1)*%.4f + (%d-1)*%.4f) / (%d+%d-2)] = %.4f\n\n", n1, var1, n2, var2, n1, n2, sp))
+  
+  cat("--- Standard error of difference ---\n")
+  cat(sprintf("SE = sp * sqrt(1/n1 + 1/n2) = %.4f * sqrt(1/%d + 1/%d) = %.4f\n\n", sp, n1, n2, se))
+  
+  cat("--- t‑statistic ---\n")
+  cat(sprintf("t = (mean1 - mean2) / SE = (%.4f - %.4f) / %.4f = %.4f\n\n", mean1, mean2, se, t_stat))
+  
+  cat("--- Degrees of freedom ---\n")
+  cat(sprintf("df = n1 + n2 - 2 = %d + %d - 2 = %d\n\n", n1, n2, df))
+  
+  cat("--- p‑value (two‑tailed) ---\n")
+  cat(sprintf("p = 2 * P(T > |t|) = %.4f\n\n", p_val))
+  
+  if (p_val < 0.05) {
+    cat("Conclusion: Significant batch effect detected (p < 0.05).\n")
+    cat("Recommendation: Enable batch correction.\n")
+  } else {
+    cat("Conclusion: No significant batch effect detected (p ≥ 0.05).\n")
+    cat("Recommendation: Batch correction is not necessary.\n")
+  }
+  
+  message("[DEBUG] batch_verification_details: t=", round(t_stat,4), " p=", format.pval(p_val, digits=4))
+})
+
+# ============ 新增：逐步可视化 ============
+
+# 1. 原始强度分布（所有过滤后样本）
+output$batch_viz_raw_hist <- renderPlot({
+  data <- batch_verification_data()
+  req(data)
+  # 取所有样本的原始强度值，摊平
+  raw_vals <- as.vector(as.matrix(data$raw_filtered))
+  raw_vals <- raw_vals[is.finite(raw_vals)]
+  df <- data.frame(Value = raw_vals)
+  ggplot(df, aes(x = Value)) +
+    geom_histogram(bins = 50, fill = "#3498db", alpha = 0.7, boundary = 0) +
+    labs(title = "Raw Intensity (after filtering)", x = "Intensity", y = "Frequency") +
+    theme_bw()
+})
+
+# 2. log2 转换后分布
+output$batch_viz_log_hist <- renderPlot({
+  data <- batch_verification_data()
+  req(data)
+  log_vals <- as.vector(data$log_mat)
+  log_vals <- log_vals[is.finite(log_vals)]
+  df <- data.frame(Value = log_vals)
+  ggplot(df, aes(x = Value)) +
+    geom_histogram(bins = 50, fill = "#2ecc71", alpha = 0.7, boundary = 0) +
+    labs(title = "log2(Intensity + 1)", x = "log2(Intensity)", y = "Frequency") +
+    theme_bw()
+})
+
+# 3. PCA 得分图（PC1 vs PC2，按批次着色）
+output$batch_viz_pca <- renderPlot({
+  data <- batch_verification_data()
+  req(data)
+  pca_scores <- data$pca_scores
+  var_explained <- round(summary(data$pca_obj)$importance[2, 1:2] * 100, 1)
+  ggplot(pca_scores, aes(x = PC1, y = PC2, color = Batch)) +
+    geom_point(size = 3, alpha = 0.8) +
+    stat_ellipse(type = "norm", level = 0.95) +
+    labs(title = "PCA Score Plot",
+         subtitle = paste0("PC1: ", var_explained[1], "%, PC2: ", var_explained[2], "%"),
+         x = paste0("PC1 (", var_explained[1], "%)"),
+         y = paste0("PC2 (", var_explained[2], "%)")) +
+    theme_bw() + theme(legend.position = "bottom")
+})
+
+# 4. PC1 分组箱线图（比小提琴图更简洁）
+output$batch_viz_pc1_box <- renderPlot({
+  data <- batch_verification_data()
+  req(data)
+  pca_scores <- data$pca_scores
+  ggplot(pca_scores, aes(x = Batch, y = PC1, fill = Batch)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+    geom_jitter(width = 0.1, height = 0, size = 2, alpha = 0.6) +
+    labs(title = "PC1 by Batch", y = "PC1 score") +
+    theme_bw() + theme(legend.position = "none")
+})
+
+# ---------- 冲突检查 ----------
 observe({
   message("[DEBUG] conflict check: imputation = ", input$imputation_method, ", batch = ", input$perform_batch_correction)
   if (identical(input$imputation_method, "none")) {
@@ -110,6 +419,21 @@ observe({
     shinyjs::enable("perform_batch_correction")
   }
 })
+
+# ---------- 批次校正执行（保持不变） ----------
+preprocessing_params <- reactiveValues(
+  batch_performed = FALSE,
+  batch_corrected_cols = NULL,
+  batch_uncorrected_cols = NULL,
+  batch_match_summary = NULL,
+  pre_batch_data = NULL,
+  post_batch_data = NULL
+)
+
+output$batch_correction_performed <- reactive({
+  !is.null(processed_data()) && preprocessing_params$batch_performed
+})
+outputOptions(output, "batch_correction_performed", suspendWhenHidden = FALSE)
 
 batch_comparison_pca <- reactive({
   req(processed_data(), preprocessing_params$batch_performed)

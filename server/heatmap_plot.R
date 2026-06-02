@@ -1,12 +1,11 @@
 # server/heatmap_plot.R
 # ============================================================
 # 热图数据准备与绘制模块
-# 依赖 data_changed_trigger / heatmap_generated_version (reactive_values.R)
-# 最终修复：引入 heatmap_display_data 反应式，解决重绘依赖问题
+# 修复：Intensity 模式下正确设置行名为蛋白ID
 # ============================================================
 
 # ---------- 辅助函数 ----------
-prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL) {
+prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL, id_map = NULL) {
   message("[DEBUG] prepare_expr_matrix: starting with samples=", length(samples), ", all_cols=", length(all_cols))
   missing_cols <- setdiff(all_cols, colnames(data_src))
   if (length(missing_cols) > 0) {
@@ -16,12 +15,37 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
     return(list(error = msg))
   }
   expr_matrix <- data.matrix(data_src[, all_cols, drop = FALSE])
-  rownames(expr_matrix) <- rownames(data_src)
+  # 保存原始行名，检查是否为数字序号
+  original_rownames <- rownames(data_src)
+  message("[DEBUG] prepare_expr_matrix: original rownames first 5 = ", paste(head(original_rownames, 5), collapse = ", "))
+  
+  # 如果行名全是数字且提供了 id_map（从全局蛋白ID列表中按索引映射），则使用映射后的ID
+  if (suppressWarnings(all(!is.na(as.numeric(original_rownames))))) {
+    message("[DEBUG] prepare_expr_matrix: rownames are numeric, attempting ID remapping")
+    if (!is.null(id_map)) {
+      # id_map 是一个字符向量，长度至少等于最大索引
+      idx <- as.integer(original_rownames)
+      if (max(idx) <= length(id_map)) {
+        new_ids <- id_map[idx]
+        rownames(expr_matrix) <- new_ids
+        message("[DEBUG] prepare_expr_matrix: remapped to IDs, first 5 = ", paste(head(new_ids, 5), collapse = ", "))
+      } else {
+        message("[DEBUG] prepare_expr_matrix: numeric indices out of range, using original rownames")
+        rownames(expr_matrix) <- original_rownames
+      }
+    } else {
+      rownames(expr_matrix) <- original_rownames
+    }
+  } else {
+    rownames(expr_matrix) <- original_rownames
+  }
+  
   colnames(expr_matrix) <- samples
   expr_matrix[is.infinite(expr_matrix)] <- NA
   
   keep_rows <- rowSums(!is.na(expr_matrix)) > 0
   expr_matrix <- expr_matrix[keep_rows, , drop = FALSE]
+  message("[DEBUG] prepare_expr_matrix: after removing empty rows, dim = ", nrow(expr_matrix), "x", ncol(expr_matrix))
   
   if (nrow(expr_matrix) == 0) {
     return(list(error = "No expression data available after removing NA rows."))
@@ -33,6 +57,7 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
       return(list(error = "None of the provided protein IDs were found in the data."))
     }
     expr_matrix <- expr_matrix[matched, , drop = FALSE]
+    message("[DEBUG] prepare_expr_matrix: after custom protein filtering, dim = ", nrow(expr_matrix), "x", ncol(expr_matrix))
   }
   
   has_na <- any(is.na(expr_matrix))
@@ -44,6 +69,7 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
     if (nrow(expr_matrix) == 0) {
       return(list(error = "After removing rows with NA values, no proteins remain."))
     }
+    message("[DEBUG] prepare_expr_matrix: removed ", na_rows_removed, " rows with NA")
   }
   
   log_expr <- log2(expr_matrix + 1)
@@ -54,6 +80,7 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
     n <- min(top_n, nrow(log_expr))
     top_idx <- order(row_var, decreasing = TRUE)[1:n]
     log_expr <- log_expr[top_idx, , drop = FALSE]
+    message("[DEBUG] prepare_expr_matrix: top_n selection, now ", nrow(log_expr), " rows")
   }
   
   if (nrow(log_expr) == 0) {
@@ -85,6 +112,7 @@ heatmap_raw_sample_names <- reactive({
   samples
 })
 
+# 修复：确保 heatmap_raw_data 使用 Master protein IDs 作为行名
 heatmap_raw_data <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
@@ -93,7 +121,13 @@ heatmap_raw_data <- reactive({
     return(NULL)
   }
   mat <- rv$raw_data
-  rownames(mat) <- mat$`Master protein IDs`
+  # 设置行名为 Master protein IDs，保证热图标签正确
+  if ("Master protein IDs" %in% colnames(mat)) {
+    rownames(mat) <- mat$`Master protein IDs`
+    message("[DEBUG] heatmap_raw_data: set rownames from Master protein IDs")
+  } else {
+    message("[DEBUG] heatmap_raw_data: Master protein IDs column not found, using default row numbers")
+  }
   mat <- mat[, int_cols, drop = FALSE]
   mat <- suppressWarnings(as.data.frame(lapply(mat, as.numeric)))
   mat[mat == 0] <- NA
@@ -159,7 +193,7 @@ output$heatmap_group_selection_ui <- renderUI({
                      choices = group_names, selected = group_names, inline = TRUE)
 })
 
-# ---------- 核心热图数据准备（仅按钮触发） ----------
+# ---------- 核心热图数据准备（按钮触发） ----------
 heatmap_data <- eventReactive(input$generate_heatmap, {
   message("[DEBUG] heatmap_data triggered by Generate Heatmap button (click=", input$generate_heatmap, ")")
   result <- list(error = NULL, mat = NULL, has_na = FALSE, na_rows_removed = 0)
@@ -171,6 +205,15 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   
   mode <- input$heatmap_protein_mode
   if (is.null(mode)) mode <- "top_n"
+  
+  # 准备一个全局蛋白ID映射向量（用于修复数字行名，现已基本不需要，但保留）
+  global_id_map <- NULL
+  if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
+    global_id_map <- as.character(rv$clean_data$`Master protein IDs`)
+    message("[DEBUG] heatmap_data: global_id_map length = ", length(global_id_map))
+  } else {
+    message("[DEBUG] heatmap_data: no global_id_map available (clean_data missing or no Master protein IDs)")
+  }
   
   if (input$heatmap_data_source == "LFQ") {
     data_src <- get_analysis_matrix()
@@ -212,6 +255,8 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     }
     src_short <- colnames(data_src)
     message("[DEBUG] heatmap_data Intensity: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
+    # 检查 data_src 的行名是否已经是蛋白ID
+    message("[DEBUG] heatmap_data Intensity: first 5 rownames = ", paste(head(rownames(data_src), 5), collapse = ", "))
     
     if (mode == "custom") {
       selected_samples <- src_short
@@ -273,7 +318,10 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     if (is.null(top_n) || is.na(top_n)) top_n <- 20
   }
   
-  res_mat <- prepare_expr_matrix(data_src, samples, all_cols, protein_ids = protein_ids, top_n = top_n)
+  # 调用 prepare_expr_matrix，传入 id_map 以便修复数字行名（作为后备）
+  res_mat <- prepare_expr_matrix(data_src, samples, all_cols, 
+                                 protein_ids = protein_ids, top_n = top_n,
+                                 id_map = global_id_map)
   if (!is.null(res_mat$error)) {
     result$error <- res_mat$error
     return(result)
@@ -290,7 +338,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   result$annotation_colors <- ann_colors
   result$show_sample_names <- input$heatmap_show_sample_names
   
-  # 生成成功后，记录当前数据版本
   heatmap_generated_version(data_changed_trigger())
   message("[DEBUG] heatmap_data: successfully generated, heatmap_generated_version set to ", data_changed_trigger())
   result

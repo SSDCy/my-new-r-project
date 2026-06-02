@@ -151,7 +151,6 @@ ui <- build_ui()
 server <- function(input, output, session) {
   source("server/reactive_values.R", local = TRUE)
   source("server/data_upload.R", local = TRUE)
-  # 预处理相关模块（按依赖顺序）
   source("server/preprocessing_helpers.R", local = TRUE)
   source("server/preprocessing_filter_missing.R", local = TRUE)
   source("server/preprocessing_filter_intensity.R", local = TRUE)
@@ -159,13 +158,13 @@ server <- function(input, output, session) {
   source("server/preprocessing_imputation.R", local = TRUE)
   source("server/preprocessing_batch.R", local = TRUE)
   source("server/preprocessing_comparisons.R", local = TRUE)
-  # 其他模块
   source("server/group_management.R", local = TRUE)
   source("server/comparison_setup.R", local = TRUE)
   source("server/de_analysis.R", local = TRUE)
   source("server/heatmap_plot.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
+  source("server/preprocessing_nav.R", local = TRUE)   # <-- 新增此行
 }
 
 shinyApp(ui = ui, server = server)

@@ -62,7 +62,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
     
     if (nrow(data) == 0) stop("No proteins left after missing value filter. Relax the threshold.")
     
-    # 2. 强度过滤（此处包含 Inf 过滤，随后再进行最小强度过滤）
+    # 2. 强度过滤（包含 Inf 过滤）
     max_int <- apply(data, 1, max, na.rm = TRUE)
     keep_finite <- is.finite(max_int)
     preprocessing_params$inf_filtered_count <- sum(!keep_finite)
@@ -164,7 +164,7 @@ observeEvent(input$intensity_type, {
   preprocessing_params$intensity_type_used <- NULL
 })
 
-# ============ 修改后的 pre_raw_summary：显示Inf过滤详情 ============
+# ============ 原始 pre_raw_summary（保留，但不在 UI 中显示） ============
 output$pre_raw_summary <- renderPrint({
   tryCatch({
     req(expression_data())
@@ -180,7 +180,6 @@ output$pre_raw_summary <- renderPrint({
     max_int <- apply(filtered_data, 1, max, na.rm = TRUE)
     inf_removed <- sum(!is.finite(max_int))
     after_inf <- sum(is.finite(max_int))
-    # 获取被Inf过滤掉的蛋白ID
     inf_ids <- rownames(filtered_data)[!is.finite(max_int)]
     message("[DEBUG] pre_raw_summary: inf removed = ", inf_removed, ", after missing+inf = ", after_inf)
     message("[DEBUG] pre_raw_summary: first few inf IDs = ", paste(head(inf_ids, 5), collapse = ", "))
@@ -194,7 +193,6 @@ output$pre_raw_summary <- renderPrint({
     cat("Filter mode:", detail$mode, "\n")
     cat("Predicted removal by missing filter:", detail$removed, "proteins\n")
     
-    # ---- 新增：Inf过滤详情 ----
     if (inf_removed > 0) {
       cat("\n--- Inf/Non-finite Value Filter ---\n")
       cat("Proteins removed due to non-finite (Inf/NaN) max intensity:", inf_removed, "\n")
@@ -331,10 +329,38 @@ output$pre_processed_missing_plot <- renderPlot({
        col = "lightgreen", border = "white")
 })
 
+# ========== 修复后的 Processed Data Table（自动修正行名） ==========
 output$pre_processed_table <- DT::renderDT({
+  message("[DEBUG] output$pre_processed_table called")
   req(processed_data())
   df <- processed_data()
-  df <- cbind(`Master Protein ID` = rownames(df), df)
+  
+  # 获取蛋白ID，如果行名是数字序号，则从原始数据中映射真实ID
+  ids <- rownames(df)
+  message("[DEBUG] pre_processed_table: first 5 rownames = ", paste(head(ids, 5), collapse = ", "))
+  
+  if (suppressWarnings(all(!is.na(as.numeric(ids))))) {
+    message("[DEBUG] pre_processed_table: rownames are numeric, mapping to Master protein IDs")
+    # 尝试从 rv$clean_data 获取原始ID列表
+    if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
+      original_ids <- rv$clean_data$`Master protein IDs`
+      # 检查长度是否与 expression_data() 一致（未过滤前）
+      # 实际上 processed_data() 的行是过滤后的，行名数字可能是相对于过滤后的矩阵的索引
+      # 但更稳健的方式：直接使用 expression_data() 的原始行名，再通过匹配进行过滤？比较复杂。
+      # 简单方案：如果行名全是数字，很可能就是索引，我们就直接用这些索引去 original_ids 取。
+      idx <- as.integer(ids)
+      if (max(idx, na.rm = TRUE) <= length(original_ids)) {
+        ids <- original_ids[idx]
+        message("[DEBUG] pre_processed_table: ID mapping done, first 5 IDs = ", paste(head(ids, 5), collapse = ", "))
+      } else {
+        message("[DEBUG] pre_processed_table: numeric rownames out of range, keeping original")
+      }
+    } else {
+      message("[DEBUG] pre_processed_table: no clean_data or Master protein IDs column, cannot remap")
+    }
+  }
+  
+  df <- cbind(`Master Protein ID` = ids, df)
   rownames(df) <- NULL
   dt <- DT::datatable(
     df,
@@ -357,3 +383,150 @@ output$imputation_skipped <- reactive({
   !is.null(processed_data()) && preprocessing_params$imputation_method == "none"
 })
 outputOptions(output, "imputation_skipped", suspendWhenHidden = FALSE)
+
+# ========== 新增：缺失数据摘要（Missing Value Filter 页卡底部） ==========
+output$missing_data_info <- renderPrint({
+  message("[DEBUG] output$missing_data_info called")
+  tryCatch({
+    req(expression_data())
+    detail <- missing_filter_prediction_detail()
+    data <- expression_data()
+    mode <- input$missing_filter_mode
+    threshold <- input$max_missing_fraction
+    filtered_data <- apply_missing_filter(data, threshold, mode, rv$sample_info, rv$sample_names)
+    max_int <- apply(filtered_data, 1, max, na.rm = TRUE)
+    inf_removed <- sum(!is.finite(max_int))
+    after_inf <- sum(is.finite(max_int))
+    inf_ids <- rownames(filtered_data)[!is.finite(max_int)]
+    
+    cat("Raw data dimensions:", nrow(data), "proteins,", ncol(data), "samples\n")
+    cat("Total missing values:", sum(is.na(data)), "\n")
+    cat("Overall missing ratio:", round(sum(is.na(data))/(nrow(data)*ncol(data))*100, 2), "%\n")
+    cat("Proteins with any missing:", sum(rowSums(is.na(data)) > 0), "\n\n")
+    cat("====================\n")
+    cat("Current missing filter setting: max allowed missing =", threshold, "\n")
+    cat("Filter mode:", detail$mode, "\n")
+    cat("Predicted removal by missing filter:", detail$removed, "proteins\n")
+    
+    if (inf_removed > 0) {
+      cat("\n--- Inf/Non-finite Value Filter ---\n")
+      cat("Proteins removed due to non-finite (Inf/NaN) max intensity:", inf_removed, "\n")
+      cat("List of removed protein IDs (first 30):\n")
+      if (length(inf_ids) <= 30) {
+        cat(paste(inf_ids, collapse = "\n"), "\n")
+      } else {
+        cat(paste(head(inf_ids, 30), collapse = "\n"))
+        cat("\n... (total ", length(inf_ids), " proteins)\n", sep = "")
+      }
+      cat("----------------------------------\n")
+    } else {
+      cat("Inf/Non-finite filter: 0 proteins removed.\n")
+    }
+    cat("After missing/Inf filter:", after_inf, "proteins\n")
+  }, error = function(e) {
+    cat("Error generating missing data info:\n", e$message, "\n")
+  })
+})
+message("[DEBUG] output$missing_data_info defined")
+
+# ========== 新增：强度分位数信息（Minimum Intensity Filter 折叠内） ==========
+output$intensity_info <- renderPrint({
+  message("[DEBUG] output$intensity_info called")
+  tryCatch({
+    req(expression_data())
+    stats <- intensity_stats()
+    
+    cat("Intensity distribution (per protein max intensity):\n")
+    qs <- c(0, 0.25, 0.5, 0.75, 1)
+    vals <- quantile(stats$max_intensities, probs = qs, na.rm = TRUE)
+    cat("Min:", format(vals[1], scientific = FALSE, big.mark = ","), "\n")
+    cat("25%:", format(vals[2], scientific = FALSE, big.mark = ","), "\n")
+    cat("Median:", format(vals[3], scientific = FALSE, big.mark = ","), "\n")
+    cat("75%:", format(vals[4], scientific = FALSE, big.mark = ","), "\n")
+    cat("Max:", format(vals[5], scientific = FALSE, big.mark = ","), "\n\n")
+    
+    cat("Different quantile thresholds and predicted removal:\n")
+    for (i in seq_along(stats$thresholds)) {
+      q_percent <- stats$quantiles[i] * 100
+      threshold_val <- format(stats$thresholds[i], scientific = FALSE, big.mark = ",")
+      filtered <- stats$filtered_counts[i]
+      filtered_percent <- round(filtered / stats$total_proteins * 100, 1)
+      retained <- stats$total_proteins - filtered
+      cat(q_percent, "% quantile =", threshold_val,
+          ": remove", filtered, "proteins (", filtered_percent, "%), keep", retained, "\n")
+    }
+    cat("\nRecommended minimum intensity threshold:", format(round(stats$recommended_threshold), scientific = FALSE, big.mark = ","), "\n")
+    cat("(This threshold will filter out approximately 15% of low-quality proteins)\n")
+  }, error = function(e) {
+    cat("Error generating intensity info:\n", e$message, "\n")
+  })
+})
+message("[DEBUG] output$intensity_info defined")
+
+# ========== 新增：预处理步骤摘要（Processed Data Table 页卡） ==========
+output$preprocessing_steps_summary <- renderPrint({
+  message("[DEBUG] output$preprocessing_steps_summary called")
+  if (is.null(processed_data())) {
+    cat("Preprocessing has not been run yet. Please click 'Run Preprocessing' to see the processed data.\n")
+    return()
+  }
+  cat("Preprocessing performed at:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n\n")
+  
+  # 步骤1：缺失值过滤
+  cat("1. Missing Value Filter:\n")
+  cat("   Mode:", preprocessing_params$missing_filter_mode, "\n")
+  cat("   Threshold:", input$max_missing_fraction, "\n")
+  if (isTRUE(preprocessing_params$missing_filter_fallback)) {
+    cat("   Fallback: global mode (", preprocessing_params$missing_filter_fallback_unmatched, " samples unmatched)\n")
+  }
+  
+  # 步骤2：Inf过滤
+  cat("2. Inf/Non-finite Filter:\n")
+  cat("   Removed proteins:", preprocessing_params$inf_filtered_count, "\n")
+  if (preprocessing_params$inf_filtered_count > 0) {
+    cat("   First few removed IDs:", paste(head(preprocessing_params$inf_filtered_proteins, 5), collapse = ", "), "\n")
+  }
+  
+  # 步骤3：强度过滤
+  cat("3. Minimum Intensity Filter:\n")
+  cat("   Threshold:", input$min_intensity, "\n")
+  cat("   Min samples above threshold:", preprocessing_params$intensity_min_samples, "\n")
+  
+  # 步骤4：填充
+  cat("4. Missing Value Imputation:\n")
+  if (!is.null(preprocessing_params$imputation_method)) {
+    method_display <- switch(preprocessing_params$imputation_method,
+                             knn = "K-Nearest Neighbors",
+                             ppca = "Probabilistic PCA",
+                             minvalue = "Fixed Minimum Value",
+                             quantile = "Quantile",
+                             none = "None (skipped)")
+    cat("   Method:", method_display, "\n")
+    if (grepl("knn", preprocessing_params$imputation_method)) {
+      cat("   k =", preprocessing_params$knn_k, "\n")
+    } else if (preprocessing_params$imputation_method == "ppca") {
+      cat("   nPcs = 2 (via pcaMethods::pca with log2 transform)\n")
+    } else if (preprocessing_params$imputation_method == "minvalue") {
+      cat("   Fixed value =", preprocessing_params$min_value, "\n")
+    } else if (preprocessing_params$imputation_method == "quantile") {
+      cat("   Quantile =", preprocessing_params$quantile_prob, "\n")
+    }
+  } else {
+    cat("   No imputation performed yet.\n")
+  }
+  
+  # 步骤5：批次校正
+  cat("5. Batch Correction:\n")
+  if (preprocessing_params$batch_performed) {
+    cat("   ComBat applied to", length(preprocessing_params$batch_corrected_cols), "samples\n")
+    if (!is.null(preprocessing_params$batch_uncorrected_cols) && length(preprocessing_params$batch_uncorrected_cols) > 0) {
+      cat("   Uncorted samples:", paste(preprocessing_params$batch_uncorrected_cols, collapse = ", "), "\n")
+    }
+  } else {
+    cat("   Not performed.\n")
+  }
+  
+  cat("\nFinal data dimensions:", nrow(processed_data()), "proteins,", ncol(processed_data()), "samples\n")
+  cat("Remaining missing values:", sum(is.na(processed_data())), "\n")
+})
+message("[DEBUG] output$preprocessing_steps_summary defined")
