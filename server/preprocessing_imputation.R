@@ -1,5 +1,5 @@
 # server/preprocessing_imputation.R
-message("[DEBUG] preprocessing_imputation.R loaded - academic English for export sheets")
+message("[DEBUG] preprocessing_imputation.R loaded - dynamic formula with x[k] labels")
 
 # ---------- 填补前数据矩阵 ----------
 pre_imputation_matrix <- reactive({
@@ -291,6 +291,265 @@ output$ppca_imputation_hist <- renderPlot({
          subtitle = "Imputed values after log2 transformation and back-transformation.",
          x = "Expression Value", y = "Frequency") +
     theme_bw() + theme(legend.position = "bottom")
+})
+
+# ---------- 分位数填补可视化数据（真实阈值） ----------
+quantile_imputation_data <- reactive({
+  message("[DEBUG] quantile_imputation_data: triggered. Method = ", input$imputation_method,
+          ", processed_data exists = ", !is.null(processed_data()))
+  if (input$imputation_method != "quantile" || is.null(processed_data())) {
+    message("[DEBUG] quantile_imputation_data: not quantile or no processed_data")
+    return(NULL)
+  }
+  before_mat <- as.matrix(pre_imputation_matrix())
+  q <- input$quantile_prob
+  n_samples <- ncol(before_mat)
+  thresholds <- sapply(1:n_samples, function(j) quantile(before_mat[, j], probs = q, na.rm = TRUE))
+  missing_counts <- sapply(1:n_samples, function(j) sum(is.na(before_mat[, j])))
+  
+  sample_names_full <- colnames(before_mat)
+  sample_names_short <- extract_sample_names(sample_names_full)
+  
+  groups <- rep("Unassigned", n_samples)
+  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
+    si <- rv$sample_info
+    si$short <- extract_sample_names(rownames(si))
+    idx <- match(sample_names_short, si$short)
+    matched <- !is.na(idx)
+    if (any(matched)) {
+      groups[matched] <- si$Group[idx[matched]]
+    }
+    message("[DEBUG] quantile_imputation_data: matched groups - ", paste(unique(groups), collapse = ", "))
+  } else {
+    message("[DEBUG] quantile_imputation_data: sample_info missing or no Group column")
+  }
+  
+  message("[DEBUG] quantile_imputation_data: computed thresholds for ", n_samples, " samples")
+  message("[DEBUG] quantile_imputation_data: threshold range = [", min(thresholds), ", ", max(thresholds), "]")
+  list(thresholds = thresholds, missing_counts = missing_counts, 
+       sample_names = sample_names_short, sample_names_full = sample_names_full, 
+       q = q, groups = groups, mat = before_mat)
+})
+
+# ---------- 分位数阈值条形图（无标签，保留分组和缺失值提示） ----------
+output$quantile_threshold_plot <- renderPlot({
+  message("[DEBUG] quantile_threshold_plot: rendering")
+  data <- quantile_imputation_data()
+  if (is.null(data)) {
+    plot.new(); text(0.5, 0.5, "Quantile visualization not available. Please run preprocessing first with Quantile method.")
+    return()
+  }
+  
+  df <- data.frame(
+    Sample = data$sample_names,
+    Threshold = data$thresholds,
+    Missing = data$missing_counts,
+    Group = data$groups,
+    stringsAsFactors = FALSE
+  )
+  
+  df <- df[order(df$Threshold, decreasing = TRUE), ]
+  df$Sample <- factor(df$Sample, levels = df$Sample)
+  df$SampleLabel <- paste0(df$Sample, " (", df$Missing, ")")
+  
+  groups <- unique(df$Group)
+  if (length(groups) <= 8) {
+    group_colors <- setNames(RColorBrewer::brewer.pal(length(groups), "Set1"), groups)
+  } else {
+    group_colors <- setNames(rainbow(length(groups)), groups)
+  }
+  
+  y_max <- max(df$Threshold) * 1.12
+  y_min <- min(df$Threshold) * 0.98
+  
+  ggplot(df, aes(x = Sample, y = Threshold, fill = Group)) +
+    geom_col(alpha = 0.85, width = 0.7) +
+    scale_fill_manual(values = group_colors, name = "Group") +
+    scale_x_discrete(labels = setNames(df$SampleLabel, df$Sample)) +
+    labs(title = paste0("Imputation Threshold (", data$q*100, "th Percentile) per Sample"),
+         subtitle = "See table below for exact threshold values. Missing counts are shown in x-axis labels.",
+         x = "Sample (missing count)", y = "Threshold Value") +
+    coord_cartesian(ylim = c(y_min, y_max)) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          legend.position = "bottom")
+})
+
+# ---------- 分位数阈值表格（列名清晰） ----------
+output$quantile_threshold_table <- renderTable({
+  data <- quantile_imputation_data()
+  req(data)
+  df <- data.frame(
+    Sample = data$sample_names_full,
+    Threshold = format(round(data$thresholds, 2), big.mark = ",", scientific = FALSE, trim = TRUE),
+    `Missing Count` = data$missing_counts,
+    Group = data$groups,
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  df
+}, striped = TRUE, bordered = TRUE, width = "100%")
+
+# ---------- 下拉框更新（样本选择） ----------
+observe({
+  data <- quantile_imputation_data()
+  if (is.null(data)) return()
+  updateSelectInput(session, "quantile_verify_sample", choices = data$sample_names_full)
+  message("[DEBUG] quantile_verify_sample choices updated with ", length(data$sample_names_full), " samples")
+})
+
+# ---------- 样本分布验证图（带实际百分比验证） ----------
+output$quantile_distribution_plot <- renderPlot({
+  message("[DEBUG] quantile_distribution_plot: rendering")
+  data <- quantile_imputation_data()
+  req(data, input$quantile_verify_sample)
+  
+  sample_idx <- which(data$sample_names_full == input$quantile_verify_sample)
+  if (length(sample_idx) != 1) {
+    plot.new(); text(0.5, 0.5, "Sample not found.")
+    return()
+  }
+  
+  values <- data$mat[, sample_idx]
+  non_missing <- values[!is.na(values)]
+  threshold <- data$thresholds[sample_idx]
+  q <- data$q
+  
+  if (length(non_missing) == 0) {
+    plot.new(); text(0.5, 0.5, "No non-missing values in this sample.")
+    return()
+  }
+  
+  # 计算实际低于阈值的比例
+  actual_pct <- mean(non_missing <= threshold) * 100
+  expected_pct <- q * 100
+  
+  message("[DEBUG] quantile_distribution_plot: sample=", data$sample_names_full[sample_idx],
+          " threshold=", threshold, " non-missing count=", length(non_missing),
+          " actual % below threshold=", round(actual_pct, 2), "% (expected ", expected_pct, "%)")
+  
+  df <- data.frame(Value = non_missing)
+  
+  ggplot(df, aes(x = Value)) +
+    geom_histogram(bins = 50, fill = "#3498db", alpha = 0.7, boundary = 0) +
+    geom_vline(xintercept = threshold, color = "red", linewidth = 1.5, linetype = "dashed") +
+    annotate("text", x = threshold, y = Inf, 
+             label = paste0("Threshold = ", format(round(threshold, 2), big.mark = ",", scientific = FALSE)),
+             color = "red", vjust = 2, hjust = -0.1, size = 3.5) +
+    labs(title = paste0("Distribution of Non‑Missing Values in ", input$quantile_verify_sample),
+         subtitle = paste0(format(round(threshold, 2), big.mark = ",", scientific = FALSE),
+                           " is the ", expected_pct,
+                           "th percentile. Actual values ≤ threshold: ", round(actual_pct, 1), "% (expected ", expected_pct, "%)"),
+         x = "Expression Value", y = "Frequency") +
+    theme_bw()
+})
+
+# ---------- 阈值位置说明（包含公式、x[k]标注、动态计算） ----------
+output$quantile_threshold_position <- renderPrint({
+  data <- quantile_imputation_data()
+  req(data, input$quantile_verify_sample)
+  
+  sample_idx <- which(data$sample_names_full == input$quantile_verify_sample)
+  if (length(sample_idx) != 1) {
+    cat("Sample not found.\n")
+    return()
+  }
+  
+  values <- data$mat[, sample_idx]
+  non_missing <- values[!is.na(values)]
+  threshold <- data$thresholds[sample_idx]
+  q <- data$q
+  
+  sorted_vals <- sort(non_missing)
+  n <- length(sorted_vals)
+  
+  # 计算分位数参数
+  p <- (n - 1) * q + 1
+  k <- floor(p)
+  lambda <- p - k
+  
+  # 获取用于插值的两个值
+  if (k >= 1 && k < n) {
+    xk <- sorted_vals[k]
+    xk1 <- sorted_vals[k + 1]
+  } else if (k < 1) {
+    xk <- sorted_vals[1]
+    xk1 <- sorted_vals[1]
+  } else {
+    xk <- sorted_vals[n]
+    xk1 <- sorted_vals[n]
+  }
+  
+  # 格式化数字
+  fmt <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+  
+  cat("Threshold:", fmt(round(threshold, 2)), "\n")
+  cat("Total non‑missing values:", n, "\n\n")
+  
+  cat("Formula (R default type=7):\n")
+  cat("  Position p = (n-1) * q + 1\n")
+  cat("  p = (", n, " - 1) * ", q, " + 1 = ", round(p, 4), "\n", sep = "")
+  cat("  k = floor(p) = ", k, "\n", sep = "")
+  cat("  λ = p - k = ", round(lambda, 4), "\n", sep = "")
+  cat("  x[", k, "] = ", fmt(xk), "\n", sep = "")
+  cat("  x[", k+1, "] = ", fmt(xk1), "\n", sep = "")
+  cat("  Threshold = x[k] + λ * (x[k+1] - x[k])\n")
+  cat("  Threshold = ", fmt(xk), " + ", round(lambda, 4), " * (", fmt(xk1), " - ", fmt(xk), ")\n", sep = "")
+  cat("  Threshold = ", fmt(round(threshold, 2)), "\n\n", sep = "")
+  
+  pos <- findInterval(threshold, sorted_vals)
+  if (pos == 0) {
+    cat("Threshold is below the smallest value (", fmt(sorted_vals[1]), ").\n")
+  } else if (pos == n) {
+    cat("Threshold is above the largest value (", fmt(sorted_vals[n]), ").\n")
+  } else {
+    cat("Threshold lies between rank", pos, "(", fmt(sorted_vals[pos]), ")",
+        "and rank", pos+1, "(", fmt(sorted_vals[pos+1]), ").\n")
+  }
+  cat("The highlighted row in the table is the first value ≥ threshold.\n")
+  
+  message("[DEBUG] quantile_threshold_position: threshold=", threshold, " position=", pos, 
+          " values around: [", if(pos>0) sorted_vals[pos], ", ", if(pos<n) sorted_vals[pos+1], "]")
+})
+
+# ---------- 原始数据表格（显示所有非缺失值，高亮第一个≥阈值的值） ----------
+output$quantile_raw_data_table <- DT::renderDT({
+  data <- quantile_imputation_data()
+  req(data, input$quantile_verify_sample)
+  
+  sample_idx <- which(data$sample_names_full == input$quantile_verify_sample)
+  if (length(sample_idx) != 1) return(DT::datatable(data.frame(Message = "Sample not found")))
+  
+  values <- data$mat[, sample_idx]
+  non_missing <- values[!is.na(values)]
+  threshold <- data$thresholds[sample_idx]
+  
+  if (length(non_missing) == 0) return(DT::datatable(data.frame(Message = "No non-missing values")))
+  
+  sorted_vals <- sort(non_missing)
+  df <- data.frame(
+    Rank = 1:length(sorted_vals),
+    Value = sorted_vals,
+    stringsAsFactors = FALSE
+  )
+  
+  # 找到第一个≥阈值的值，用于高亮
+  highlight_val <- sorted_vals[findInterval(threshold, sorted_vals) + 1]
+  if (is.na(highlight_val) || highlight_val < threshold) {
+    highlight_val <- sorted_vals[length(sorted_vals)]
+  }
+  
+  message("[DEBUG] quantile_raw_data_table: showing ", nrow(df), " non-missing values for ",
+          input$quantile_verify_sample, ", threshold=", threshold, ", highlight=", highlight_val)
+  
+  dt <- DT::datatable(df, options = list(pageLength = 25, scrollY = "300px", dom = 'ftip'),
+                      rownames = FALSE) |>
+    DT::formatStyle(
+      "Value",
+      target = "row",
+      backgroundColor = DT::styleEqual(highlight_val, "#FFFFCC")
+    )
+  return(dt)
 })
 
 # ---------- 填补比较数据 ----------
@@ -656,7 +915,7 @@ output$missing_summary_table_skipped <- renderTable({
   )
 }, striped = TRUE, bordered = TRUE, width = "100%")
 
-# ============ 导出填补结果 Excel（学术英文说明） ============
+# ============ 导出填补结果 Excel（完整功能，精确阈值） ============
 output$download_imputation_excel <- downloadHandler(
   filename = function() {
     paste0("Imputation_Result_", Sys.Date(), ".xlsx")
@@ -718,6 +977,7 @@ output$download_imputation_excel <- downloadHandler(
         message("[DEBUG] Running minvalue imputation with value = ", minval)
         after_mat <- before_mat
         after_mat[is.na(after_mat)] <- minval
+        message("[DEBUG] minvalue imputation applied, filled ", sum(is.na(before_mat)), " cells with ", minval)
       } else if (method == "quantile") {
         message("[DEBUG] Running quantile imputation with prob = ", quant)
         after_mat <- as.matrix(impute_missing_values(before_mat, method = "quantile", quantile_prob = quant))
@@ -750,9 +1010,9 @@ output$download_imputation_excel <- downloadHandler(
     } else if (method == "ppca") {
       desc_text <- "Probabilistic Principal Component Analysis (PPCA). The data are first log2(x+1) transformed to satisfy the normality assumption of the model. A PPCA model with 2 principal components is then fitted to the log2-transformed data using the Expectation-Maximization algorithm, which simultaneously estimates the principal components and the missing values. The imputed log2 matrix is back-transformed to the original scale (2^x - 1). This method accounts for the global covariance structure and does not rely on local neighbors."
     } else if (method == "minvalue") {
-      desc_text <- paste0("Fixed minimum value imputation. All missing values are replaced with the constant value ", minval, ". This method is suitable when missingness is assumed to result from left-censoring at a detection limit.")
+      desc_text <- paste0("Fixed minimum value imputation. All missing values are replaced with the constant value ", format(minval, scientific = FALSE), ". This method is suitable when missingness is assumed to result from left-censoring at a detection limit. The After_Imputation sheet displays values as fixed‑decimal text (e.g., 0.0001) to avoid scientific notation.")
     } else if (method == "quantile") {
-      desc_text <- paste0("Quantile imputation. For each sample column, missing values are replaced by the ", quant*100, "th percentile of the observed (non-missing) values in that column. This method assumes that missing values fall below the chosen quantile of the observed distribution.")
+      desc_text <- paste0("Quantile imputation. For each sample column, missing values are replaced by the ", quant*100, "th percentile of the observed (non‑missing) values in that column. This method assumes that missing values fall below the chosen quantile of the observed distribution. The After_Imputation sheet shows numeric values.")
     } else {
       desc_text <- "No imputation was applied."
     }
@@ -770,7 +1030,7 @@ output$download_imputation_excel <- downloadHandler(
       "Parameters:",
       if (method == "knn") paste("  k =", k_val),
       if (method == "ppca") "  nPcs = 2; data were log2(x+1) transformed before imputation and back-transformed afterwards.",
-      if (method == "minvalue") paste("  fixed value =", minval),
+      if (method == "minvalue") paste("  fixed value =", format(minval, scientific = FALSE), " (stored as text in After_Imputation)"),
       if (method == "quantile") paste("  quantile =", quant),
       "",
       "Method description:",
@@ -781,6 +1041,7 @@ output$download_imputation_excel <- downloadHandler(
       "- Before_Imputation: matrix before imputation (NA = missing).",
       "- After_Imputation: matrix after imputation. Cells that were imputed are highlighted in red.",
       if (method == "ppca") "- Imputation_Steps: step-by-step description of the PPCA algorithm including log2 transformation.",
+      if (method == "quantile") "- Quantile_Thresholds: sample‑wise thresholds and missing counts used for imputation.",
       if (!is.null(neighbors)) "- KNN_Neighbors: protein-level list of nearest neighbors (Correlation and Distance).",
       if (!is.null(neighbors)) "- Missing_Imputation_Detail: detailed view of each imputed cell with neighbor values and validity flag."
     )
@@ -816,13 +1077,36 @@ output$download_imputation_excel <- downloadHandler(
       openxlsx::setColWidths(wb, "Imputation_Steps", cols = 1, widths = 100)
     }
     
+    # ---- Quantile_Thresholds (精确值) ----
+    if (method == "quantile") {
+      thresholds <- sapply(1:ncol(before_mat), function(j) quantile(before_mat[, j], probs = quant, na.rm = TRUE))
+      missing_counts <- sapply(1:ncol(before_mat), function(j) sum(is.na(before_mat[, j])))
+      threshold_df <- data.frame(
+        Sample = colnames(before_mat),
+        Threshold = thresholds,
+        `Missing Count` = missing_counts,
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+      openxlsx::addWorksheet(wb, "Quantile_Thresholds")
+      openxlsx::writeData(wb, "Quantile_Thresholds", threshold_df)
+      message("[DEBUG] Quantile_Thresholds sheet written")
+    }
+    
     # ---- Before_Imputation ----
     before_df <- cbind(ProteinID = protein_ids, before_mat, stringsAsFactors = FALSE)
     openxlsx::addWorksheet(wb, "Before_Imputation")
     openxlsx::writeData(wb, "Before_Imputation", before_df)
     
     # ---- After_Imputation (with red) ----
-    after_df <- cbind(ProteinID = protein_ids, after_mat, stringsAsFactors = FALSE)
+    if (method == "minvalue") {
+      after_mat_txt <- as.data.frame(after_mat, stringsAsFactors = FALSE)
+      after_mat_txt[] <- lapply(after_mat_txt, function(col) sprintf("%.4f", col))
+      after_df <- cbind(ProteinID = protein_ids, after_mat_txt, stringsAsFactors = FALSE)
+      message("[DEBUG] Converted After_Imputation matrix to fixed decimal text")
+    } else {
+      after_df <- cbind(ProteinID = protein_ids, after_mat, stringsAsFactors = FALSE)
+    }
     openxlsx::addWorksheet(wb, "After_Imputation")
     openxlsx::writeData(wb, "After_Imputation", after_df)
     

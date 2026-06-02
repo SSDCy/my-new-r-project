@@ -1,6 +1,6 @@
 # ui/preprocessing_ui.R
 
-message("[DEBUG] preprocessing_ui.R loaded - added PPCA visualization panel with explanations")
+message("[DEBUG] preprocessing_ui.R loaded - fixed icon, threshold position text")
 
 preprocessing_ui <- function() {
   tabPanel(
@@ -19,7 +19,7 @@ preprocessing_ui <- function() {
         div(style = "padding: 20px;",
             sidebarLayout(
               sidebarPanel(
-                width = 4,
+                width = 5,
                 style = "word-break: break-word; overflow-wrap: break-word;",
                 h4("Preprocessing Steps (in order)", style = "margin-top: 0; color: #337ab7; font-weight: bold;"),
                 hr(),
@@ -125,16 +125,52 @@ preprocessing_ui <- function() {
                   tags$div(
                     style = "background: #f9f9f9; border-radius: 8px; padding: 10px; margin-bottom: 15px;",
                     h6(icon("chart-line"), " Score Plot (PC1 vs PC2)"),
-                    p("Each dot is a sample. The distance between dots reflects how similar their overall protein expression patterns are. The red arrow points in the direction of the largest variation in the data – think of it as the main “trend” that distinguishes your samples."),
-                    p("If dots of the same color (same experimental group) cluster together, it means the biological differences are stronger than random noise.", style = "font-size: 12px;"),
+                    p("Each dot is a sample. The distance between dots reflects how similar their overall protein expression patterns are."),
                     plotOutput("ppca_score_plot", height = "300px")
                   ),
                   tags$div(
                     style = "background: #f9f9f9; border-radius: 8px; padding: 10px;",
                     h6(icon("chart-bar"), " Distribution of Original vs. Imputed Values"),
-                    p("Blue bars show the values that were originally present. Green bars show the values that PPCA filled in. When the two distributions overlap well (as they do now after log2‑transformation), it means the imputed values are realistic and consistent with the measured data."),
-                    p("If the green bars were only on the far left (near zero), the imputation would be poor – it would indicate the algorithm couldn't learn the real data pattern.", style = "font-size: 12px;"),
+                    p("Blue bars: original non‑missing values. Green bars: values filled by PPCA."),
                     plotOutput("ppca_imputation_hist", height = "250px")
+                  )
+                ),
+                # ---- Quantile Visualization (仅Quantile模式且预处理完成) ----
+                conditionalPanel(
+                  condition = "input.imputation_method == 'quantile' && output.preprocessing_done == true",
+                  hr(),
+                  h5("Quantile Imputation Visualization", style = "color: #2c3e50;"),
+                  tags$div(
+                    style = "background: #f9f9f9; border-radius: 8px; padding: 10px; margin-bottom: 15px;",
+                    h6(icon("info-circle"), " How Quantile Imputation Works"),
+                    p("For each sample column, the algorithm calculates the chosen quantile of all non‑missing values. Every missing value in that column is then replaced by this threshold."),
+                    p(strong("Example:"), " If the 1st percentile of LFQ.intensity.100.12.1 is 18,027,250, then every missing value in that column will be filled with 18,027,250."),
+                    hr(),
+                    h6(icon("bar-chart"), " Imputation Threshold per Sample"),
+                    p("Each bar shows the threshold value for a sample. The x‑axis label includes the number of missing values replaced in that sample."),
+                    plotOutput("quantile_threshold_plot", height = "400px")
+                  ),
+                  tags$div(
+                    style = "background: #f9f9f9; border-radius: 8px; padding: 10px; margin-bottom: 15px;",
+                    h6(icon("chart-bar"), " Verify the Threshold"),
+                    p("Select a sample to see the distribution of its non‑missing values. The red vertical line marks the chosen quantile (threshold)."),
+                    selectInput("quantile_verify_sample", "Sample to view",
+                                choices = NULL, width = "100%"),
+                    plotOutput("quantile_distribution_plot", height = "300px"),
+                    hr(),
+                    h6(icon("info-circle"), " Threshold Position in Sorted Values"),
+                    verbatimTextOutput("quantile_threshold_position"),
+                    hr(),
+                    h6(icon("table"), " Non‑Missing Values in Selected Sample"),
+                    p("The table shows all non‑missing values sorted from low to high. The first value greater than or equal to the threshold is highlighted in yellow."),
+                    DT::dataTableOutput("quantile_raw_data_table")
+                  ),
+                  tags$div(
+                    style = "background: #f9f9f9; border-radius: 8px; padding: 10px;",
+                    h6(icon("table"), " Threshold Summary Table"),
+                    p("Threshold: the quantile value used to fill missing cells in that sample."),
+                    p(strong("Missing Count: the number of missing values in that sample that were replaced by the threshold.")),
+                    tableOutput("quantile_threshold_table")
                   )
                 ),
                 # ---- 导出填补结果 ----
@@ -162,7 +198,7 @@ preprocessing_ui <- function() {
                 helpText("Click to execute all steps in the above order.")
               ),
               mainPanel(
-                width = 8,
+                width = 7,
                 tabsetPanel(
                   id = "preprocessing_tabs",
                   tabPanel("Pre-Raw Overview", value = "pre_raw_overview",
