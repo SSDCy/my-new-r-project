@@ -52,7 +52,7 @@ get_group_colors <- function(groups) {
   setNames(pal[1:length(groups)], groups)
 }
 
-# ================== 数据质量分析辅助函数（已修改，填充后计算相关性） ==================
+# ================== 数据质量分析辅助函数 ==================
 calculate_data_quality_score <- function(expr_matrix) {
   message("[DEBUG] calculate_data_quality_score: starting, dim = ", 
           if (!is.null(expr_matrix)) paste(nrow(expr_matrix), "x", ncol(expr_matrix)) else "NULL")
@@ -67,12 +67,9 @@ calculate_data_quality_score <- function(expr_matrix) {
   missing_score <- max(0, 30 * (1 - missing_ratio * 2))
   message(sprintf("[DEBUG] calculate_data_quality_score: missing_ratio=%.3f, missing_score=%.1f", missing_ratio, missing_score))
   
-  # ---- 修改：先填充缺失值再计算样本相关性 ----
-  # 记录原始缺失值数量
   original_na <- sum(is.na(expr_matrix))
   message("[DEBUG] calculate_data_quality_score: original NA count = ", original_na)
   
-  # 使用 KNN 填充
   filled <- tryCatch({
     message("[DEBUG] calculate_data_quality_score: attempting KNN imputation for correlation")
     impute_missing_values(as.data.frame(expr_matrix), method = "knn")
@@ -85,7 +82,6 @@ calculate_data_quality_score <- function(expr_matrix) {
   after_na <- sum(is.na(filled))
   message("[DEBUG] calculate_data_quality_score: after imputation, NA count = ", after_na)
   
-  # 计算样本相关性（所有蛋白对使用相同样本集）
   sample_cor <- cor(filled, use = "complete.obs")
   diag(sample_cor) <- NA
   avg_cor <- mean(sample_cor, na.rm = TRUE)
@@ -407,25 +403,6 @@ calculate_pca <- function(expr_matrix, sample_info = NULL) {
     message("[DEBUG] calculate_pca: prcomp error - ", e$message)
     NULL
   })
-}
-
-render_key_finding <- function(finding) {
-  bg_color <- switch(finding$type, success = "#d4edda", warning = "#fff3cd", danger = "#f8d7da", "#f8f9fa")
-  border_color <- switch(finding$type, success = "#c3e6cb", warning = "#ffeeba", danger = "#f5c6cb", "#dee2e6")
-  text_color <- switch(finding$type, success = "#155724", warning = "#856404", danger = "#721c24", "#333")
-  icon_name <- switch(finding$type, success = "check-circle", warning = "exclamation-triangle", danger = "times-circle", "info-circle")
-  div(style = paste0("background: ", bg_color, "; border: 1px solid ", border_color, "; border-radius: 8px; padding: 12px; margin-bottom: 10px; color: ", text_color, ";"),
-      div(style = "display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-weight: bold;", icon(icon_name), finding$title),
-      p(style = "margin: 0; white-space: pre-line;", finding$content))
-}
-
-render_recommendation <- function(rec) {
-  tag_bg <- switch(rec$tag_type, danger = "#dc3545", warning = "#ffc107", success = "#28a745", secondary = "#6c757d")
-  div(style = "background: #f8f9fa; border-radius: 8px; padding: 15px; margin-bottom: 15px;",
-      div(style = "display: flex; align-items: center; gap: 10px; margin-bottom: 10px;",
-          h4(style = "margin: 0; font-size: 16px; font-weight: bold;", rec$title),
-          span(style = paste0("background: ", tag_bg, "; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;"), rec$tag)),
-      tagList(lapply(rec$items, function(item) p(style = "margin: 3px 0; padding-left: 15px; text-indent: -15px;", item))))
 }
 
 # ================== 数据上传与预处理 ==================
@@ -756,16 +733,29 @@ get_analysis_matrix <- reactive({
   }
 })
 
+# ---------- 修改后的 norm_data_before_batch：将数字行名映射为真实蛋白ID，并移除 Fasta headers ----------
 norm_data_before_batch <- reactive({
   mat <- get_analysis_matrix()
-  if (is.null(mat)) { showNotification("No expression data available.", type = "error"); return(NULL) }
+  if (is.null(mat)) {
+    showNotification("No expression data available.", type = "error")
+    return(NULL)
+  }
   base_sample <- current_baseline()
-  if (is.null(base_sample)) { showNotification("Unable to determine baseline sample.", type = "error"); return(NULL) }
+  if (is.null(base_sample)) {
+    showNotification("Unable to determine baseline sample.", type = "error")
+    return(NULL)
+  }
   sample_short <- extract_sample_names(colnames(mat))
   base_idx <- which(sample_short == base_sample)
-  if (length(base_idx) == 0) { showNotification(paste0("Baseline sample '", base_sample, "' not found."), type = "error"); return(NULL) }
+  if (length(base_idx) == 0) {
+    showNotification(paste0("Baseline sample '", base_sample, "' not found."), type = "error")
+    return(NULL)
+  }
   base_sum <- sum(mat[, base_idx], na.rm = TRUE)
-  if (base_sum <= 0) { showNotification("Baseline sample total intensity is zero.", type = "error"); return(NULL) }
+  if (base_sum <= 0) {
+    showNotification("Baseline sample total intensity is zero.", type = "error")
+    return(NULL)
+  }
   norm_mat <- mat
   for (i in seq_len(ncol(mat))) {
     s <- sum(mat[, i], na.rm = TRUE)
@@ -774,16 +764,56 @@ norm_data_before_batch <- reactive({
   }
   norm_prefix <- get_norm_prefix()
   colnames(norm_mat) <- paste0(norm_prefix, sample_short)
-  norm_df <- as.data.frame(norm_mat)
-  norm_df$`Master protein IDs` <- rownames(norm_mat)
-  clean <- rv$clean_data
-  if (!is.null(clean)) {
-    extra_cols <- intersect(c("Protein IDs", "Majority protein IDs", "Unique peptides", "Fasta headers"), colnames(clean))
-    if (length(extra_cols) > 0) {
-      idx <- match(norm_df$`Master protein IDs`, clean$`Master protein IDs`)
-      for (col in extra_cols) norm_df[[col]] <- clean[[col]][idx]
+  
+  # 关键修改：将行名转换为真正的蛋白ID
+  rn <- rownames(norm_mat)
+  message("[DEBUG] norm_data_before_batch: original rownames first 5 = ", paste(head(rn, 5), collapse = ", "))
+  
+  protein_ids <- rn
+  # 如果行名看起来是数字，则从 clean_data 映射
+  if (suppressWarnings(all(!is.na(as.numeric(rn))))) {
+    message("[DEBUG] norm_data_before_batch: rownames are numeric, mapping to Master protein IDs")
+    clean_ids <- rv$clean_data$`Master protein IDs`
+    if (!is.null(clean_ids) && length(clean_ids) >= max(as.integer(rn))) {
+      protein_ids <- clean_ids[as.integer(rn)]
+      message("[DEBUG] norm_data_before_batch: mapped to IDs, first 5 = ", paste(head(protein_ids, 5), collapse = ", "))
+    } else {
+      message("[WARN] norm_data_before_batch: cannot map numeric row names to clean_data IDs")
     }
   }
+  
+  norm_df <- as.data.frame(norm_mat)
+  rownames(norm_df) <- protein_ids
+  norm_df$`Master protein IDs` <- protein_ids
+  
+  # 合并注释列
+  clean <- rv$clean_data
+  if (!is.null(clean)) {
+    extra_cols <- intersect(c("Protein IDs", "Majority protein IDs", "Unique peptides"), colnames(clean))
+    if (length(extra_cols) > 0) {
+      idx <- match(protein_ids, clean$`Master protein IDs`)
+      for (col in extra_cols) {
+        norm_df[[col]] <- clean[[col]][idx]
+      }
+      message("[DEBUG] norm_data_before_batch: merged annotation columns: ", paste(extra_cols, collapse = ", "))
+    }
+  }
+  
+  # 移除 Fasta headers 列（如果存在）
+  if ("Fasta headers" %in% colnames(norm_df)) {
+    norm_df <- norm_df[, setdiff(colnames(norm_df), "Fasta headers"), drop = FALSE]
+    message("[DEBUG] norm_data_before_batch: removed Fasta headers column")
+  }
+  
+  # 重新排序列：Protein IDs, Majority protein IDs, Master protein IDs, Unique peptides 在前，然后 Norm_LFQ intensity 列
+  norm_cols_all <- grep("^Norm_LFQ intensity", colnames(norm_df), value = TRUE)
+  desired_order <- c("Protein IDs", "Majority protein IDs", "Master protein IDs", "Unique peptides")
+  existing_order <- intersect(desired_order, colnames(norm_df))
+  other_cols <- setdiff(colnames(norm_df), c(existing_order, norm_cols_all))
+  norm_df <- norm_df[, c(existing_order, norm_cols_all, other_cols), drop = FALSE]
+  message("[DEBUG] norm_data_before_batch: final column order: ", paste(colnames(norm_df), collapse = ", "))
+  
+  message("[DEBUG] norm_data_before_batch: final norm_df dim = ", nrow(norm_df), " x ", ncol(norm_df))
   norm_df
 })
 
@@ -842,7 +872,6 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# ---------- 核心：expression_data 反应式 ----------
 expression_data <- reactive({
   message("[DEBUG] expression_data (from server/data_upload.R) triggered")
   req(rv$clean_data)

@@ -8,6 +8,7 @@ source("ui/cleaning_ui.R", local = TRUE)
 source("ui/normalization_ui.R", local = TRUE)   # 归一化 UI
 source("ui/preprocessing_ui.R", local = TRUE)
 source("ui/plots_ui.R", local = TRUE)
+source("ui/export_ui.R", local = TRUE)          # 新增 Export UI
 
 build_ui <- function() {
   fluidPage(
@@ -145,7 +146,8 @@ build_ui <- function() {
       cleaning_ui(),
       preprocessing_ui(),      # 预处理先执行
       normalization_ui(),      # 归一化在预处理之后，使用处理后的数据
-      plots_ui()
+      plots_ui(),
+      export_ui()              # 新增 Export 页面
     )
   )
 }
@@ -168,6 +170,8 @@ server <- function(input, output, session) {
   source("server/comparison_setup.R", local = TRUE)
   source("server/de_analysis.R", local = TRUE)
   source("server/heatmap_plot.R", local = TRUE)
+  source("server/volcano_plot.R", local = TRUE)
+  source("server/export_server.R", local = TRUE)   # 新增 Export 服务器
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)

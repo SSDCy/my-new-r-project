@@ -1,6 +1,30 @@
 # server/preprocessing_batch.R
 message("[DEBUG] preprocessing_batch.R loaded - step-by-step batch visualization")
 
+# =========================================================================
+# 注意：preprocessing_params 由 preprocessing_core.R 定义，
+# 本文件不再重复定义，以免覆盖已有的值。
+# =========================================================================
+
+# ---------- 调试：在响应式上下文中确认 preprocessing_params 可访问 ----------
+shiny::observe({
+  # 使用 tryCatch 确保即使访问失败也不会导致闪退
+  tryCatch({
+    if (exists("preprocessing_params", envir = parent.env(environment()), inherits = TRUE)) {
+      msg <- capture.output({
+        cat("[DEBUG] preprocessing_batch.R: preprocessing_params is accessible")
+        cat(", batch_performed =", preprocessing_params$batch_performed)
+        cat(", batch_corrected_cols =", if (is.null(preprocessing_params$batch_corrected_cols)) "NULL" else paste(preprocessing_params$batch_corrected_cols, collapse=","))
+      })
+      message(msg)
+    } else {
+      message("[WARN] preprocessing_batch.R: preprocessing_params not found in parent environment.")
+    }
+  }, error = function(e) {
+    message("[ERROR] preprocessing_batch.R: Could not access preprocessing_params: ", e$message)
+  })
+}, priority = 10)  # 较低优先级以便环境已建立
+
 # ---------- 批次诊断 ----------
 batch_diagnostic <- reactive({
   if (is.null(rv$sample_info) || !"Batch" %in% colnames(rv$sample_info)) {
@@ -349,13 +373,12 @@ output$batch_verification_details <- renderPrint({
   message("[DEBUG] batch_verification_details: t=", round(t_stat,4), " p=", format.pval(p_val, digits=4))
 })
 
-# ============ 新增：逐步可视化 ============
+# ============ 逐步可视化 ============
 
 # 1. 原始强度分布（所有过滤后样本）
 output$batch_viz_raw_hist <- renderPlot({
   data <- batch_verification_data()
   req(data)
-  # 取所有样本的原始强度值，摊平
   raw_vals <- as.vector(as.matrix(data$raw_filtered))
   raw_vals <- raw_vals[is.finite(raw_vals)]
   df <- data.frame(Value = raw_vals)
@@ -394,7 +417,7 @@ output$batch_viz_pca <- renderPlot({
     theme_bw() + theme(legend.position = "bottom")
 })
 
-# 4. PC1 分组箱线图（比小提琴图更简洁）
+# 4. PC1 分组箱线图
 output$batch_viz_pc1_box <- renderPlot({
   data <- batch_verification_data()
   req(data)
@@ -420,67 +443,73 @@ observe({
   }
 })
 
-# ---------- 批次校正执行（保持不变） ----------
-preprocessing_params <- reactiveValues(
-  batch_performed = FALSE,
-  batch_corrected_cols = NULL,
-  batch_uncorrected_cols = NULL,
-  batch_match_summary = NULL,
-  pre_batch_data = NULL,
-  post_batch_data = NULL
-)
-
+# ---------- 批次校正执行（使用 preprocessing_core.R 中定义的对象） ----------
 output$batch_correction_performed <- reactive({
-  !is.null(processed_data()) && preprocessing_params$batch_performed
+  # 安全检查：确保 preprocessing_params 存在且可访问
+  tryCatch({
+    !is.null(processed_data()) && isTRUE(preprocessing_params$batch_performed)
+  }, error = function(e) {
+    message("[WARN] batch_correction_performed: could not access preprocessing_params: ", e$message)
+    FALSE
+  })
 })
 outputOptions(output, "batch_correction_performed", suspendWhenHidden = FALSE)
 
 batch_comparison_pca <- reactive({
-  req(processed_data(), preprocessing_params$batch_performed)
-  before <- preprocessing_params$pre_batch_data
-  after <- preprocessing_params$post_batch_data
-  if (is.null(before) || is.null(after)) return(NULL)
-  
-  common_cols <- intersect(colnames(before), colnames(after))
-  before <- before[, common_cols, drop = FALSE]
-  after <- after[, common_cols, drop = FALSE]
-  
-  before_t <- t(log2(as.matrix(before) + 1))
-  after_t <- t(log2(as.matrix(after) + 1))
-  
-  before_ok <- apply(before_t, 2, function(x) all(is.finite(x)))
-  after_ok <- apply(after_t, 2, function(x) all(is.finite(x)))
-  keep_cols <- which(before_ok & after_ok)
-  if (length(keep_cols) < 2) return(NULL)
-  before_t <- before_t[, keep_cols, drop = FALSE]
-  after_t <- after_t[, keep_cols, drop = FALSE]
-  
-  before_var <- apply(before_t, 2, var)
-  after_var <- apply(after_t, 2, var)
-  keep_var <- which(before_var > 1e-12 & after_var > 1e-12)
-  if (length(keep_var) < 2) return(NULL)
-  before_t <- before_t[, keep_var, drop = FALSE]
-  after_t <- after_t[, keep_var, drop = FALSE]
-  
-  pca_before <- tryCatch(prcomp(before_t, scale. = TRUE), error = function(e) NULL)
-  pca_after <- tryCatch(prcomp(after_t, scale. = TRUE), error = function(e) NULL)
-  if (is.null(pca_before) || is.null(pca_after)) return(NULL)
-  
-  sample_info_short <- rv$sample_info
-  rownames(sample_info_short) <- standardize_sample_name(rownames(sample_info_short))
-  before_norm <- standardize_sample_name(colnames(before))
-  after_norm <- standardize_sample_name(colnames(after))
-  batch_before <- sample_info_short[before_norm, "Batch"]
-  batch_after <- sample_info_short[after_norm, "Batch"]
-  
-  list(
-    pca_before = pca_before,
-    pca_after = pca_after,
-    batch_before = batch_before,
-    batch_after = batch_after,
-    var_before = round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1),
-    var_after = round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
-  )
+  req(processed_data())
+  tryCatch({
+    if (!exists("preprocessing_params") || !isTRUE(preprocessing_params$batch_performed)) {
+      message("[DEBUG] batch_comparison_pca: batch not performed or preprocessing_params missing")
+      return(NULL)
+    }
+    before <- preprocessing_params$pre_batch_data
+    after <- preprocessing_params$post_batch_data
+    if (is.null(before) || is.null(after)) return(NULL)
+    
+    common_cols <- intersect(colnames(before), colnames(after))
+    before <- before[, common_cols, drop = FALSE]
+    after <- after[, common_cols, drop = FALSE]
+    
+    before_t <- t(log2(as.matrix(before) + 1))
+    after_t <- t(log2(as.matrix(after) + 1))
+    
+    before_ok <- apply(before_t, 2, function(x) all(is.finite(x)))
+    after_ok <- apply(after_t, 2, function(x) all(is.finite(x)))
+    keep_cols <- which(before_ok & after_ok)
+    if (length(keep_cols) < 2) return(NULL)
+    before_t <- before_t[, keep_cols, drop = FALSE]
+    after_t <- after_t[, keep_cols, drop = FALSE]
+    
+    before_var <- apply(before_t, 2, var)
+    after_var <- apply(after_t, 2, var)
+    keep_var <- which(before_var > 1e-12 & after_var > 1e-12)
+    if (length(keep_var) < 2) return(NULL)
+    before_t <- before_t[, keep_var, drop = FALSE]
+    after_t <- after_t[, keep_var, drop = FALSE]
+    
+    pca_before <- tryCatch(prcomp(before_t, scale. = TRUE), error = function(e) NULL)
+    pca_after <- tryCatch(prcomp(after_t, scale. = TRUE), error = function(e) NULL)
+    if (is.null(pca_before) || is.null(pca_after)) return(NULL)
+    
+    sample_info_short <- rv$sample_info
+    rownames(sample_info_short) <- standardize_sample_name(rownames(sample_info_short))
+    before_norm <- standardize_sample_name(colnames(before))
+    after_norm <- standardize_sample_name(colnames(after))
+    batch_before <- sample_info_short[before_norm, "Batch"]
+    batch_after <- sample_info_short[after_norm, "Batch"]
+    
+    list(
+      pca_before = pca_before,
+      pca_after = pca_after,
+      batch_before = batch_before,
+      batch_after = batch_after,
+      var_before = round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1),
+      var_after = round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
+    )
+  }, error = function(e) {
+    message("[ERROR] batch_comparison_pca: ", e$message)
+    NULL
+  })
 })
 
 output$batch_pca_plot <- renderPlot({
@@ -554,3 +583,5 @@ output$download_batch_pca <- downloadHandler(
     ggsave(file, plot = plot, width = 12, height = 6, dpi = 150)
   }
 )
+
+message("[DEBUG] preprocessing_batch.R fully loaded (conflict resolved, all reactive access safe).")

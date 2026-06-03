@@ -23,7 +23,6 @@ plots_ui <- function() {
                          actionButton("batch_create_groups", "Batch Create", icon = icon("cubes"), class = "btn-warning"),
                          actionButton("reset_groups", "Reset", icon = icon("refresh"), class = "btn-danger")
                      ),
-                     # 折叠：添加分组和自动分配
                      tags$details(
                        tags$summary("Add / Auto-Assign", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                        div(style = "display: flex; gap: 10px; margin-bottom: 15px;",
@@ -56,7 +55,6 @@ plots_ui <- function() {
                              actionButton("batch_add_pairwise", "Add All Pairwise", icon = icon("plus-circle"), class = "btn-info")
                          )
                      ),
-                     # 折叠：手动添加比较
                      tags$details(
                        tags$summary("Manual Comparison Entry", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                        div(style = "margin-bottom: 20px; padding: 15px; background: #f0f8ff; border-radius: 10px;",
@@ -79,7 +77,6 @@ plots_ui <- function() {
                              actionButton("clear_comparisons", "Clear All", class = "btn-sm btn-outline-danger")
                          )
                      ),
-                     # 带滚动条的对比列表容器
                      div(style = "max-height: 300px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; background: #fff;",
                          uiOutput("comparisons_list_ui")
                      )
@@ -143,12 +140,14 @@ plots_ui <- function() {
         )
     ),
     hr(),
-    # 图表区域（仅保留 Heatmap）
+    # 图表区域
     tabsetPanel(
       id = "plots_subnav",
+      # ---- 热图选项卡（保持不变） ----
       tabPanel(
         title = "Heatmap",
         value = "heatmap_sub",
+        # ... 保持原有热图 UI 不变 ...
         fluidRow(
           column(12,
                  div(class = "card-modern",
@@ -161,7 +160,6 @@ plots_ui <- function() {
                                                choices = c("LFQ Intensity (per-row Z-score)" = "LFQ",
                                                            "Intensity (per-row Z-score)" = "Intensity"),
                                                selected = "LFQ"),
-                                  # 新增：数据源信息显示
                                   verbatimTextOutput("heatmap_data_source_info"),
                                   hr(),
                                   radioButtons("heatmap_protein_mode", "Protein Selection Mode",
@@ -196,6 +194,80 @@ plots_ui <- function() {
                                   shinycssloaders::withSpinner(plotOutput("heatmap_plot", height = "700px"), type = 4, color = "#e67e22")
                            )
                          )
+                     )
+                 )
+          )
+        )
+      ),
+      # ---- 火山图选项卡（增强版，来自旧平台） ----
+      tabPanel(
+        title = "Volcano Plot",
+        value = "volcano_sub",
+        fluidRow(
+          column(12,
+                 div(class = "card-modern",
+                     div(class = "card-header-modern",
+                         icon("chart-line"),
+                         " Volcano Plot Visualization ",
+                         span(style = "font-size: 14px; font-weight: normal;",
+                              "(Click on any dot to view the protein's expression profile across all groups)")),
+                     div(style = "padding: 20px;",
+                         # 颜色选择器
+                         div(class = "color-palette-row",
+                             div(class = "color-card",
+                                 div(class = "color-card-label", "Up"),
+                                 colourpicker::colourInput("color_up", NULL, value = "#FF0000",
+                                                           showColour = "background",
+                                                           allowTransparent = FALSE),
+                                 div(class = "color-card-value", textOutput("val_up", inline = TRUE))
+                             ),
+                             div(class = "color-card",
+                                 div(class = "color-card-label", "Down"),
+                                 colourpicker::colourInput("color_down", NULL, value = "#0000FF",
+                                                           showColour = "background",
+                                                           allowTransparent = FALSE),
+                                 div(class = "color-card-value", textOutput("val_down", inline = TRUE))
+                             ),
+                             div(class = "color-card",
+                                 div(class = "color-card-label", "Increase"),
+                                 colourpicker::colourInput("color_increase", NULL, value = "#C00000",
+                                                           showColour = "background",
+                                                           allowTransparent = FALSE),
+                                 div(class = "color-card-value", textOutput("val_inc", inline = TRUE))
+                             ),
+                             div(class = "color-card",
+                                 div(class = "color-card-label", "Decrease"),
+                                 colourpicker::colourInput("color_decrease", NULL, value = "#0945A5",
+                                                           showColour = "background",
+                                                           allowTransparent = FALSE),
+                                 div(class = "color-card-value", textOutput("val_dec", inline = TRUE))
+                             ),
+                             div(class = "color-card",
+                                 div(class = "color-card-label", "NS"),
+                                 colourpicker::colourInput("color_ns", NULL, value = "#7f7e83",
+                                                           showColour = "background",
+                                                           allowTransparent = FALSE),
+                                 div(class = "color-card-value", textOutput("val_ns", inline = TRUE))
+                             ),
+                             div(class = "reset-btn-wrapper",
+                                 actionButton("reset_color", icon("undo"), class = "btn-circle-modern")
+                             )
+                         ),
+                         uiOutput("color_preview"),
+                         fluidRow(
+                           column(4, numericInput("point_size", "Point Size", value = 1.8, min = 0.5, max = 10, step = 0.1))
+                         ),
+                         hr(),
+                         fluidRow(
+                           column(8,
+                                  selectInput("selected_comparison", "Select Comparison", choices = NULL, width = "100%")
+                           ),
+                           column(4,
+                                  textInputMax("single_plot_title", "Custom Title", value = "", placeholder = "Auto-generated", maxlength = 50, width = "100%")
+                           )
+                         ),
+                         fluidRow(column(12, uiOutput("plot_info_ui"))),
+                         shinycssloaders::withSpinner(plotlyOutput("volcano_plot", height = "700px"), type = 4, color = "#3498db")
                      )
                  )
           )
