@@ -4,6 +4,8 @@ library(shiny)
 
 source("global.R", local = TRUE)
 source("ui/upload_ui.R", local = TRUE)
+source("ui/cleaning_ui.R", local = TRUE)
+source("ui/normalization_ui.R", local = TRUE)   # 归一化 UI
 source("ui/preprocessing_ui.R", local = TRUE)
 source("ui/plots_ui.R", local = TRUE)
 
@@ -140,7 +142,9 @@ build_ui <- function() {
       title = div(icon("dna", style = "margin-right: 8px;"), "Universal Proteomics Platform"),
       id = "main_navbar", collapsible = TRUE, windowTitle = "Proteomics Analysis",
       upload_ui(),
-      preprocessing_ui(),
+      cleaning_ui(),
+      preprocessing_ui(),      # 预处理先执行
+      normalization_ui(),      # 归一化在预处理之后，使用处理后的数据
       plots_ui()
     )
   )
@@ -151,6 +155,8 @@ ui <- build_ui()
 server <- function(input, output, session) {
   source("server/reactive_values.R", local = TRUE)
   source("server/data_upload.R", local = TRUE)
+  source("server/cleaning_server.R", local = TRUE)
+  source("server/normalization_server.R", local = TRUE)
   source("server/preprocessing_helpers.R", local = TRUE)
   source("server/preprocessing_filter_missing.R", local = TRUE)
   source("server/preprocessing_filter_intensity.R", local = TRUE)
@@ -164,7 +170,7 @@ server <- function(input, output, session) {
   source("server/heatmap_plot.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
-  source("server/preprocessing_nav.R", local = TRUE)   # <-- 新增此行
+  source("server/preprocessing_nav.R", local = TRUE)
 }
 
 shinyApp(ui = ui, server = server)

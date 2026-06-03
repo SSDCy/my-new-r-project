@@ -1,6 +1,12 @@
 # server/preprocessing_nav.R
-message("[DEBUG] preprocessing_nav.R loaded - removed Pre-Raw Overview navigation")
+message("[DEBUG] preprocessing_nav.R loaded - handling sidebar navigation")
 
+# 验证 session 是否可用
+shiny::observe({
+  message("[DEBUG] preprocessing_nav: initial session check - session exists")
+})
+
+# 监听每个侧边栏菜单项的点击
 observeEvent(input$nav_missing_filter, {
   message("[DEBUG] nav: Missing Value Filter clicked")
   updateTabsetPanel(session, "main_nav_tabs", selected = "missing_filter")
@@ -26,9 +32,10 @@ observeEvent(input$nav_data_table, {
   updateTabsetPanel(session, "main_nav_tabs", selected = "data_table")
 })
 
-# 初始化默认选中 Missing Value Filter
-observe({
-  message("[DEBUG] preprocessing_nav: initializing default tab (missing_filter)")
+# 默认选中第一个菜单项（Missing Value Filter）
+shiny::observe({
+  message("[DEBUG] preprocessing_nav: setting default tab to missing_filter")
   updateTabsetPanel(session, "main_nav_tabs", selected = "missing_filter")
 })
+
 message("[DEBUG] preprocessing_nav.R loaded successfully")

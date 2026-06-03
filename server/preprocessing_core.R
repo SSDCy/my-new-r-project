@@ -86,6 +86,14 @@ processed_data <- eventReactive(input$run_preprocessing, {
     if (input$imputation_method == "none") {
       preprocessing_params$imputation_method <- "none"
     } else {
+      # 保存填补参数，以确保摘要能正确显示
+      if (input$imputation_method == "minvalue") {
+        preprocessing_params$min_value <- input$minvalue_fixed
+        message("[DEBUG] saved min_value = ", preprocessing_params$min_value)
+      } else if (input$imputation_method == "quantile") {
+        preprocessing_params$quantile_prob <- input$quantile_prob
+        message("[DEBUG] saved quantile_prob = ", preprocessing_params$quantile_prob)
+      }
       data <- impute_missing_values(data, method = input$imputation_method, k = knn_k)
       actual_method <- attr(data, "actual_method")
       if (is.null(actual_method)) actual_method <- input$imputation_method
@@ -164,7 +172,7 @@ observeEvent(input$intensity_type, {
   preprocessing_params$intensity_type_used <- NULL
 })
 
-# ============ 原始 pre_raw_summary（保留，但不在 UI 中显示） ============
+# ============ 原始 pre_raw_summary（完整保留） ============
 output$pre_raw_summary <- renderPrint({
   tryCatch({
     req(expression_data())
@@ -329,25 +337,18 @@ output$pre_processed_missing_plot <- renderPlot({
        col = "lightgreen", border = "white")
 })
 
-# ========== 修复后的 Processed Data Table（自动修正行名） ==========
 output$pre_processed_table <- DT::renderDT({
   message("[DEBUG] output$pre_processed_table called")
   req(processed_data())
   df <- processed_data()
   
-  # 获取蛋白ID，如果行名是数字序号，则从原始数据中映射真实ID
   ids <- rownames(df)
   message("[DEBUG] pre_processed_table: first 5 rownames = ", paste(head(ids, 5), collapse = ", "))
   
   if (suppressWarnings(all(!is.na(as.numeric(ids))))) {
     message("[DEBUG] pre_processed_table: rownames are numeric, mapping to Master protein IDs")
-    # 尝试从 rv$clean_data 获取原始ID列表
     if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
       original_ids <- rv$clean_data$`Master protein IDs`
-      # 检查长度是否与 expression_data() 一致（未过滤前）
-      # 实际上 processed_data() 的行是过滤后的，行名数字可能是相对于过滤后的矩阵的索引
-      # 但更稳健的方式：直接使用 expression_data() 的原始行名，再通过匹配进行过滤？比较复杂。
-      # 简单方案：如果行名全是数字，很可能就是索引，我们就直接用这些索引去 original_ids 取。
       idx <- as.integer(ids)
       if (max(idx, na.rm = TRUE) <= length(original_ids)) {
         ids <- original_ids[idx]
@@ -384,7 +385,7 @@ output$imputation_skipped <- reactive({
 })
 outputOptions(output, "imputation_skipped", suspendWhenHidden = FALSE)
 
-# ========== 新增：缺失数据摘要（Missing Value Filter 页卡底部） ==========
+# ========== 新增：缺失数据摘要 ==========
 output$missing_data_info <- renderPrint({
   message("[DEBUG] output$missing_data_info called")
   tryCatch({
@@ -429,7 +430,7 @@ output$missing_data_info <- renderPrint({
 })
 message("[DEBUG] output$missing_data_info defined")
 
-# ========== 新增：强度分位数信息（Minimum Intensity Filter 折叠内） ==========
+# ========== 新增：强度分位数信息 ==========
 output$intensity_info <- renderPrint({
   message("[DEBUG] output$intensity_info called")
   tryCatch({
@@ -472,7 +473,6 @@ output$preprocessing_steps_summary <- renderPrint({
   }
   cat("Preprocessing performed at:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n\n")
   
-  # 步骤1：缺失值过滤
   cat("1. Missing Value Filter:\n")
   cat("   Mode:", preprocessing_params$missing_filter_mode, "\n")
   cat("   Threshold:", input$max_missing_fraction, "\n")
@@ -480,19 +480,16 @@ output$preprocessing_steps_summary <- renderPrint({
     cat("   Fallback: global mode (", preprocessing_params$missing_filter_fallback_unmatched, " samples unmatched)\n")
   }
   
-  # 步骤2：Inf过滤
   cat("2. Inf/Non-finite Filter:\n")
   cat("   Removed proteins:", preprocessing_params$inf_filtered_count, "\n")
   if (preprocessing_params$inf_filtered_count > 0) {
     cat("   First few removed IDs:", paste(head(preprocessing_params$inf_filtered_proteins, 5), collapse = ", "), "\n")
   }
   
-  # 步骤3：强度过滤
   cat("3. Minimum Intensity Filter:\n")
   cat("   Threshold:", input$min_intensity, "\n")
   cat("   Min samples above threshold:", preprocessing_params$intensity_min_samples, "\n")
   
-  # 步骤4：填充
   cat("4. Missing Value Imputation:\n")
   if (!is.null(preprocessing_params$imputation_method)) {
     method_display <- switch(preprocessing_params$imputation_method,
@@ -515,7 +512,6 @@ output$preprocessing_steps_summary <- renderPrint({
     cat("   No imputation performed yet.\n")
   }
   
-  # 步骤5：批次校正
   cat("5. Batch Correction:\n")
   if (preprocessing_params$batch_performed) {
     cat("   ComBat applied to", length(preprocessing_params$batch_corrected_cols), "samples\n")

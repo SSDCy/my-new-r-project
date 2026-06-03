@@ -1,6 +1,6 @@
 # ui/preprocessing_ui.R
 
-message("[DEBUG] preprocessing_ui.R loaded - data source notes, steps summary, unified download conditions")
+message("[DEBUG] preprocessing_ui.R loaded - removed Missing Value Distribution from Post-Processed Overview")
 
 make_collapsible_comparison <- function(id, title, content_ui) {
   tags$details(
@@ -88,10 +88,9 @@ preprocessing_ui <- function() {
         tabsetPanel(
           id = "main_nav_tabs",
           type = "hidden",
-          # ===================== 1. Missing Value Filter =====================
+          # 1. Missing Value Filter
           tabPanel(
             title = "missing_filter", value = "missing_filter",
-            # 数据来源提示
             div(class = "data-source-note",
                 icon("info-circle"), " Data source: Original expression matrix (raw data)."
             ),
@@ -117,7 +116,6 @@ preprocessing_ui <- function() {
                 actionButton("preset_missing_0.7", "0.7", class = "btn-xs btn-outline-secondary")
             ),
             verbatimTextOutput("missing_filter_effect", placeholder = TRUE),
-            # 下载：无需运行预处理，直接可用
             div(style = "margin-top: 15px;",
                 downloadButton("download_missing_filter_excel", "Export Missing Filter Results (Excel)", class = "btn-success btn-block")
             ),
@@ -125,7 +123,7 @@ preprocessing_ui <- function() {
             h5("Data Summary (missing‑related)", style = "color: #2c3e50;"),
             verbatimTextOutput("missing_data_info")
           ),
-          # ===================== 2. Minimum Intensity Filter =====================
+          # 2. Minimum Intensity Filter
           tabPanel(
             title = "intensity_filter", value = "intensity_filter",
             div(class = "data-source-note",
@@ -176,7 +174,7 @@ preprocessing_ui <- function() {
               )
             )
           ),
-          # ===================== 3. Missing Value Imputation =====================
+          # 3. Missing Value Imputation
           tabPanel(
             title = "imputation", value = "imputation",
             div(class = "data-source-note",
@@ -207,7 +205,6 @@ preprocessing_ui <- function() {
                              h6(icon("info-circle"), " Threshold Position"), verbatimTextOutput("quantile_threshold_position"),
                              h6(icon("table"), " Threshold Summary Table"), tableOutput("quantile_threshold_table")
             ),
-            # 导出：必须运行预处理后才能使用
             conditionalPanel(
               condition = "output.preprocessing_done == true",
               div(style = "margin-top: 15px;", downloadButton("download_imputation_excel", "Export Imputation Results (Excel)", class = "btn-success btn-block"))
@@ -242,7 +239,7 @@ preprocessing_ui <- function() {
               )
             )
           ),
-          # ===================== 4. Batch Correction =====================
+          # 4. Batch Correction
           tabPanel(
             title = "batch", value = "batch",
             div(class = "data-source-note",
@@ -289,16 +286,13 @@ preprocessing_ui <- function() {
               )
             )
           ),
-          # ===================== 5. Post-Processed Overview =====================
+          # 5. Post-Processed Overview (已移除 Missing Value Distribution)
           tabPanel(
             title = "processed_overview", value = "processed_overview",
             h4("Data Basic Information"),
-            verbatimTextOutput("pre_processed_summary"),
-            hr(),
-            h4("Missing Value Distribution"),
-            plotOutput("pre_processed_missing_plot", height = "400px")
+            verbatimTextOutput("pre_processed_summary")
           ),
-          # ===================== 6. Processed Data Table =====================
+          # 6. Processed Data Table
           tabPanel(
             title = "data_table", value = "data_table",
             h4("Preprocessing Steps Summary"),
@@ -312,4 +306,4 @@ preprocessing_ui <- function() {
     )
   )
 }
-message("[DEBUG] preprocessing_ui.R fully defined – data source notes, steps summary added")
+message("[DEBUG] preprocessing_ui.R fully defined – Missing Value Distribution removed from Post-Processed Overview")

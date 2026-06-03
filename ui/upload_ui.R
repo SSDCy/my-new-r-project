@@ -1,6 +1,6 @@
 # ui/upload_ui.R
 
-message("[DEBUG] upload_ui.R loaded - removed '统计' download button from Missing Value Correlation")
+message("[DEBUG] upload_ui.R loaded - removed baseline_sample selector (moved to Normalization)")
 
 upload_ui <- function() {
   tabPanel(

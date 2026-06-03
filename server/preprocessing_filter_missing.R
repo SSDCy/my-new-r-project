@@ -245,132 +245,137 @@ output$missing_filter_effect <- renderPrint({
   cat("\nNote: This prediction only considers the missing rate filter, without prior Inf/Intensity filters. It is intended as a reference for threshold estimation.\n")
 })
 
-# 导出缺失值过滤结果 Excel（无颜色）
+# 导出缺失值过滤结果 Excel（添加进度条）
 output$download_missing_filter_excel <- downloadHandler(
   filename = function() {
     paste0("Missing_Filter_Result_", Sys.Date(), ".xlsx")
   },
   content = function(file) {
-    message("[DEBUG] download_missing_filter_excel: starting export")
-    req(expression_data())
-    
-    data <- expression_data()
-    threshold <- input$max_missing_fraction
-    mode <- input$missing_filter_mode
-    
-    message("[DEBUG] download_missing_filter_excel: mode = ", mode, ", threshold = ", threshold)
-    
-    detail <- missing_filter_prediction_detail()
-    if (is.null(detail$keep)) {
-      showNotification("Unable to compute filter details.", type = "error")
-      return()
-    }
-    
-    keep <- detail$keep
-    # 安全的蛋白ID获取
-    row_names <- rownames(data)
-    all_numeric <- suppressWarnings(all(!is.na(as.numeric(row_names))))
-    if (all_numeric) {
-      message("[DEBUG] download_missing_filter_excel: rownames are numeric indices, fetching from clean_data")
-      if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
-        clean_ids <- rv$clean_data$`Master protein IDs`
-        if (length(clean_ids) == nrow(data)) {
-          protein_ids <- clean_ids
+    shiny::withProgress(message = 'Exporting Missing Filter Excel...', value = 0, {
+      incProgress(0.1, detail = "Preparing filter details...")
+      message("[DEBUG] download_missing_filter_excel: starting export")
+      req(expression_data())
+      
+      data <- expression_data()
+      threshold <- input$max_missing_fraction
+      mode <- input$missing_filter_mode
+      
+      message("[DEBUG] download_missing_filter_excel: mode = ", mode, ", threshold = ", threshold)
+      
+      detail <- missing_filter_prediction_detail()
+      if (is.null(detail$keep)) {
+        showNotification("Unable to compute filter details.", type = "error")
+        return()
+      }
+      
+      keep <- detail$keep
+      row_names <- rownames(data)
+      all_numeric <- suppressWarnings(all(!is.na(as.numeric(row_names))))
+      if (all_numeric) {
+        message("[DEBUG] download_missing_filter_excel: rownames are numeric indices, fetching from clean_data")
+        if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
+          clean_ids <- rv$clean_data$`Master protein IDs`
+          if (length(clean_ids) == nrow(data)) {
+            protein_ids <- clean_ids
+          } else {
+            protein_ids <- row_names
+          }
         } else {
           protein_ids <- row_names
         }
       } else {
         protein_ids <- row_names
       }
-    } else {
-      protein_ids <- row_names
-    }
-    message("[DEBUG] download_missing_filter_excel: first 5 protein IDs: ", paste(head(protein_ids, 5), collapse = ", "))
-    
-    retained_ids <- protein_ids[keep]
-    filtered_ids <- protein_ids[!keep]
-    message("[DEBUG] download_missing_filter_excel: retained = ", length(retained_ids), ", filtered = ", length(filtered_ids))
-    
-    group_extra_ids <- character(0)
-    if (mode == "group") {
-      missing_global <- rowMeans(is.na(data))
-      global_keep <- missing_global <= threshold
-      group_extra_ids <- protein_ids[keep & !global_keep]
-      message("[DEBUG] download_missing_filter_excel: Group mode extra proteins count = ", length(group_extra_ids))
-    }
-    
-    wb <- openxlsx::createWorkbook()
-    
-    # Sheet 1: Retained
-    retained_df <- data[which(keep), , drop = FALSE]
-    retained_df <- cbind(ProteinID = retained_ids, retained_df, stringsAsFactors = FALSE)
-    if (length(group_extra_ids) > 0) {
-      retained_df$GroupExtra <- ifelse(retained_df$ProteinID %in% group_extra_ids, "Yes (Group saved, Global would remove)", "")
-    }
-    openxlsx::addWorksheet(wb, "Retained")
-    openxlsx::writeData(wb, "Retained", retained_df)
-    
-    # Sheet 2: Filtered_Out
-    filtered_df <- data[which(!keep), , drop = FALSE]
-    filtered_df <- cbind(ProteinID = filtered_ids, filtered_df, stringsAsFactors = FALSE)
-    openxlsx::addWorksheet(wb, "Filtered_Out")
-    openxlsx::writeData(wb, "Filtered_Out", filtered_df)
-    
-    # Sheet 3: Group Details (仅Group模式，无颜色)
-    if (mode == "group" && !is.null(detail$per_group_pass)) {
-      per_group <- detail$per_group_pass
-      group_names <- colnames(per_group)
-      pass_matrix <- per_group
-      rownames(pass_matrix) <- protein_ids
+      message("[DEBUG] download_missing_filter_excel: first 5 protein IDs: ", paste(head(protein_ids, 5), collapse = ", "))
       
-      retained_pass <- pass_matrix[retained_ids, , drop = FALSE]
+      retained_ids <- protein_ids[keep]
+      filtered_ids <- protein_ids[!keep]
+      message("[DEBUG] download_missing_filter_excel: retained = ", length(retained_ids), ", filtered = ", length(filtered_ids))
       
-      group_assign <- apply(retained_pass, 1, function(x) {
-        g <- group_names[x]
-        if (length(g) == 0) return("None")
-        paste(g, collapse = ";")
-      })
-      
-      group_detail_df <- data.frame(
-        ProteinID = retained_ids,
-        GroupPass = group_assign,
-        stringsAsFactors = FALSE
-      )
-      
-      sets <- lapply(group_names, function(g) retained_ids[retained_pass[, g]])
-      names(sets) <- group_names
-      
-      if (length(group_names) == 2) {
-        only_g1 <- setdiff(sets[[1]], sets[[2]])
-        only_g2 <- setdiff(sets[[2]], sets[[1]])
-        both <- intersect(sets[[1]], sets[[2]])
-        
-        group_detail_df$SpecificGroup <- ""
-        group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g1] <- paste0("Only ", group_names[1])
-        group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g2] <- paste0("Only ", group_names[2])
-        group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% both] <- "Both"
+      group_extra_ids <- character(0)
+      if (mode == "group") {
+        missing_global <- rowMeans(is.na(data))
+        global_keep <- missing_global <= threshold
+        group_extra_ids <- protein_ids[keep & !global_keep]
+        message("[DEBUG] download_missing_filter_excel: Group mode extra proteins count = ", length(group_extra_ids))
       }
       
-      openxlsx::addWorksheet(wb, "Group_Details")
-      openxlsx::writeData(wb, "Group_Details", group_detail_df)
+      incProgress(0.3, detail = "Creating workbook...")
+      wb <- openxlsx::createWorkbook()
       
-      openxlsx::addWorksheet(wb, "Legend")
-      legend_text <- c(
-        "Retained sheet: 'GroupExtra' column indicates proteins retained by Group mode but would be filtered out by Global mode.",
-        "Group_Details sheet: 'SpecificGroup' column indicates if a protein passes only in one group or both.",
-        if (length(group_names) == 2) c(paste("Only", group_names[1]), paste("Only", group_names[2]), "Both") else "Multiple groups"
-      )
-      openxlsx::writeData(wb, "Legend", data.frame(Info = legend_text))
-    } else if (mode == "global") {
-      openxlsx::addWorksheet(wb, "Legend")
-      openxlsx::writeData(wb, "Legend", data.frame(
-        Info = c("Global filter mode: proteins filtered based on missing rate across all samples.",
-                 "Retained sheet: proteins with missing rate <= threshold.",
-                 "Filtered_Out sheet: proteins with missing rate > threshold.")
-      ))
-    }
-    
-    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
-    message("[DEBUG] download_missing_filter_excel: export completed")
+      # Sheet 1: Retained
+      retained_df <- data[which(keep), , drop = FALSE]
+      retained_df <- cbind(ProteinID = retained_ids, retained_df, stringsAsFactors = FALSE)
+      if (length(group_extra_ids) > 0) {
+        retained_df$GroupExtra <- ifelse(retained_df$ProteinID %in% group_extra_ids, "Yes (Group saved, Global would remove)", "")
+      }
+      openxlsx::addWorksheet(wb, "Retained")
+      openxlsx::writeData(wb, "Retained", retained_df)
+      
+      # Sheet 2: Filtered_Out
+      filtered_df <- data[which(!keep), , drop = FALSE]
+      filtered_df <- cbind(ProteinID = filtered_ids, filtered_df, stringsAsFactors = FALSE)
+      openxlsx::addWorksheet(wb, "Filtered_Out")
+      openxlsx::writeData(wb, "Filtered_Out", filtered_df)
+      
+      incProgress(0.3, detail = "Writing group details...")
+      if (mode == "group" && !is.null(detail$per_group_pass)) {
+        per_group <- detail$per_group_pass
+        group_names <- colnames(per_group)
+        pass_matrix <- per_group
+        rownames(pass_matrix) <- protein_ids
+        
+        retained_pass <- pass_matrix[retained_ids, , drop = FALSE]
+        
+        group_assign <- apply(retained_pass, 1, function(x) {
+          g <- group_names[x]
+          if (length(g) == 0) return("None")
+          paste(g, collapse = ";")
+        })
+        
+        group_detail_df <- data.frame(
+          ProteinID = retained_ids,
+          GroupPass = group_assign,
+          stringsAsFactors = FALSE
+        )
+        
+        sets <- lapply(group_names, function(g) retained_ids[retained_pass[, g]])
+        names(sets) <- group_names
+        
+        if (length(group_names) == 2) {
+          only_g1 <- setdiff(sets[[1]], sets[[2]])
+          only_g2 <- setdiff(sets[[2]], sets[[1]])
+          both <- intersect(sets[[1]], sets[[2]])
+          
+          group_detail_df$SpecificGroup <- ""
+          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g1] <- paste0("Only ", group_names[1])
+          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g2] <- paste0("Only ", group_names[2])
+          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% both] <- "Both"
+        }
+        
+        openxlsx::addWorksheet(wb, "Group_Details")
+        openxlsx::writeData(wb, "Group_Details", group_detail_df)
+        
+        openxlsx::addWorksheet(wb, "Legend")
+        legend_text <- c(
+          "Retained sheet: 'GroupExtra' column indicates proteins retained by Group mode but would be filtered out by Global mode.",
+          "Group_Details sheet: 'SpecificGroup' column indicates if a protein passes only in one group or both.",
+          if (length(group_names) == 2) c(paste("Only", group_names[1]), paste("Only", group_names[2]), "Both") else "Multiple groups"
+        )
+        openxlsx::writeData(wb, "Legend", data.frame(Info = legend_text))
+      } else if (mode == "global") {
+        openxlsx::addWorksheet(wb, "Legend")
+        openxlsx::writeData(wb, "Legend", data.frame(
+          Info = c("Global filter mode: proteins filtered based on missing rate across all samples.",
+                   "Retained sheet: proteins with missing rate <= threshold.",
+                   "Filtered_Out sheet: proteins with missing rate > threshold.")
+        ))
+      }
+      
+      incProgress(0.2, detail = "Saving workbook...")
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      incProgress(0.1, detail = "Done")
+      message("[DEBUG] download_missing_filter_excel: export completed")
+    })
   }
 )

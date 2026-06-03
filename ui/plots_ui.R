@@ -161,6 +161,9 @@ plots_ui <- function() {
                                                choices = c("LFQ Intensity (per-row Z-score)" = "LFQ",
                                                            "Intensity (per-row Z-score)" = "Intensity"),
                                                selected = "LFQ"),
+                                  # 新增：数据源信息显示
+                                  verbatimTextOutput("heatmap_data_source_info"),
+                                  hr(),
                                   radioButtons("heatmap_protein_mode", "Protein Selection Mode",
                                                choices = c("Top N proteins (by variance)" = "top_n",
                                                            "Custom protein list" = "custom"),

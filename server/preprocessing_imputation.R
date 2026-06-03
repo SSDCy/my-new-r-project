@@ -1,5 +1,5 @@
 # server/preprocessing_imputation.R
-message("[DEBUG] preprocessing_imputation.R loaded - dynamic formula with x[k] labels")
+message("[DEBUG] preprocessing_imputation.R loaded - dynamic formula with x[k] labels, with progress bars")
 
 # ---------- 填补前数据矩阵 ----------
 pre_imputation_matrix <- reactive({
@@ -331,7 +331,7 @@ quantile_imputation_data <- reactive({
        q = q, groups = groups, mat = before_mat)
 })
 
-# ---------- 分位数阈值条形图（无标签，保留分组和缺失值提示） ----------
+# ---------- 分位数阈值条形图 ----------
 output$quantile_threshold_plot <- renderPlot({
   message("[DEBUG] quantile_threshold_plot: rendering")
   data <- quantile_imputation_data()
@@ -375,7 +375,7 @@ output$quantile_threshold_plot <- renderPlot({
           legend.position = "bottom")
 })
 
-# ---------- 分位数阈值表格（列名清晰） ----------
+# ---------- 分位数阈值表格 ----------
 output$quantile_threshold_table <- renderTable({
   data <- quantile_imputation_data()
   req(data)
@@ -420,7 +420,6 @@ output$quantile_distribution_plot <- renderPlot({
     return()
   }
   
-  # 计算实际低于阈值的比例
   actual_pct <- mean(non_missing <= threshold) * 100
   expected_pct <- q * 100
   
@@ -444,7 +443,7 @@ output$quantile_distribution_plot <- renderPlot({
     theme_bw()
 })
 
-# ---------- 阈值位置说明（包含公式、x[k]标注、动态计算） ----------
+# ---------- 阈值位置说明 ----------
 output$quantile_threshold_position <- renderPrint({
   data <- quantile_imputation_data()
   req(data, input$quantile_verify_sample)
@@ -463,12 +462,10 @@ output$quantile_threshold_position <- renderPrint({
   sorted_vals <- sort(non_missing)
   n <- length(sorted_vals)
   
-  # 计算分位数参数
   p <- (n - 1) * q + 1
   k <- floor(p)
   lambda <- p - k
   
-  # 获取用于插值的两个值
   if (k >= 1 && k < n) {
     xk <- sorted_vals[k]
     xk1 <- sorted_vals[k + 1]
@@ -480,7 +477,6 @@ output$quantile_threshold_position <- renderPrint({
     xk1 <- sorted_vals[n]
   }
   
-  # 格式化数字
   fmt <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
   
   cat("Threshold:", fmt(round(threshold, 2)), "\n")
@@ -512,7 +508,7 @@ output$quantile_threshold_position <- renderPrint({
           " values around: [", if(pos>0) sorted_vals[pos], ", ", if(pos<n) sorted_vals[pos+1], "]")
 })
 
-# ---------- 原始数据表格（显示所有非缺失值，高亮第一个≥阈值的值） ----------
+# ---------- 原始数据表格 ----------
 output$quantile_raw_data_table <- DT::renderDT({
   data <- quantile_imputation_data()
   req(data, input$quantile_verify_sample)
@@ -533,7 +529,6 @@ output$quantile_raw_data_table <- DT::renderDT({
     stringsAsFactors = FALSE
   )
   
-  # 找到第一个≥阈值的值，用于高亮
   highlight_val <- sorted_vals[findInterval(threshold, sorted_vals) + 1]
   if (is.na(highlight_val) || highlight_val < threshold) {
     highlight_val <- sorted_vals[length(sorted_vals)]
@@ -691,12 +686,13 @@ output$imputation_pca_plot <- renderPlot({
     plot.new(); text(0.5, 0.5, "Data mismatch. Please re-run preprocessing.", cex = 1.2)
     return()
   }
-  before_sub <- dat$before_vis
-  after_sub <- dat$after_vis
+  after_ids <- rownames(dat$after_vis)
+  before_sub <- dat$before_vis[after_ids, , drop = FALSE]
+  after_sub <- dat$after_vis[after_ids, , drop = FALSE]
   
   if (nrow(before_sub) < 3) {
     plot.new()
-    text(0.5, 0.5, "Not enough proteins for PCA.")
+    text(0.5, 0.5, "Not enough common proteins for PCA.")
     return()
   }
   
@@ -715,14 +711,14 @@ output$imputation_pca_plot <- renderPlot({
   var_before <- round(pca_before$sdev^2 / sum(pca_before$sdev^2) * 100, 1)
   var_after <- round(pca_after$sdev^2 / sum(pca_after$sdev^2) * 100, 1)
   
-  df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before Imputation")
-  df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After Imputation")
+  df_before <- data.frame(PC1 = pca_before$x[,1], PC2 = pca_before$x[,2], Stage = "Before")
+  df_after <- data.frame(PC1 = pca_after$x[,1], PC2 = pca_after$x[,2], Stage = "After")
   pca_df <- rbind(df_before, df_after)
   
   ggplot(pca_df, aes(x = PC1, y = PC2, color = Stage)) +
     geom_point(alpha = 0.6, size = 2) +
     stat_ellipse(type = "norm", level = 0.95) +
-    scale_color_manual(values = c("Before Imputation" = "#e67e22", "After Imputation" = "#9b59b6")) +
+    scale_color_manual(values = c("Before" = "#e67e22", "After" = "#9b59b6")) +
     labs(title = "PCA: Before vs After Imputation",
          x = paste0("PC1 (Before: ", var_before[1], "%, After: ", var_after[1], "%)"),
          y = paste0("PC2 (Before: ", var_before[2], "%, After: ", var_after[2], "%)")) +
@@ -915,278 +911,273 @@ output$missing_summary_table_skipped <- renderTable({
   )
 }, striped = TRUE, bordered = TRUE, width = "100%")
 
-# ============ 导出填补结果 Excel（完整功能，精确阈值） ============
+# ============ 导出填补结果 Excel（完整功能，精确阈值，带进度条） ============
 output$download_imputation_excel <- downloadHandler(
   filename = function() {
     paste0("Imputation_Result_", Sys.Date(), ".xlsx")
   },
   content = function(file) {
-    message("[DEBUG] download_imputation_excel: starting export")
-    if (is.null(processed_data())) {
-      showNotification("Please run preprocessing first.", type = "error")
-      return()
-    }
-    
-    pre_data <- pre_imputation_with_ids()
-    before_mat <- as.matrix(pre_data$before)
-    protein_ids <- pre_data$ids
-    method <- input$imputation_method
-    thr <- input$max_missing_fraction
-    k_val <- input$knn_k
-    minval <- input$minvalue_fixed
-    quant <- input$quantile_prob
-    
-    if (method == "knn") {
-      missing_frac <- rowMeans(is.na(before_mat))
-      keep <- missing_frac <= thr
-      before_mat <- before_mat[keep, , drop = FALSE]
-      protein_ids <- protein_ids[keep]
-      message("[DEBUG] KNN mode: after global filter, rows = ", nrow(before_mat))
-    } else {
-      message("[DEBUG] Method ", method, ": keeping all rows = ", nrow(before_mat))
-    }
-    
-    after_mat <- NULL
-    neighbors <- NULL
-    correlations <- NULL
-    
-    tryCatch({
-      if (method == "knn") {
-        message("[DEBUG] Running impute.knn with k = ", k_val)
-        knn_result <- impute::impute.knn(before_mat, k = k_val)
-        after_mat <- knn_result$data
-        
-        cor_mat <- cor(t(before_mat), use = "pairwise.complete.obs")
-        diag(cor_mat) <- -Inf
-        k_val_eff <- min(k_val, nrow(before_mat) - 1)
-        neigh_mat <- matrix(NA_integer_, nrow = nrow(before_mat), ncol = k_val_eff)
-        cor_mat_neighbors <- matrix(NA_real_, nrow = nrow(before_mat), ncol = k_val_eff)
-        for (i in seq_len(nrow(before_mat))) {
-          ord <- order(cor_mat[i, ], decreasing = TRUE)[1:k_val_eff]
-          neigh_mat[i, ] <- ord
-          cor_mat_neighbors[i, ] <- cor_mat[i, ord]
-        }
-        rownames(neigh_mat) <- protein_ids
-        rownames(cor_mat_neighbors) <- protein_ids
-        neighbors <- neigh_mat
-        correlations <- cor_mat_neighbors
-      } else if (method == "ppca") {
-        message("[DEBUG] Running true PPCA imputation (with log2 transform)")
-        after_mat <- true_ppca_impute(before_mat)
-      } else if (method == "minvalue") {
-        message("[DEBUG] Running minvalue imputation with value = ", minval)
-        after_mat <- before_mat
-        after_mat[is.na(after_mat)] <- minval
-        message("[DEBUG] minvalue imputation applied, filled ", sum(is.na(before_mat)), " cells with ", minval)
-      } else if (method == "quantile") {
-        message("[DEBUG] Running quantile imputation with prob = ", quant)
-        after_mat <- as.matrix(impute_missing_values(before_mat, method = "quantile", quantile_prob = quant))
-      } else {
-        message("[DEBUG] No imputation (method = none)")
-        after_mat <- before_mat
-      }
-    }, error = function(e) {
-      message("[DEBUG] Imputation error: ", e$message)
-      showNotification(paste("Imputation failed:", e$message), type = "error")
-      return()
-    })
-    
-    if (is.null(after_mat)) {
-      showNotification("Imputation failed. Please check parameters.", type = "error")
-      return()
-    }
-    
-    after_mat <- as.matrix(after_mat)
-    na_positions <- is.na(before_mat)
-    total_imputed <- sum(na_positions)
-    message("[DEBUG] total imputed cells = ", total_imputed)
-    
-    wb <- openxlsx::createWorkbook()
-    
-    # ---- Imputation_Info (English, academic style) ----
-    openxlsx::addWorksheet(wb, "Imputation_Info")
-    if (method == "knn") {
-      desc_text <- paste0("K-Nearest Neighbors imputation (k = ", k_val, "). For each missing value, the algorithm identifies the k proteins with the most similar expression profiles (based on Pearson correlation across available samples). The missing value is replaced by the average of the k neighbors' values in the corresponding sample. Neighbors with missing data in that sample are excluded from the average.")
-    } else if (method == "ppca") {
-      desc_text <- "Probabilistic Principal Component Analysis (PPCA). The data are first log2(x+1) transformed to satisfy the normality assumption of the model. A PPCA model with 2 principal components is then fitted to the log2-transformed data using the Expectation-Maximization algorithm, which simultaneously estimates the principal components and the missing values. The imputed log2 matrix is back-transformed to the original scale (2^x - 1). This method accounts for the global covariance structure and does not rely on local neighbors."
-    } else if (method == "minvalue") {
-      desc_text <- paste0("Fixed minimum value imputation. All missing values are replaced with the constant value ", format(minval, scientific = FALSE), ". This method is suitable when missingness is assumed to result from left-censoring at a detection limit. The After_Imputation sheet displays values as fixed‑decimal text (e.g., 0.0001) to avoid scientific notation.")
-    } else if (method == "quantile") {
-      desc_text <- paste0("Quantile imputation. For each sample column, missing values are replaced by the ", quant*100, "th percentile of the observed (non‑missing) values in that column. This method assumes that missing values fall below the chosen quantile of the observed distribution. The After_Imputation sheet shows numeric values.")
-    } else {
-      desc_text <- "No imputation was applied."
-    }
-    
-    info_text <- c(
-      "Missing Value Imputation Export",
-      paste("Data source: after missing value filter (mode:", preprocessing_params$missing_filter_mode, 
-            ", threshold:", input$max_missing_fraction, ")"),
-      "After Inf/Non-finite filter",
-      paste("After minimum intensity filter (threshold:", input$min_intensity,
-            ", min samples:", input$min_samples_above_intensity, ")"),
-      if (method == "knn") paste("Additional filtering: proteins with global missing rate >", thr, "were removed to ensure sufficient observations for KNN."),
-      "",
-      paste("Imputation method:", method),
-      "Parameters:",
-      if (method == "knn") paste("  k =", k_val),
-      if (method == "ppca") "  nPcs = 2; data were log2(x+1) transformed before imputation and back-transformed afterwards.",
-      if (method == "minvalue") paste("  fixed value =", format(minval, scientific = FALSE), " (stored as text in After_Imputation)"),
-      if (method == "quantile") paste("  quantile =", quant),
-      "",
-      "Method description:",
-      desc_text,
-      "",
-      "Workbook sheets:",
-      "- Imputation_Info: this information.",
-      "- Before_Imputation: matrix before imputation (NA = missing).",
-      "- After_Imputation: matrix after imputation. Cells that were imputed are highlighted in red.",
-      if (method == "ppca") "- Imputation_Steps: step-by-step description of the PPCA algorithm including log2 transformation.",
-      if (method == "quantile") "- Quantile_Thresholds: sample‑wise thresholds and missing counts used for imputation.",
-      if (!is.null(neighbors)) "- KNN_Neighbors: protein-level list of nearest neighbors (Correlation and Distance).",
-      if (!is.null(neighbors)) "- Missing_Imputation_Detail: detailed view of each imputed cell with neighbor values and validity flag."
-    )
-    info_df <- data.frame(Info = info_text, stringsAsFactors = FALSE)
-    openxlsx::writeData(wb, "Imputation_Info", info_df)
-    openxlsx::setColWidths(wb, "Imputation_Info", cols = 1, widths = 100)
-    
-    # ---- Imputation_Steps (English, for PPCA) ----
-    if (method == "ppca") {
-      openxlsx::addWorksheet(wb, "Imputation_Steps")
-      steps <- c(
-        "PPCA Imputation Procedure",
-        "",
-        "1. Log2 transformation: y = log2(x + 1) is applied to the original expression matrix to reduce skewness and approximate normality.",
-        "2. Centering and scaling: columns (samples) are centered to mean = 0 and scaled to unit variance.",
-        "3. Model fitting: a PPCA model with 2 principal components is fitted to the transformed data via the Expectation-Maximization (EM) algorithm.",
-        "   - E-step: estimates the posterior distribution of the latent variables given the current parameter estimates.",
-        "   - M-step: updates the model parameters (loadings, residual variance) by maximizing the expected complete-data log-likelihood.",
-        "   - Missing values are treated as additional latent variables and estimated during the EM iterations.",
-        "4. Imputation in log2 space: after convergence, the complete log2 matrix is reconstructed from the latent scores and loadings.",
-        "5. Back-transformation: x = 2^y - 1 restores the original expression scale.",
-        "6. Negative values arising from back-transformation are set to zero.",
-        "",
-        "Advantages:",
-        "- Utilizes the global covariance structure across all proteins and samples.",
-        "- Does not rely on a limited set of neighbors, reducing bias from outlier proteins.",
-        "- Particularly suitable for data where missing values are MAR or MCAR.",
-        "",
-        "Reference: Tipping, M. E., & Bishop, C. M. (1999). Probabilistic principal component analysis. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 61(3), 611-622."
-      )
-      steps_df <- data.frame(Step = steps, stringsAsFactors = FALSE)
-      openxlsx::writeData(wb, "Imputation_Steps", steps_df)
-      openxlsx::setColWidths(wb, "Imputation_Steps", cols = 1, widths = 100)
-    }
-    
-    # ---- Quantile_Thresholds (精确值) ----
-    if (method == "quantile") {
-      thresholds <- sapply(1:ncol(before_mat), function(j) quantile(before_mat[, j], probs = quant, na.rm = TRUE))
-      missing_counts <- sapply(1:ncol(before_mat), function(j) sum(is.na(before_mat[, j])))
-      threshold_df <- data.frame(
-        Sample = colnames(before_mat),
-        Threshold = thresholds,
-        `Missing Count` = missing_counts,
-        stringsAsFactors = FALSE,
-        check.names = FALSE
-      )
-      openxlsx::addWorksheet(wb, "Quantile_Thresholds")
-      openxlsx::writeData(wb, "Quantile_Thresholds", threshold_df)
-      message("[DEBUG] Quantile_Thresholds sheet written")
-    }
-    
-    # ---- Before_Imputation ----
-    before_df <- cbind(ProteinID = protein_ids, before_mat, stringsAsFactors = FALSE)
-    openxlsx::addWorksheet(wb, "Before_Imputation")
-    openxlsx::writeData(wb, "Before_Imputation", before_df)
-    
-    # ---- After_Imputation (with red) ----
-    if (method == "minvalue") {
-      after_mat_txt <- as.data.frame(after_mat, stringsAsFactors = FALSE)
-      after_mat_txt[] <- lapply(after_mat_txt, function(col) sprintf("%.4f", col))
-      after_df <- cbind(ProteinID = protein_ids, after_mat_txt, stringsAsFactors = FALSE)
-      message("[DEBUG] Converted After_Imputation matrix to fixed decimal text")
-    } else {
-      after_df <- cbind(ProteinID = protein_ids, after_mat, stringsAsFactors = FALSE)
-    }
-    openxlsx::addWorksheet(wb, "After_Imputation")
-    openxlsx::writeData(wb, "After_Imputation", after_df)
-    
-    style_red <- openxlsx::createStyle(bgFill = "#FF9999")
-    for (r in seq_len(nrow(na_positions))) {
-      missing_cols <- which(na_positions[r, ])
-      if (length(missing_cols) > 0) {
-        openxlsx::addStyle(wb, "After_Imputation", style_red,
-                           rows = r + 1, cols = missing_cols + 1, gridExpand = TRUE, stack = TRUE)
-      }
-    }
-    message("[DEBUG] Applied red styles to ", total_imputed, " cells")
-    
-    # ---- KNN specific sheets ----
-    if (method == "knn" && !is.null(neighbors)) {
-      message("[DEBUG] Building KNN_Neighbors sheet")
-      neighbor_list <- list()
-      n_k <- ncol(neighbors)
-      for (i in seq_len(nrow(neighbors))) {
-        pid <- protein_ids[i]
-        for (j in seq_len(n_k)) {
-          neighbor_idx <- neighbors[i, j]
-          if (is.na(neighbor_idx) || neighbor_idx < 1 || neighbor_idx > length(protein_ids)) next
-          neighbor_id <- protein_ids[neighbor_idx]
-          cor_val <- if (!is.null(correlations)) round(correlations[i, j], 4) else NA
-          neighbor_list[[length(neighbor_list) + 1]] <- data.frame(
-            ProteinID = pid,
-            NeighborRank = j,
-            NeighborProteinID = neighbor_id,
-            Correlation = cor_val,
-            Distance = if (!is.na(cor_val)) round(1 - cor_val, 4) else NA,
-            stringsAsFactors = FALSE
-          )
-        }
-      }
-      if (length(neighbor_list) > 0) {
-        neighbor_df <- do.call(rbind, neighbor_list)
-        openxlsx::addWorksheet(wb, "KNN_Neighbors")
-        openxlsx::writeData(wb, "KNN_Neighbors", neighbor_df)
-        message("[DEBUG] KNN_Neighbors sheet written with ", nrow(neighbor_df), " rows")
+    shiny::withProgress(message = 'Exporting Imputation Excel...', value = 0, {
+      incProgress(0.1, detail = "Preparing data...")
+      message("[DEBUG] download_imputation_excel: starting export")
+      if (is.null(processed_data())) {
+        showNotification("Please run preprocessing first.", type = "error")
+        return()
       }
       
-      # Missing_Imputation_Detail
-      detail_list <- list()
-      sample_names <- colnames(before_mat)
-      for (i in seq_len(nrow(before_mat))) {
-        pid <- protein_ids[i]
-        missing_cols <- which(na_positions[i, ])
-        if (length(missing_cols) == 0) next
-        neigh_idx <- neighbors[i, ]
-        neigh_cor <- correlations[i, ]
-        for (col in missing_cols) {
-          imputed_val <- after_mat[i, col]
-          neighbor_values <- before_mat[neigh_idx, col]
-          valid_neighbors <- !is.na(neighbor_values)
-          for (rank in seq_along(neigh_idx)) {
-            nv <- neighbor_values[rank]
-            detail_list[[length(detail_list) + 1]] <- data.frame(
+      pre_data <- pre_imputation_with_ids()
+      before_mat <- as.matrix(pre_data$before)
+      protein_ids <- pre_data$ids
+      method <- input$imputation_method
+      thr <- input$max_missing_fraction
+      k_val <- input$knn_k
+      minval <- input$minvalue_fixed
+      quant <- input$quantile_prob
+      
+      if (method == "knn") {
+        missing_frac <- rowMeans(is.na(before_mat))
+        keep <- missing_frac <= thr
+        before_mat <- before_mat[keep, , drop = FALSE]
+        protein_ids <- protein_ids[keep]
+        message("[DEBUG] KNN mode: after global filter, rows = ", nrow(before_mat))
+      } else {
+        message("[DEBUG] Method ", method, ": keeping all rows = ", nrow(before_mat))
+      }
+      
+      after_mat <- NULL
+      neighbors <- NULL
+      correlations <- NULL
+      
+      tryCatch({
+        if (method == "knn") {
+          message("[DEBUG] Running impute.knn with k = ", k_val)
+          knn_result <- impute::impute.knn(before_mat, k = k_val)
+          after_mat <- knn_result$data
+          
+          cor_mat <- cor(t(before_mat), use = "pairwise.complete.obs")
+          diag(cor_mat) <- -Inf
+          k_val_eff <- min(k_val, nrow(before_mat) - 1)
+          neigh_mat <- matrix(NA_integer_, nrow = nrow(before_mat), ncol = k_val_eff)
+          cor_mat_neighbors <- matrix(NA_real_, nrow = nrow(before_mat), ncol = k_val_eff)
+          for (i in seq_len(nrow(before_mat))) {
+            ord <- order(cor_mat[i, ], decreasing = TRUE)[1:k_val_eff]
+            neigh_mat[i, ] <- ord
+            cor_mat_neighbors[i, ] <- cor_mat[i, ord]
+          }
+          rownames(neigh_mat) <- protein_ids
+          rownames(cor_mat_neighbors) <- protein_ids
+          neighbors <- neigh_mat
+          correlations <- cor_mat_neighbors
+        } else if (method == "ppca") {
+          message("[DEBUG] Running true PPCA imputation (with log2 transform)")
+          after_mat <- true_ppca_impute(before_mat)
+        } else if (method == "minvalue") {
+          message("[DEBUG] Running minvalue imputation with value = ", minval)
+          after_mat <- before_mat
+          after_mat[is.na(after_mat)] <- minval
+          message("[DEBUG] minvalue imputation applied, filled ", sum(is.na(before_mat)), " cells with ", minval)
+        } else if (method == "quantile") {
+          message("[DEBUG] Running quantile imputation with prob = ", quant)
+          after_mat <- as.matrix(impute_missing_values(before_mat, method = "quantile", quantile_prob = quant))
+        } else {
+          message("[DEBUG] No imputation (method = none)")
+          after_mat <- before_mat
+        }
+      }, error = function(e) {
+        message("[DEBUG] Imputation error: ", e$message)
+        showNotification(paste("Imputation failed:", e$message), type = "error")
+        return()
+      })
+      
+      if (is.null(after_mat)) {
+        showNotification("Imputation failed. Please check parameters.", type = "error")
+        return()
+      }
+      
+      after_mat <- as.matrix(after_mat)
+      na_positions <- is.na(before_mat)
+      total_imputed <- sum(na_positions)
+      message("[DEBUG] total imputed cells = ", total_imputed)
+      
+      incProgress(0.3, detail = "Creating workbook...")
+      wb <- openxlsx::createWorkbook()
+      
+      # ---- Imputation_Info ----
+      openxlsx::addWorksheet(wb, "Imputation_Info")
+      if (method == "knn") {
+        desc_text <- paste0("K-Nearest Neighbors imputation (k = ", k_val, "). ...")
+      } else if (method == "ppca") {
+        desc_text <- "Probabilistic Principal Component Analysis (PPCA). ..."
+      } else if (method == "minvalue") {
+        desc_text <- paste0("Fixed minimum value imputation. All missing values are replaced with ", format(minval, scientific = FALSE), ". ...")
+      } else if (method == "quantile") {
+        desc_text <- paste0("Quantile imputation. For each sample, missing values are replaced by the ", quant*100, "th percentile of observed values. ...")
+      } else {
+        desc_text <- "No imputation was applied."
+      }
+      
+      info_text <- c(
+        "Missing Value Imputation Export",
+        paste("Data source: after missing value filter (mode:", preprocessing_params$missing_filter_mode, 
+              ", threshold:", input$max_missing_fraction, ")"),
+        "After Inf/Non-finite filter",
+        paste("After minimum intensity filter (threshold:", input$min_intensity,
+              ", min samples:", input$min_samples_above_intensity, ")"),
+        if (method == "knn") paste("Additional filtering: proteins with global missing rate >", thr, "were removed."),
+        "",
+        paste("Imputation method:", method),
+        "Parameters:",
+        if (method == "knn") paste("  k =", k_val),
+        if (method == "ppca") "  nPcs = 2; data were log2 transformed and back-transformed.",
+        if (method == "minvalue") paste("  fixed value =", format(minval, scientific = FALSE)),
+        if (method == "quantile") paste("  quantile =", quant),
+        "",
+        "Method description:",
+        desc_text,
+        "",
+        "Workbook sheets:",
+        "- Imputation_Info: this information.",
+        "- Before_Imputation: matrix before imputation (NA = missing).",
+        "- After_Imputation: matrix after imputation. Imputed cells are highlighted in red.",
+        if (method == "ppca") "- Imputation_Steps: step-by-step PPCA procedure.",
+        if (method == "quantile") "- Quantile_Thresholds: sample-wise thresholds and missing counts.",
+        if (!is.null(neighbors)) "- KNN_Neighbors: list of nearest neighbors.",
+        if (!is.null(neighbors)) "- Missing_Imputation_Detail: detailed view of each imputed cell."
+      )
+      info_df <- data.frame(Info = info_text, stringsAsFactors = FALSE)
+      openxlsx::writeData(wb, "Imputation_Info", info_df)
+      openxlsx::setColWidths(wb, "Imputation_Info", cols = 1, widths = 100)
+      
+      # ---- Imputation_Steps (for PPCA) ----
+      if (method == "ppca") {
+        openxlsx::addWorksheet(wb, "Imputation_Steps")
+        steps <- c(
+          "PPCA Imputation Procedure",
+          "",
+          "1. Log2 transformation: y = log2(x + 1) ...",
+          "2. Centering and scaling ...",
+          "3. Model fitting ...",
+          "4. Imputation in log2 space ...",
+          "5. Back-transformation: x = 2^y - 1 ...",
+          "6. Negative values set to zero."
+        )
+        steps_df <- data.frame(Step = steps, stringsAsFactors = FALSE)
+        openxlsx::writeData(wb, "Imputation_Steps", steps_df)
+        openxlsx::setColWidths(wb, "Imputation_Steps", cols = 1, widths = 100)
+      }
+      
+      # ---- Quantile_Thresholds ----
+      if (method == "quantile") {
+        thresholds <- sapply(1:ncol(before_mat), function(j) quantile(before_mat[, j], probs = quant, na.rm = TRUE))
+        missing_counts <- sapply(1:ncol(before_mat), function(j) sum(is.na(before_mat[, j])))
+        threshold_df <- data.frame(
+          Sample = colnames(before_mat),
+          Threshold = thresholds,
+          `Missing Count` = missing_counts,
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )
+        openxlsx::addWorksheet(wb, "Quantile_Thresholds")
+        openxlsx::writeData(wb, "Quantile_Thresholds", threshold_df)
+        message("[DEBUG] Quantile_Thresholds sheet written")
+      }
+      
+      # ---- Before_Imputation ----
+      before_df <- cbind(ProteinID = protein_ids, before_mat, stringsAsFactors = FALSE)
+      openxlsx::addWorksheet(wb, "Before_Imputation")
+      openxlsx::writeData(wb, "Before_Imputation", before_df)
+      
+      # ---- After_Imputation (with red) ----
+      if (method == "minvalue") {
+        after_mat_txt <- as.data.frame(after_mat, stringsAsFactors = FALSE)
+        after_mat_txt[] <- lapply(after_mat_txt, function(col) sprintf("%.4f", col))
+        after_df <- cbind(ProteinID = protein_ids, after_mat_txt, stringsAsFactors = FALSE)
+        message("[DEBUG] Converted After_Imputation matrix to fixed decimal text")
+      } else {
+        after_df <- cbind(ProteinID = protein_ids, after_mat, stringsAsFactors = FALSE)
+      }
+      openxlsx::addWorksheet(wb, "After_Imputation")
+      openxlsx::writeData(wb, "After_Imputation", after_df)
+      
+      style_red <- openxlsx::createStyle(bgFill = "#FF9999")
+      for (r in seq_len(nrow(na_positions))) {
+        missing_cols <- which(na_positions[r, ])
+        if (length(missing_cols) > 0) {
+          openxlsx::addStyle(wb, "After_Imputation", style_red,
+                             rows = r + 1, cols = missing_cols + 1, gridExpand = TRUE, stack = TRUE)
+        }
+      }
+      message("[DEBUG] Applied red styles to ", total_imputed, " cells")
+      
+      # ---- KNN specific sheets ----
+      if (method == "knn" && !is.null(neighbors)) {
+        message("[DEBUG] Building KNN_Neighbors sheet")
+        neighbor_list <- list()
+        n_k <- ncol(neighbors)
+        for (i in seq_len(nrow(neighbors))) {
+          pid <- protein_ids[i]
+          for (j in seq_len(n_k)) {
+            neighbor_idx <- neighbors[i, j]
+            if (is.na(neighbor_idx) || neighbor_idx < 1 || neighbor_idx > length(protein_ids)) next
+            neighbor_id <- protein_ids[neighbor_idx]
+            cor_val <- if (!is.null(correlations)) round(correlations[i, j], 4) else NA
+            neighbor_list[[length(neighbor_list) + 1]] <- data.frame(
               ProteinID = pid,
-              Sample = sample_names[col],
-              ImputedValue = round(imputed_val, 4),
-              NeighborRank = rank,
-              NeighborProteinID = protein_ids[neigh_idx[rank]],
-              NeighborValue = if (!is.na(nv)) round(nv, 4) else NA,
-              Valid = valid_neighbors[rank],
-              Correlation = round(neigh_cor[rank], 4),
+              NeighborRank = j,
+              NeighborProteinID = neighbor_id,
+              Correlation = cor_val,
+              Distance = if (!is.na(cor_val)) round(1 - cor_val, 4) else NA,
               stringsAsFactors = FALSE
             )
           }
         }
+        if (length(neighbor_list) > 0) {
+          neighbor_df <- do.call(rbind, neighbor_list)
+          openxlsx::addWorksheet(wb, "KNN_Neighbors")
+          openxlsx::writeData(wb, "KNN_Neighbors", neighbor_df)
+          message("[DEBUG] KNN_Neighbors sheet written with ", nrow(neighbor_df), " rows")
+        }
+        
+        detail_list <- list()
+        sample_names <- colnames(before_mat)
+        for (i in seq_len(nrow(before_mat))) {
+          pid <- protein_ids[i]
+          missing_cols <- which(na_positions[i, ])
+          if (length(missing_cols) == 0) next
+          neigh_idx <- neighbors[i, ]
+          neigh_cor <- correlations[i, ]
+          for (col in missing_cols) {
+            imputed_val <- after_mat[i, col]
+            neighbor_values <- before_mat[neigh_idx, col]
+            valid_neighbors <- !is.na(neighbor_values)
+            for (rank in seq_along(neigh_idx)) {
+              nv <- neighbor_values[rank]
+              detail_list[[length(detail_list) + 1]] <- data.frame(
+                ProteinID = pid,
+                Sample = sample_names[col],
+                ImputedValue = round(imputed_val, 4),
+                NeighborRank = rank,
+                NeighborProteinID = protein_ids[neigh_idx[rank]],
+                NeighborValue = if (!is.na(nv)) round(nv, 4) else NA,
+                Valid = valid_neighbors[rank],
+                Correlation = round(neigh_cor[rank], 4),
+                stringsAsFactors = FALSE
+              )
+            }
+          }
+        }
+        if (length(detail_list) > 0) {
+          detail_df <- do.call(rbind, detail_list)
+          openxlsx::addWorksheet(wb, "Missing_Imputation_Detail")
+          openxlsx::writeData(wb, "Missing_Imputation_Detail", detail_df)
+          message("[DEBUG] Missing_Imputation_Detail sheet written with ", nrow(detail_df), " rows")
+        }
       }
-      if (length(detail_list) > 0) {
-        detail_df <- do.call(rbind, detail_list)
-        openxlsx::addWorksheet(wb, "Missing_Imputation_Detail")
-        openxlsx::writeData(wb, "Missing_Imputation_Detail", detail_df)
-        message("[DEBUG] Missing_Imputation_Detail sheet written with ", nrow(detail_df), " rows")
-      }
-    }
-    
-    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
-    message("[DEBUG] download_imputation_excel: export completed")
+      
+      incProgress(0.5, detail = "Saving workbook...")
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      incProgress(0.1, detail = "Done")
+      message("[DEBUG] download_imputation_excel: export completed")
+    })
   }
 )

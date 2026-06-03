@@ -1,7 +1,7 @@
 # server/heatmap_plot.R
 # ============================================================
 # 热图数据准备与绘制模块
-# 修复：Intensity 模式下正确设置行名为蛋白ID
+# 已修复 Intensity 模式行名，并增加数据源信息与调试输出
 # ============================================================
 
 # ---------- 辅助函数 ----------
@@ -15,15 +15,13 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
     return(list(error = msg))
   }
   expr_matrix <- data.matrix(data_src[, all_cols, drop = FALSE])
-  # 保存原始行名，检查是否为数字序号
   original_rownames <- rownames(data_src)
   message("[DEBUG] prepare_expr_matrix: original rownames first 5 = ", paste(head(original_rownames, 5), collapse = ", "))
   
-  # 如果行名全是数字且提供了 id_map（从全局蛋白ID列表中按索引映射），则使用映射后的ID
+  # 如果行名全是数字，尝试用 id_map 映射（后备方案）
   if (suppressWarnings(all(!is.na(as.numeric(original_rownames))))) {
     message("[DEBUG] prepare_expr_matrix: rownames are numeric, attempting ID remapping")
     if (!is.null(id_map)) {
-      # id_map 是一个字符向量，长度至少等于最大索引
       idx <- as.integer(original_rownames)
       if (max(idx) <= length(id_map)) {
         new_ids <- id_map[idx]
@@ -99,7 +97,7 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
   list(mat = expr_z, has_na = has_na, na_rows_removed = na_rows_removed)
 }
 
-# ---------- 原始强度样本名提取（用于 Raw Intensity 模式） ----------
+# ---------- 原始强度样本名提取（用于 Intensity 模式） ----------
 heatmap_raw_sample_names <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
@@ -112,7 +110,7 @@ heatmap_raw_sample_names <- reactive({
   samples
 })
 
-# 修复：确保 heatmap_raw_data 使用 Master protein IDs 作为行名
+# ---------- Intensity 模式数据矩阵（已修复行名为蛋白ID） ----------
 heatmap_raw_data <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
@@ -121,16 +119,24 @@ heatmap_raw_data <- reactive({
     return(NULL)
   }
   mat <- rv$raw_data
-  # 设置行名为 Master protein IDs，保证热图标签正确
+  
+  # 获取蛋白ID：优先用 raw_data 的 Master protein IDs，否则用 clean_data
   if ("Master protein IDs" %in% colnames(mat)) {
-    rownames(mat) <- mat$`Master protein IDs`
-    message("[DEBUG] heatmap_raw_data: set rownames from Master protein IDs")
+    ids <- as.character(mat[["Master protein IDs"]])
+    message("[DEBUG] heatmap_raw_data: got IDs from raw_data$`Master protein IDs`")
+  } else if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
+    ids <- as.character(rv$clean_data[["Master protein IDs"]])
+    message("[DEBUG] heatmap_raw_data: got IDs from clean_data$`Master protein IDs`")
   } else {
-    message("[DEBUG] heatmap_raw_data: Master protein IDs column not found, using default row numbers")
+    ids <- rownames(mat)
+    message("[DEBUG] heatmap_raw_data: using rownames as IDs")
   }
+  message("[DEBUG] heatmap_raw_data: first 5 IDs = ", paste(head(ids, 5), collapse = ", "))
+  
   mat <- mat[, int_cols, drop = FALSE]
   mat <- suppressWarnings(as.data.frame(lapply(mat, as.numeric)))
   mat[mat == 0] <- NA
+  rownames(mat) <- ids
   colnames(mat) <- gsub("^Intensity ", "", int_cols)
   message("[DEBUG] heatmap_raw_data: created matrix with dim ", nrow(mat), "x", ncol(mat))
   mat
@@ -206,13 +212,13 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   mode <- input$heatmap_protein_mode
   if (is.null(mode)) mode <- "top_n"
   
-  # 准备一个全局蛋白ID映射向量（用于修复数字行名，现已基本不需要，但保留）
+  # 全局蛋白ID映射向量（后备）
   global_id_map <- NULL
   if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
     global_id_map <- as.character(rv$clean_data$`Master protein IDs`)
     message("[DEBUG] heatmap_data: global_id_map length = ", length(global_id_map))
   } else {
-    message("[DEBUG] heatmap_data: no global_id_map available (clean_data missing or no Master protein IDs)")
+    message("[DEBUG] heatmap_data: no global_id_map available")
   }
   
   if (input$heatmap_data_source == "LFQ") {
@@ -255,7 +261,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     }
     src_short <- colnames(data_src)
     message("[DEBUG] heatmap_data Intensity: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
-    # 检查 data_src 的行名是否已经是蛋白ID
     message("[DEBUG] heatmap_data Intensity: first 5 rownames = ", paste(head(rownames(data_src), 5), collapse = ", "))
     
     if (mode == "custom") {
@@ -318,7 +323,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     if (is.null(top_n) || is.na(top_n)) top_n <- 20
   }
   
-  # 调用 prepare_expr_matrix，传入 id_map 以便修复数字行名（作为后备）
   res_mat <- prepare_expr_matrix(data_src, samples, all_cols, 
                                  protein_ids = protein_ids, top_n = top_n,
                                  id_map = global_id_map)
@@ -441,3 +445,25 @@ output$download_heatmap_png <- downloadHandler(
     dev.off()
   }
 )
+
+# ========== 新增：热图数据源信息（增强调试输出） ==========
+output$heatmap_data_source_info <- renderPrint({
+  message("[DEBUG] output$heatmap_data_source_info called")
+  src <- input$heatmap_data_source
+  cat("Data Source:", if (src == "LFQ") "LFQ Intensity (per-row Z-score)" else "Intensity (per-row Z-score)", "\n")
+  if (src == "LFQ") {
+    cat("Derived from: Preprocessed data (after all steps: filtering, imputation, batch correction if applied)\n")
+    if (is.null(processed_data())) {
+      cat("Status: Preprocessing has NOT been run. Please click 'Run Preprocessing' in Data Preprocessing tab before generating heatmaps.\n")
+    } else {
+      cat("Preprocessing was performed at:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
+    }
+    message("[DEBUG] heatmap_data_source_info: LFQ mode, preprocessing done = ", !is.null(processed_data()))
+  } else {
+    cat("Derived from: Raw uploaded data (Intensity columns, no preprocessing applied).\n")
+    cat("Note: Missing values are removed row-wise; imputation is NOT used for this mode.\n")
+    cat("This data source reflects the original Intensity values without any filtering or imputation.\n")
+    message("[DEBUG] heatmap_data_source_info: Intensity mode (raw data)")
+  }
+})
+message("[DEBUG] heatmap_plot.R fully loaded")

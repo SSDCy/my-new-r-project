@@ -1,13 +1,11 @@
 # server/preprocessing_filter_intensity.R
 message("[DEBUG] preprocessing_filter_intensity.R loaded")
 
-# ---------- 强度过滤效果 ----------
 output$intensity_filter_effect <- renderPrint({
   message("[DEBUG] intensity_filter_effect called")
   req(expression_data(), input$max_missing_fraction, input$min_intensity)
   data <- expression_data()
   
-  # 与缺失值过滤使用相同的模式
   mode <- input$missing_filter_mode
   threshold_missing <- input$max_missing_fraction
   data <- apply_missing_filter(data, threshold_missing, mode, rv$sample_info, rv$sample_names)
@@ -33,7 +31,6 @@ output$intensity_filter_effect <- renderPrint({
   }
 })
 
-# ---------- 强度分布图 ----------
 output$intensity_dist_plot <- renderPlot({
   req(expression_data(), input$max_missing_fraction)
   threshold <- if (is.null(input$min_intensity) || is.na(input$min_intensity)) 0 else input$min_intensity
@@ -80,7 +77,6 @@ output$intensity_dist_plot <- renderPlot({
   p
 })
 
-# ---------- 强度统计（使用当前缺失值过滤模式，与calc_result同步） ----------
 intensity_stats <- reactive({
   message("[DEBUG] intensity_stats called, using expression_data from data_upload.R")
   req(expression_data(), input$max_missing_fraction)
@@ -88,9 +84,7 @@ intensity_stats <- reactive({
   mode <- input$missing_filter_mode
   threshold_missing <- input$max_missing_fraction
   
-  # 应用缺失值过滤
   data <- apply_missing_filter(data, threshold_missing, mode, rv$sample_info, rv$sample_names)
-  # 去除Inf
   max_intensities <- apply(data, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_intensities)
   if (sum(keep_finite) == 0) {
@@ -147,7 +141,6 @@ output$calc_result <- renderPrint({
   cat("\nNote: This calculation already includes all current filter effects.\n")
 })
 
-# ============ 强度过滤输入数据（与强度过滤效果完全同步） ============
 intensity_filter_input_data <- reactive({
   message("[DEBUG] intensity_filter_input_data: computing input for intensity filter")
   req(expression_data())
@@ -156,44 +149,31 @@ intensity_filter_input_data <- reactive({
   mode <- input$missing_filter_mode
   threshold_missing <- input$max_missing_fraction
   
-  # 1. 缺失值过滤
   filtered <- apply_missing_filter(data, threshold_missing, mode, rv$sample_info, rv$sample_names)
-  
-  # 2. Inf过滤
   max_int <- apply(filtered, 1, max, na.rm = TRUE)
   keep_finite <- is.finite(max_int)
   result <- filtered[keep_finite, , drop = FALSE]
   
   message("[DEBUG] intensity_filter_input_data: after missing+inf filter, dim = ", nrow(result), " x ", ncol(result))
   
-  # 3. 获取蛋白ID（与缺失值过滤导出逻辑相同）
   row_names <- rownames(data)
-  # 获取原始蛋白ID（所有蛋白）
   if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
     original_ids <- rv$clean_data$`Master protein IDs`
     if (length(original_ids) != nrow(data)) {
-      # 若长度不匹配，可能数据已被处理，使用行名
       original_ids <- row_names
     }
   } else {
     original_ids <- row_names
   }
   
-  # 4. 获取过滤后的蛋白ID：需要通过缺失值过滤和Inf过滤后的索引
-  # 先得到缺失值过滤后的蛋白索引（基于original_ids）
-  missing_keep <- which(rowMeans(is.na(data)) <= threshold_missing)
-  # 但上面使用的是 apply_missing_filter，逻辑更复杂，所以我们利用 filtered 的行名来匹配
   filtered_row_names <- rownames(filtered)
   if (suppressWarnings(all(!is.na(as.numeric(filtered_row_names))))) {
-    # 行名是数字，表示原始行名也是数字，直接使用数字作为索引
     filtered_indices <- as.integer(filtered_row_names)
     filtered_ids <- original_ids[filtered_indices]
   } else {
-    # 行名就是ID
     filtered_ids <- filtered_row_names
   }
   
-  # 再去除Inf，同步ID
   result_ids <- filtered_ids[keep_finite]
   
   message("[DEBUG] intensity_filter_input_data: first 5 IDs = ", paste(head(result_ids, 5), collapse = ", "))
@@ -201,82 +181,81 @@ intensity_filter_input_data <- reactive({
   list(data = result, ids = result_ids)
 })
 
-# ============ 导出强度过滤结果 Excel ============
 output$download_intensity_filter_excel <- downloadHandler(
   filename = function() {
     paste0("Intensity_Filter_Result_", Sys.Date(), ".xlsx")
   },
   content = function(file) {
-    message("[DEBUG] download_intensity_filter_excel: starting export")
-    req(intensity_filter_input_data())
-    
-    input_data <- intensity_filter_input_data()
-    mat <- input_data$data
-    protein_ids <- input_data$ids
-    threshold <- input$min_intensity
-    min_samples <- input$min_samples_above_intensity %||% 1
-    
-    message("[DEBUG] download_intensity_filter_excel: threshold = ", threshold, ", min_samples = ", min_samples)
-    message("[DEBUG] download_intensity_filter_excel: total proteins = ", nrow(mat))
-    
-    # 计算过滤（与intensity_filter_effect一致）
-    above_counts <- apply(mat, 1, function(x) sum(x > threshold, na.rm = TRUE))
-    keep <- above_counts >= min_samples
-    retained_ids <- protein_ids[keep]
-    filtered_ids <- protein_ids[!keep]
-    
-    message("[DEBUG] download_intensity_filter_excel: retained = ", length(retained_ids), ", filtered = ", length(filtered_ids))
-    
-    # 创建 workbook
-    wb <- openxlsx::createWorkbook()
-    
-    # ---- Info Sheet ----
-    openxlsx::addWorksheet(wb, "Info")
-    info_df <- data.frame(
-      Info = c(
-        "Intensity Filter Export",
-        paste("Data source: After Missing Value Filter (mode:", input$missing_filter_mode, 
-              ", threshold:", input$max_missing_fraction, ") and Inf/Non-finite Filter"),
-        paste("Intensity Threshold:", threshold),
-        paste("Minimum samples above threshold:", min_samples),
-        paste("Total proteins after missing/Inf filter:", nrow(mat)),
-        paste("Proteins retained (>= ", min_samples, " samples > ", threshold, "): ", length(retained_ids), sep = ""),
-        paste("Proteins removed:", length(filtered_ids)),
-        "",
-        "Sheets:",
-        "  Retained: proteins that passed intensity filter",
-        "  Filtered_Out: proteins that failed intensity filter",
-        "  Threshold_Details: for each protein, TRUE/FALSE if intensity > threshold in each sample, and final decision"
+    shiny::withProgress(message = 'Exporting Intensity Filter Excel...', value = 0, {
+      incProgress(0.1, detail = "Preparing data...")
+      message("[DEBUG] download_intensity_filter_excel: starting export")
+      req(intensity_filter_input_data())
+      
+      input_data <- intensity_filter_input_data()
+      mat <- input_data$data
+      protein_ids <- input_data$ids
+      threshold <- input$min_intensity
+      min_samples <- input$min_samples_above_intensity %||% 1
+      
+      message("[DEBUG] download_intensity_filter_excel: threshold = ", threshold, ", min_samples = ", min_samples)
+      message("[DEBUG] download_intensity_filter_excel: total proteins = ", nrow(mat))
+      
+      above_counts <- apply(mat, 1, function(x) sum(x > threshold, na.rm = TRUE))
+      keep <- above_counts >= min_samples
+      retained_ids <- protein_ids[keep]
+      filtered_ids <- protein_ids[!keep]
+      
+      message("[DEBUG] download_intensity_filter_excel: retained = ", length(retained_ids), ", filtered = ", length(filtered_ids))
+      
+      incProgress(0.3, detail = "Creating workbook...")
+      wb <- openxlsx::createWorkbook()
+      
+      openxlsx::addWorksheet(wb, "Info")
+      info_df <- data.frame(
+        Info = c(
+          "Intensity Filter Export",
+          paste("Data source: After Missing Value Filter (mode:", input$missing_filter_mode, 
+                ", threshold:", input$max_missing_fraction, ") and Inf/Non-finite Filter"),
+          paste("Intensity Threshold:", threshold),
+          paste("Minimum samples above threshold:", min_samples),
+          paste("Total proteins after missing/Inf filter:", nrow(mat)),
+          paste("Proteins retained (>= ", min_samples, " samples > ", threshold, "): ", length(retained_ids), sep = ""),
+          paste("Proteins removed:", length(filtered_ids)),
+          "",
+          "Sheets:",
+          "  Retained: proteins that passed intensity filter",
+          "  Filtered_Out: proteins that failed intensity filter",
+          "  Threshold_Details: for each protein, TRUE/FALSE if intensity > threshold in each sample, and final decision"
+        )
       )
-    )
-    openxlsx::writeData(wb, "Info", info_df)
-    
-    # ---- Retained Sheet ----
-    retained_mat <- mat[keep, , drop = FALSE]
-    retained_df <- cbind(ProteinID = retained_ids, retained_mat, stringsAsFactors = FALSE)
-    openxlsx::addWorksheet(wb, "Retained")
-    openxlsx::writeData(wb, "Retained", retained_df)
-    message("[DEBUG] wrote Retained sheet")
-    
-    # ---- Filtered_Out Sheet ----
-    filtered_mat <- mat[!keep, , drop = FALSE]
-    filtered_df <- cbind(ProteinID = filtered_ids, filtered_mat, stringsAsFactors = FALSE)
-    openxlsx::addWorksheet(wb, "Filtered_Out")
-    openxlsx::writeData(wb, "Filtered_Out", filtered_df)
-    message("[DEBUG] wrote Filtered_Out sheet")
-    
-    # ---- Threshold_Details Sheet ----
-    above_threshold <- as.data.frame(mat > threshold)
-    above_threshold[is.na(above_threshold)] <- FALSE
-    above_threshold <- cbind(ProteinID = protein_ids, above_threshold, stringsAsFactors = FALSE)
-    above_threshold$Samples_Above_Count <- above_counts
-    above_threshold$Retained <- ifelse(keep, "Yes", "No")
-    
-    openxlsx::addWorksheet(wb, "Threshold_Details")
-    openxlsx::writeData(wb, "Threshold_Details", above_threshold)
-    message("[DEBUG] wrote Threshold_Details sheet")
-    
-    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
-    message("[DEBUG] download_intensity_filter_excel: export completed")
+      openxlsx::writeData(wb, "Info", info_df)
+      
+      retained_mat <- mat[keep, , drop = FALSE]
+      retained_df <- cbind(ProteinID = retained_ids, retained_mat, stringsAsFactors = FALSE)
+      openxlsx::addWorksheet(wb, "Retained")
+      openxlsx::writeData(wb, "Retained", retained_df)
+      message("[DEBUG] wrote Retained sheet")
+      
+      filtered_mat <- mat[!keep, , drop = FALSE]
+      filtered_df <- cbind(ProteinID = filtered_ids, filtered_mat, stringsAsFactors = FALSE)
+      openxlsx::addWorksheet(wb, "Filtered_Out")
+      openxlsx::writeData(wb, "Filtered_Out", filtered_df)
+      message("[DEBUG] wrote Filtered_Out sheet")
+      
+      above_threshold <- as.data.frame(mat > threshold)
+      above_threshold[is.na(above_threshold)] <- FALSE
+      above_threshold <- cbind(ProteinID = protein_ids, above_threshold, stringsAsFactors = FALSE)
+      above_threshold$Samples_Above_Count <- above_counts
+      above_threshold$Retained <- ifelse(keep, "Yes", "No")
+      
+      openxlsx::addWorksheet(wb, "Threshold_Details")
+      openxlsx::writeData(wb, "Threshold_Details", above_threshold)
+      message("[DEBUG] wrote Threshold_Details sheet")
+      
+      incProgress(0.5, detail = "Saving...")
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      incProgress(0.1, detail = "Done")
+      message("[DEBUG] download_intensity_filter_excel: export completed")
+    })
   }
 )
