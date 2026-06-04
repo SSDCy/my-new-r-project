@@ -6,7 +6,6 @@ comparisons_ui <- function() {
     value = "comparisons",
     fluidRow(
       column(12, 
-             step_indicator(c("Upload Data", "Data Preprocessing", "Define Groups", "Set Comparisons", "Set Parameters", "Analyze & Export"), 4),
              div(class = "card-modern",
                  div(class = "card-header-modern", icon("balance-scale"), " Define Comparisons"),
                  div(style = "padding: 20px;",
@@ -38,7 +37,7 @@ comparisons_ui <- function() {
                      ),
                      hr(),
                      div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
-                         h5(icon("list"), uiOutput("comparisons_count_text")),
+                         h5(icon("list"), " Defined Comparisons (Drag to reorder)"),
                          div(style = "display: flex; align-items: center; gap: 6px;",
                              actionButton("auto_sort_comparisons", "Auto-Sort", icon = icon("sort-alpha-down"), class = "btn-sm btn-outline-info"),
                              span(class = "param-hint", style = "margin: 0; color: #d9534f;", "Click to sort by natural order in group names")

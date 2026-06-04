@@ -1,5 +1,4 @@
 # ui/preprocessing_ui.R
-
 message("[DEBUG] preprocessing_ui.R loaded - removed Missing Value Distribution from Post-Processed Overview")
 
 make_collapsible_comparison <- function(id, title, content_ui) {
@@ -17,11 +16,6 @@ preprocessing_ui <- function() {
   tabPanel(
     title = div(icon("filter"), "Data Preprocessing"),
     value = "preprocessing",
-    fluidRow(
-      column(12,
-             step_indicator(c("Upload Data", "Data Preprocessing", "Analyze & Export"), 2)
-      )
-    ),
     br(),
     tags$style(HTML("
       .sidebar-menu-item {
@@ -286,7 +280,7 @@ preprocessing_ui <- function() {
               )
             )
           ),
-          # 5. Post-Processed Overview (已移除 Missing Value Distribution)
+          # 5. Post-Processed Overview
           tabPanel(
             title = "processed_overview", value = "processed_overview",
             h4("Data Basic Information"),

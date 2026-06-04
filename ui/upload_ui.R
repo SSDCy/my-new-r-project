@@ -1,16 +1,10 @@
 # ui/upload_ui.R
-
 message("[DEBUG] upload_ui.R loaded - removed baseline_sample selector (moved to Normalization)")
 
 upload_ui <- function() {
   tabPanel(
     title = div(icon("upload"), "Data Upload"), 
     value = "upload",
-    fluidRow(
-      column(12, 
-             step_indicator(c("Upload Data", "Data Preprocessing", "Analyze & Export"), 1)
-      )
-    ),
     br(),
     tabsetPanel(
       id = "upload_tabs",

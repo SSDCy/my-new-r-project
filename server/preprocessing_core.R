@@ -143,7 +143,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
     preprocessing_params$last_run_time <- Sys.time()
     removeNotification("preprocess_notif")
     showNotification("Preprocessing completed!", type = "message", duration = 3)
-    updateNavbarPage(session, "main_navbar", selected = "plots")
+    # 不再自动跳转到 Plots 页面
     return(data)
   }, error = function(e) {
     removeNotification("preprocess_notif")

@@ -6,32 +6,12 @@ parameters_ui <- function() {
     value = "setting",
     fluidRow(
       column(12, 
-             step_indicator(c("Upload Data", "Data Preprocessing", "Define Groups", "Set Comparisons", "Set Parameters", "Analyze & Export"), 5),
              div(class = "card-modern",
                  div(class = "card-header-modern", 
                      style = "display: flex; justify-content: space-between; align-items: center;",
                      div(icon("cog"), " Analysis Parameters")
                  ),
                  div(style = "padding: 20px;",
-                     fluidRow(
-                       column(6, 
-                              div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
-                                  h5(icon("balance-scale"), " Statistical Method"),
-                                  radioButtons("stat_method", "Choose statistical test for two-group comparisons:",
-                                               choices = c("t-test" = "t-test",
-                                                           "Wilcoxon rank-sum" = "wilcoxon",
-                                                           "limma (moderated t-test)" = "limma"),
-                                               selected = "t-test"),
-                                  p(class = "param-hint", "t-test/Wilcoxon are per-protein; limma uses empirical Bayes moderation (recommended for proteomics).")
-                              )
-                       ),
-                       column(6,
-                              div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
-                                  h5(icon("flask"), " Batch Correction (ComBat)"),
-                                  p(class = "param-hint", "Batch correction, if needed, should be performed during the Data Preprocessing step. Go to the 'Data Preprocessing' tab to enable it.")
-                              )
-                       )
-                     ),
                      fluidRow(
                        column(6, 
                               div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
@@ -44,7 +24,7 @@ parameters_ui <- function() {
                                   p(class = "param-hint", "Must be between 0.0 and 1.0. Down-regulated proteins fold change threshold."),
                                   hr(), 
                                   h5(icon("chart-line"), " Statistical Significance"),
-                                  selectInput("p_cut", "P-value threshold", choices = c("0.05", "0.1"), selected = "0.05"),
+                                  selectInput("p_cut", "P-value threshold", choices = c("0.05", "0.01"), selected = "0.05"),
                                   p(class = "param-hint", "Select significance level (P-value threshold).")
                               )
                        ),

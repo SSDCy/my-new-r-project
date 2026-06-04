@@ -66,12 +66,7 @@ export_ui <- function() {
                                   h5(icon("file-excel"), " Excel Export (select comparisons)"),
                                   selectInput("export_comparisons", "Select comparisons to export", choices = NULL, multiple = TRUE),
                                   downloadButton("download_excel", "Download Selected Excel Report",
-                                                 style = "width: 100%; background: #27ae60; color: white; padding: 10px;"),
-                                  hr(),
-                                  h5(icon("file-pdf"), " PDF Report (select comparisons)"),
-                                  p("Uses the same comparison selection above."),
-                                  downloadButton("download_pdf_report", "Download PDF Report",
-                                                 style = "width: 100%; background: #e74c3c; color: white; padding: 10px;")
+                                                 style = "width: 100%; background: #27ae60; color: white; padding: 10px;")
                               )
                        )
                      )

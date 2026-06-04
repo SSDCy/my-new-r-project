@@ -7,8 +7,11 @@ source("ui/upload_ui.R", local = TRUE)
 source("ui/cleaning_ui.R", local = TRUE)
 source("ui/normalization_ui.R", local = TRUE)   # 归一化 UI
 source("ui/preprocessing_ui.R", local = TRUE)
+source("ui/grouping_ui.R", local = TRUE)         # 分组页面
+source("ui/comparisons_ui.R", local = TRUE)      # 比较页面
+source("ui/parameters_ui.R", local = TRUE)       # 参数页面
 source("ui/plots_ui.R", local = TRUE)
-source("ui/export_ui.R", local = TRUE)          # 新增 Export UI
+source("ui/export_ui.R", local = TRUE)
 
 build_ui <- function() {
   fluidPage(
@@ -74,12 +77,6 @@ build_ui <- function() {
         .checkbox-inline-group { display: flex; flex-wrap: wrap; gap: 10px; }
         .scrollable-box { max-height: 300px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; background: #fff; }
         .export-details { margin-top: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background: #fafafa; }
-        .process-steps { display: flex; justify-content: center; align-items: center; gap: 10px; margin-bottom: 20px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6; flex-wrap: wrap; }
-        .step-item { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; background: #e9ecef; font-size: 13px; font-weight: 500; color: #6c757d; }
-        .step-active { background: #3498db; color: white; font-weight: bold; }
-        .step-done { background: #27ae60; color: white; }
-        .step-future { background: #f1f3f5; color: #adb5bd; }
-        .step-number { display: inline-block; width: 22px; height: 22px; line-height: 22px; border-radius: 50%; background: rgba(255,255,255,0.3); text-align: center; font-weight: bold; }
       ")),
       tags$script(HTML("
         var lastSelectedIndex = -1;
@@ -144,10 +141,13 @@ build_ui <- function() {
       id = "main_navbar", collapsible = TRUE, windowTitle = "Proteomics Analysis",
       upload_ui(),
       cleaning_ui(),
-      preprocessing_ui(),      # 预处理先执行
-      normalization_ui(),      # 归一化在预处理之后，使用处理后的数据
+      preprocessing_ui(),
+      normalization_ui(),
+      grouping_ui(),          # 独立的分组页面
+      comparisons_ui(),       # 独立的比较页面
+      parameters_ui(),        # 独立的参数页面
       plots_ui(),
-      export_ui()              # 新增 Export 页面
+      export_ui()
     )
   )
 }
@@ -171,7 +171,7 @@ server <- function(input, output, session) {
   source("server/de_analysis.R", local = TRUE)
   source("server/heatmap_plot.R", local = TRUE)
   source("server/volcano_plot.R", local = TRUE)
-  source("server/export_server.R", local = TRUE)   # 新增 Export 服务器
+  source("server/export_server.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)

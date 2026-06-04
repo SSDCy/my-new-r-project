@@ -5,7 +5,6 @@ grouping_ui <- function() {
     title = div(icon("users"), "Define Groups"), 
     value = "grouping",
     fluidRow(
-      column(12, step_indicator(c("Upload Data", "Data Preprocessing", "Define Groups", "Set Comparisons", "Set Parameters", "Analyze & Export"), 3)),
       column(4,
              div(class = "sticky-panel",
                  div(style = "margin-bottom: 20px;",

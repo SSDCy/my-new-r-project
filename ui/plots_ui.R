@@ -4,150 +4,13 @@ plots_ui <- function() {
   tabPanel(
     title = div(icon("chart-bar"), "Plots"),
     value = "plots",
-    fluidRow(
-      column(12,
-             step_indicator(c("Upload Data", "Data Preprocessing", "Analyze & Export"), 3)
-      )
-    ),
     br(),
-    # 整合后的分析设置面板
-    div(class = "card-modern",
-        div(class = "card-header-modern", icon("cogs"), " Analysis Setup"),
-        div(style = "padding: 20px;",
-            fluidRow(
-              column(6,
-                     # ---------- 分组区域 ----------
-                     h5(icon("users"), " Define Groups", style = "margin-top: 0; color: #2c3e50;"),
-                     div(class = "batch-group-row",
-                         selectInput("group_level", "Grouping Level", choices = NULL, width = "180px"),
-                         actionButton("batch_create_groups", "Batch Create", icon = icon("cubes"), class = "btn-warning"),
-                         actionButton("reset_groups", "Reset", icon = icon("refresh"), class = "btn-danger")
-                     ),
-                     tags$details(
-                       tags$summary("Add / Auto-Assign", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
-                       div(style = "display: flex; gap: 10px; margin-bottom: 15px;",
-                           textInputMax("new_group_name", NULL, value = "", placeholder = "Enter group name", maxlength = 31, width = "200px", allowed_pattern = "[^a-zA-Z0-9 _-]"),
-                           actionButton("add_group", "Add Group", icon = icon("plus"), class = "btn-primary")
-                       ),
-                       div(style = "margin-bottom: 15px;",
-                           actionButton("auto_assign", "Auto-Assign Samples", icon = icon("magic"), class = "btn-info")
-                       )
-                     ),
-                     hr(),
-                     h5(icon("archive"), " Unassigned Samples"),
-                     div(class = "sample-pool",
-                         p(class = "param-hint", "Ctrl+Click / Shift+Click to multi-select, then drag into groups."),
-                         uiOutput("unassigned_samples_ui")
-                     ),
-                     br(),
-                     h5(icon("folder"), " Groups & Samples"),
-                     div(id = "groups_container", style = "max-height: 50vh; overflow-y: auto;",
-                         uiOutput("groups_ui")
-                     )
-              ),
-              column(6,
-                     # ---------- 比较区域 ----------
-                     h5(icon("exchange-alt"), " Set Comparisons", style = "margin-top: 0; color: #2c3e50;"),
-                     div(style = "margin-bottom: 20px; padding: 15px; background: #f0f8ff; border-radius: 10px;",
-                         h5(icon("layer-group"), " Auto Pairwise Comparisons"),
-                         div(style = "display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;",
-                             selectInput("batch_ref_group", "Reference Control Group", choices = NULL, width = "200px"),
-                             actionButton("batch_add_pairwise", "Add All Pairwise", icon = icon("plus-circle"), class = "btn-info")
-                         )
-                     ),
-                     tags$details(
-                       tags$summary("Manual Comparison Entry", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
-                       div(style = "margin-bottom: 20px; padding: 15px; background: #f0f8ff; border-radius: 10px;",
-                           div(style = "display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px;",
-                               selectInput("comp_treat", "Treatment Group", choices = NULL, width = "150px"),
-                               div(style = "font-size: 20px; font-weight: bold; color: #666; padding-bottom: 10px;", "vs"),
-                               selectInput("comp_ctrl", "Control Group", choices = NULL, width = "150px")
-                           ),
-                           textInputMax("comp_name", "Comparison Name (optional)", value = "", placeholder = "e.g., Mutant vs WT", maxlength = 50, width = "100%"),
-                           div(style = "margin-top: 10px;",
-                               actionButton("add_comparison", "Add Comparison", icon = icon("plus"), class = "btn-primary")
-                           )
-                       )
-                     ),
-                     hr(),
-                     div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
-                         h5(icon("list"), uiOutput("comparisons_count_text"), style = "margin: 0;"),
-                         div(style = "display: flex; align-items: center; gap: 6px;",
-                             actionButton("auto_sort_comparisons", "Auto-Sort", icon = icon("sort-alpha-down"), class = "btn-sm btn-outline-info"),
-                             actionButton("clear_comparisons", "Clear All", class = "btn-sm btn-outline-danger")
-                         )
-                     ),
-                     div(style = "max-height: 300px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; background: #fff;",
-                         uiOutput("comparisons_list_ui")
-                     )
-              )
-            ),
-            hr(),
-            # ---------- 参数区域（折叠） ----------
-            fluidRow(
-              column(12,
-                     tags$details(
-                       tags$summary(icon("sliders-h"), " Statistical Method, Fold Change & Replicates", style = "cursor: pointer; font-weight: bold; font-size: 16px; color: #2c3e50; margin-bottom: 15px;"),
-                       fluidRow(
-                         column(4,
-                                div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
-                                    h5(icon("balance-scale"), " Statistical Method"),
-                                    radioButtons("stat_method", NULL,
-                                                 choices = c("t-test" = "t-test",
-                                                             "Wilcoxon rank-sum" = "wilcoxon",
-                                                             "limma (moderated t-test)" = "limma"),
-                                                 selected = "t-test")
-                                )
-                         ),
-                         column(4,
-                                div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
-                                    h5(icon("balance-scale"), " Fold Change & Significance"),
-                                    numericInput("fc_up", "FC up >", value = 1.2, min = 1, step = 0.1),
-                                    numericInput("fc_down", "FC down <", value = 0.84, min = 0, max = 1, step = 0.01),
-                                    selectInput("p_cut", "P-value threshold", choices = c("0.05", "0.1"), selected = "0.05")
-                                )
-                         ),
-                         column(4,
-                                div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
-                                    h5(icon("check-circle"), " Valid Replicates"),
-                                    div(style = "display: flex; align-items: center; gap: 10px; margin-bottom: 10px;",
-                                        numericInput("replicate_fill_all", "Set All", value = 2, min = 1, max = 10, step = 1, width = "80px"),
-                                        actionButton("apply_replicate_fill", "Apply to All", class = "btn-sm btn-info")
-                                    ),
-                                    fluidRow(
-                                      column(6, numericInput("min_treat_valid", "Treat min", value = 2, min = 1, max = 20)),
-                                      column(6, numericInput("min_ctrl_valid", "Ctrl min", value = 2, min = 1, max = 20))
-                                    ),
-                                    fluidRow(
-                                      column(6, numericInput("min_rep_ttest", "t-test min", value = 2, min = 1, max = 10)),
-                                      column(6, numericInput("min_rep_inc", "Increase min", value = 2, min = 1, max = 10))
-                                    ),
-                                    numericInput("min_rep_dec", "Decrease min", value = 2, min = 1, max = 10, width = "100%")
-                                )
-                         )
-                       )
-                     )
-              )
-            ),
-            fluidRow(
-              column(12,
-                     div(style = "background: #e3f2fd; padding: 15px; border-radius: 10px;",
-                         h5(icon("filter"), " Protein Filtering (Unique Peptides)"),
-                         numericInput("min_unique_pep", "Minimum Unique Peptides", value = 2, min = 1, max = 20, step = 1)
-                     )
-              )
-            )
-        )
-    ),
-    hr(),
-    # 图表区域
     tabsetPanel(
       id = "plots_subnav",
-      # ---- 热图选项卡（保持不变） ----
+      # ---- 热图选项卡 ----
       tabPanel(
         title = "Heatmap",
         value = "heatmap_sub",
-        # ... 保持原有热图 UI 不变 ...
         fluidRow(
           column(12,
                  div(class = "card-modern",
@@ -199,7 +62,7 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- 火山图选项卡（增强版，来自旧平台） ----
+      # ---- 火山图选项卡（左对齐） ----
       tabPanel(
         title = "Volcano Plot",
         value = "volcano_sub",
@@ -212,7 +75,7 @@ plots_ui <- function() {
                          span(style = "font-size: 14px; font-weight: normal;",
                               "(Click on any dot to view the protein's expression profile across all groups)")),
                      div(style = "padding: 20px;",
-                         # 颜色选择器
+                         # 颜色选择器行
                          div(class = "color-palette-row",
                              div(class = "color-card",
                                  div(class = "color-card-label", "Up"),
@@ -255,7 +118,7 @@ plots_ui <- function() {
                          ),
                          uiOutput("color_preview"),
                          fluidRow(
-                           column(4, numericInput("point_size", "Point Size", value = 1.8, min = 0.5, max = 10, step = 0.1))
+                           column(4, numericInput("point_size", "Point Size", value = 4, min = 0.5, max = 10, step = 0.1))
                          ),
                          hr(),
                          fluidRow(
@@ -267,7 +130,11 @@ plots_ui <- function() {
                            )
                          ),
                          fluidRow(column(12, uiOutput("plot_info_ui"))),
-                         shinycssloaders::withSpinner(plotlyOutput("volcano_plot", height = "700px"), type = 4, color = "#3498db")
+                         fluidRow(
+                           column(12,
+                                  shinycssloaders::withSpinner(plotlyOutput("volcano_plot", height = "700px"), type = 4, color = "#3498db")
+                           )
+                         )
                      )
                  )
           )
