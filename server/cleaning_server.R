@@ -14,7 +14,7 @@ output$cleaning_summary <- renderPrint({
   total_raw <- nrow(raw)
   total_clean <- nrow(clean)
   
-  # 计算被移除的各类蛋白
+  # 计算被移除的各类蛋白（可能有重叠）
   reverse_removed <- if ("Reverse" %in% colnames(raw)) {
     raw$Reverse == "+" & !is.na(raw$Reverse)
   } else rep(FALSE, total_raw)
@@ -47,9 +47,12 @@ output$cleaning_summary <- renderPrint({
   cat("  - Reverse hits:", n_reverse, "\n")
   cat("  - Potential contaminants:", n_contaminant, "\n")
   cat("  - CON_ contaminants:", n_con, "\n")
-  cat("\nNote: Some proteins may be removed by multiple filters.\n")
+  cat("\nNote: Some proteins may be removed by multiple filters (overlap).\n")
+  cat(sprintf("The sum of the breakdown (%d) may be greater than the total removed (%d) due to overlap.\n", 
+              n_reverse + n_contaminant + n_con, n_total_removed))
   
-  message("[DEBUG] cleaning_summary: total_raw=", total_raw, ", total_clean=", total_clean, ", removed=", n_total_removed)
+  message("[DEBUG] cleaning_summary: total_raw=", total_raw, ", total_clean=", total_clean, 
+          ", removed=", n_total_removed, ", sum_of_breaks=", n_reverse + n_contaminant + n_con)
 })
 
 # 被移除的蛋白ID列表

@@ -12,6 +12,9 @@ parameters_ui <- function() {
                      div(icon("cog"), " Analysis Parameters")
                  ),
                  div(style = "padding: 20px;",
+                     p(class = "param-hint",
+                       icon("info-circle"),
+                       " These parameters are used for differential expression analysis (volcano plots, Venn/UpSet, and exported tables). They do not affect heatmaps, which are based solely on expression data and normalization."),
                      fluidRow(
                        column(6, 
                               div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",

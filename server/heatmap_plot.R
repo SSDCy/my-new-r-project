@@ -17,7 +17,6 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
   original_rownames <- rownames(data_src)
   message("[DEBUG] prepare_expr_matrix: original rownames first 5 = ", paste(head(original_rownames, 5), collapse = ", "))
   
-  # 如果行名全是数字，尝试用 id_map 映射（后备方案）
   if (suppressWarnings(all(!is.na(as.numeric(original_rownames))))) {
     message("[DEBUG] prepare_expr_matrix: rownames are numeric, attempting ID remapping")
     if (!is.null(id_map)) {
@@ -109,7 +108,7 @@ heatmap_raw_sample_names <- reactive({
   samples
 })
 
-# ---------- Intensity 模式数据矩阵（已修复行名为蛋白ID） ----------
+# ---------- Intensity 模式数据矩阵 ----------
 heatmap_raw_data <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
@@ -119,25 +118,18 @@ heatmap_raw_data <- reactive({
   }
   mat <- rv$raw_data
   
-  # 获取蛋白ID：优先用 raw_data 的 Master protein IDs，否则用 clean_data
   if ("Master protein IDs" %in% colnames(mat)) {
     ids <- as.character(mat[["Master protein IDs"]])
-    message("[DEBUG] heatmap_raw_data: got IDs from raw_data$`Master protein IDs`")
   } else if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
     ids <- as.character(rv$clean_data[["Master protein IDs"]])
-    message("[DEBUG] heatmap_raw_data: got IDs from clean_data$`Master protein IDs`")
   } else {
     ids <- rownames(mat)
-    message("[DEBUG] heatmap_raw_data: using rownames as IDs")
   }
-  message("[DEBUG] heatmap_raw_data: first 5 IDs = ", paste(head(ids, 5), collapse = ", "))
-  
   mat <- mat[, int_cols, drop = FALSE]
   mat <- suppressWarnings(as.data.frame(lapply(mat, as.numeric)))
   mat[mat == 0] <- NA
   rownames(mat) <- ids
   colnames(mat) <- gsub("^Intensity ", "", int_cols)
-  message("[DEBUG] heatmap_raw_data: created matrix with dim ", nrow(mat), "x", ncol(mat))
   mat
 })
 
@@ -198,7 +190,7 @@ output$heatmap_group_selection_ui <- renderUI({
                      choices = group_names, selected = group_names, inline = TRUE)
 })
 
-# ---------- 核心热图数据准备（按钮触发） ----------
+# ---------- 核心热图数据准备 ----------
 heatmap_data <- eventReactive(input$generate_heatmap, {
   message("[DEBUG] heatmap_data triggered by Generate Heatmap button (click=", input$generate_heatmap, ")")
   result <- list(error = NULL, mat = NULL, has_na = FALSE, na_rows_removed = 0)
@@ -211,13 +203,9 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   mode <- input$heatmap_protein_mode
   if (is.null(mode)) mode <- "top_n"
   
-  # 全局蛋白ID映射向量（后备）
   global_id_map <- NULL
   if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
     global_id_map <- as.character(rv$clean_data$`Master protein IDs`)
-    message("[DEBUG] heatmap_data: global_id_map length = ", length(global_id_map))
-  } else {
-    message("[DEBUG] heatmap_data: no global_id_map available")
   }
   
   if (input$heatmap_data_source == "LFQ") {
@@ -228,8 +216,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     }
     src_colnames <- colnames(data_src)
     src_short <- extract_sample_names(src_colnames)
-    message("[DEBUG] heatmap_data LFQ: src_colnames first 3: ", paste(head(src_colnames, 3), collapse = ", "))
-    message("[DEBUG] heatmap_data LFQ: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
     
     if (is.null(input$heatmap_groups) || length(input$heatmap_groups) == 0) {
       result$error <- "Please select at least one group."
@@ -242,8 +228,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       return(result)
     }
     keep <- src_short %in% selected_samples
-    message("[DEBUG] heatmap_data LFQ: selected_samples count=", length(selected_samples),
-            ", matched in data source=", sum(keep))
     if (!any(keep)) {
       result$error <- "None of the selected group samples match the columns in the data source."
       return(result)
@@ -252,16 +236,13 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     all_cols <- src_colnames[keep]
     group_vec <- rep("Unassigned", length(samples))
     for (g in groups_sel) group_vec[samples %in% rv$groups[[g]]] <- g
-  } else {   # "Intensity" 模式
+  } else {
     data_src <- heatmap_raw_data()
     if (is.null(data_src)) {
       result$error <- "No Intensity columns found in the uploaded data."
       return(result)
     }
     src_short <- colnames(data_src)
-    message("[DEBUG] heatmap_data Intensity: src_short first 3: ", paste(head(src_short, 3), collapse = ", "))
-    message("[DEBUG] heatmap_data Intensity: first 5 rownames = ", paste(head(rownames(data_src), 5), collapse = ", "))
-    
     if (mode == "custom") {
       selected_samples <- src_short
     } else {
@@ -282,8 +263,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       }
     }
     keep <- src_short %in% selected_samples
-    message("[DEBUG] heatmap_data Intensity: selected_samples count=", length(selected_samples),
-            ", matched=", sum(keep))
     if (!any(keep)) {
       result$error <- "None of the selected samples match the columns."
       return(result)
@@ -346,51 +325,31 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   result
 })
 
-# ---------- 显示数据反应式（整合版本判断） ----------
 heatmap_display_data <- reactive({
   current_trigger <- data_changed_trigger()
   dat <- heatmap_data()
-  
-  if (is.null(dat)) {
-    return(list(error = "Click 'Generate Heatmap' to start"))
-  }
-  
-  if (current_trigger != heatmap_generated_version()) {
-    return(list(error = "Data has changed. Please click 'Generate Heatmap' to update."))
-  }
-  
+  if (is.null(dat)) return(list(error = "Click 'Generate Heatmap' to start"))
+  if (current_trigger != heatmap_generated_version()) return(list(error = "Data has changed. Please click 'Generate Heatmap' to update."))
   dat
 })
 
 make_heatmap_breaks <- function(mat, n_colors = 100) {
   rng <- range(mat, na.rm = TRUE)
-  if (rng[2] - rng[1] < 1e-6) {
-    rng <- c(rng[1] - 0.5, rng[2] + 0.5)
-  }
+  if (rng[2] - rng[1] < 1e-6) rng <- c(rng[1] - 0.5, rng[2] + 0.5)
   seq(rng[1], rng[2], length.out = n_colors + 1)
 }
 
 output$heatmap_plot <- renderPlot({
   dat <- heatmap_display_data()
-  
   if (!is.null(dat$error)) {
-    plot.new()
-    text(0.5, 0.5, dat$error, cex = 1.2)
-    return()
+    plot.new(); text(0.5, 0.5, dat$error, cex = 1.2); return()
   }
   if (is.null(dat$mat) || nrow(dat$mat) == 0 || ncol(dat$mat) == 0) {
-    plot.new()
-    text(0.5, 0.5, "No data to display")
-    return()
+    plot.new(); text(0.5, 0.5, "No data to display"); return()
   }
-  
   if (isTRUE(dat$has_na)) {
-    showNotification(
-      paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap. Consider using imputation in preprocessing for a more complete view."),
-      type = "message", duration = 10, id = "heatmap_na_note"
-    )
+    showNotification(paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap. Consider using imputation in preprocessing for a more complete view."), type = "message", duration = 10, id = "heatmap_na_note")
   }
-  
   brks <- make_heatmap_breaks(dat$mat)
   ann <- dat$annotation_col
   if (!is.null(ann) && nrow(ann) == 0) ann <- NULL
@@ -415,15 +374,11 @@ output$download_heatmap_png <- downloadHandler(
     dat <- heatmap_display_data()
     if (!is.null(dat$error)) {
       png(file, width = 1200, height = 1000, res = 150)
-      plot.new(); text(0.5, 0.5, dat$error, cex = 1.5)
-      dev.off()
-      return()
+      plot.new(); text(0.5, 0.5, dat$error, cex = 1.5); dev.off(); return()
     }
     if (is.null(dat$mat) || nrow(dat$mat) == 0 || ncol(dat$mat) == 0) {
       png(file, width = 1200, height = 1000, res = 150)
-      plot.new(); text(0.5, 0.5, "No data to display", cex = 1.5)
-      dev.off()
-      return()
+      plot.new(); text(0.5, 0.5, "No data to display", cex = 1.5); dev.off(); return()
     }
     png(file, width = 1200, height = 1000, res = 150)
     brks <- make_heatmap_breaks(dat$mat)
@@ -445,13 +400,12 @@ output$download_heatmap_png <- downloadHandler(
   }
 )
 
-# ========== 热图数据源信息 ==========
 output$heatmap_data_source_info <- renderPrint({
   message("[DEBUG] output$heatmap_data_source_info called")
   src <- input$heatmap_data_source
   cat("Data Source:", if (src == "LFQ") "LFQ Intensity (per-row Z-score)" else "Intensity (per-row Z-score)", "\n")
   if (src == "LFQ") {
-    cat("Derived from: Preprocessed data (after all steps: filtering, imputation, batch correction if applied)\n")
+    cat("Derived from: Preprocessed data (after filtering, imputation, batch correction; before total intensity normalization)\n")
     if (is.null(processed_data())) {
       cat("Status: Preprocessing has NOT been run. Please click 'Run Preprocessing' in Data Preprocessing tab before generating heatmaps.\n")
     } else {
@@ -461,25 +415,23 @@ output$heatmap_data_source_info <- renderPrint({
   } else {
     cat("Derived from: Raw uploaded data (Intensity columns, no preprocessing applied).\n")
     cat("Note: Missing values are removed row-wise; imputation is NOT used for this mode.\n")
-    cat("This data source reflects the original Intensity values without any filtering or imputation.\n")
     message("[DEBUG] heatmap_data_source_info: Intensity mode (raw data)")
   }
 })
 
-# ========== 热图预处理步骤指示器 ==========
+# 热图预处理步骤指示器（明确说明数据未归一化）
 output$heatmap_preprocess_steps <- renderUI({
   steps <- list()
   src <- input$heatmap_data_source
   if (src == "LFQ") {
-    # 读取预处理参数
-    steps <- c(steps, "Data source: Preprocessed data (after filtering, imputation, batch correction)")
+    steps <- c(steps, "Data source: Preprocessed data (filtered, imputed, batch-corrected, NOT total-intensity normalized)")
     if (!is.null(preprocessing_params$last_run_time)) {
       steps <- c(steps, paste0("Last preprocessing: ", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M")))
     }
     steps <- c(steps, "log2(Intensity + 1) transformation applied")
     steps <- c(steps, "Per-row Z-score normalization (scale)")
   } else {
-    steps <- c(steps, "Data source: Raw Intensity columns")
+    steps <- c(steps, "Data source: Raw Intensity columns (no preprocessing)")
     steps <- c(steps, "log2(Intensity + 1) transformation applied")
     steps <- c(steps, "Per-row Z-score normalization (scale)")
     steps <- c(steps, "Note: Missing values are removed row-wise; no imputation is performed.")
