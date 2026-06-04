@@ -1,6 +1,6 @@
 # server/heatmap_plot.R
 # ============================================================
-# 热图数据准备与绘制模块
+# 热图数据准备与绘制模块（静态 pheatmap）
 # ============================================================
 
 # ---------- 辅助函数 ----------
@@ -348,7 +348,10 @@ output$heatmap_plot <- renderPlot({
     plot.new(); text(0.5, 0.5, "No data to display"); return()
   }
   if (isTRUE(dat$has_na)) {
-    showNotification(paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap. Consider using imputation in preprocessing for a more complete view."), type = "message", duration = 10, id = "heatmap_na_note")
+    showNotification(
+      paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap. Consider using imputation in preprocessing for a more complete view."),
+      type = "message", duration = 10, id = "heatmap_na_note"
+    )
   }
   brks <- make_heatmap_breaks(dat$mat)
   ann <- dat$annotation_col
@@ -374,28 +377,29 @@ output$download_heatmap_png <- downloadHandler(
     dat <- heatmap_display_data()
     if (!is.null(dat$error)) {
       png(file, width = 1200, height = 1000, res = 150)
-      plot.new(); text(0.5, 0.5, dat$error, cex = 1.5); dev.off(); return()
+      plot.new(); text(0.5, 0.5, dat$error, cex = 1.5); dev.off()
+      return()
     }
     if (is.null(dat$mat) || nrow(dat$mat) == 0 || ncol(dat$mat) == 0) {
       png(file, width = 1200, height = 1000, res = 150)
-      plot.new(); text(0.5, 0.5, "No data to display", cex = 1.5); dev.off(); return()
+      plot.new(); text(0.5, 0.5, "No data to display", cex = 1.5); dev.off()
+      return()
     }
     png(file, width = 1200, height = 1000, res = 150)
     brks <- make_heatmap_breaks(dat$mat)
     ann <- dat$annotation_col
     if (!is.null(ann) && nrow(ann) == 0) ann <- NULL
-    p <- pheatmap(dat$mat,
-                  color = colorRampPalette(c("blue", "white", "red"))(100),
-                  breaks = brks,
-                  scale = "none",
-                  cluster_rows = TRUE,
-                  cluster_cols = TRUE,
-                  show_rownames = TRUE,
-                  show_colnames = dat$show_sample_names,
-                  annotation_col = ann,
-                  annotation_colors = dat$annotation_colors,
-                  main = "Expression Heatmap")
-    print(p)
+    pheatmap::pheatmap(dat$mat,
+                       color = colorRampPalette(c("blue", "white", "red"))(100),
+                       breaks = brks,
+                       scale = "none",
+                       cluster_rows = TRUE,
+                       cluster_cols = TRUE,
+                       show_rownames = TRUE,
+                       show_colnames = dat$show_sample_names,
+                       annotation_col = ann,
+                       annotation_colors = dat$annotation_colors,
+                       main = "Expression Heatmap")
     dev.off()
   }
 )
@@ -411,11 +415,9 @@ output$heatmap_data_source_info <- renderPrint({
     } else {
       cat("Preprocessing was performed at:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
     }
-    message("[DEBUG] heatmap_data_source_info: LFQ mode, preprocessing done = ", !is.null(processed_data()))
   } else {
     cat("Derived from: Raw uploaded data (Intensity columns, no preprocessing applied).\n")
     cat("Note: Missing values are removed row-wise; imputation is NOT used for this mode.\n")
-    message("[DEBUG] heatmap_data_source_info: Intensity mode (raw data)")
   }
 })
 

@@ -176,7 +176,7 @@ output$sample_cor_heatmap <- renderPlot({
                      angle_col = 45,
                      annotation_col = ann_col,
                      annotation_colors = ann_colors,
-                     main = "样本相关性热图（基于 top 500 高变异蛋白的 log2 强度 Pearson 相关）")
+                     main = "Sample Correlation Heatmap (based on top 500 variable proteins, log2 intensity)")
 })
 
 # ---------- 下载热图 PNG ----------
@@ -201,7 +201,7 @@ output$download_sample_cor_png <- downloadHandler(
                        angle_col = 45,
                        annotation_col = dat$ann_col,
                        annotation_colors = dat$ann_colors,
-                       main = "样本相关性热图")
+                       main = "Sample Correlation Heatmap")
     dev.off()
   }
 )

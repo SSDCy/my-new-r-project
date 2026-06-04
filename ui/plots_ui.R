@@ -216,7 +216,7 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- 样本相关性热图 ----
+      # ---- 样本相关性热图选项卡 ----
       tabPanel(
         title = "Sample Correlation",
         value = "sample_cor_sub",
