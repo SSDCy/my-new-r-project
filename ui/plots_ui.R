@@ -182,6 +182,37 @@ plots_ui <- function() {
                  )
           )
         )
+      ),
+      # ---- PCA 选项卡（新增） ----
+      tabPanel(
+        title = "PCA",
+        value = "pca_sub",
+        fluidRow(
+          column(12,
+                 div(class = "card-modern",
+                     div(class = "card-header-modern", icon("project-diagram"), " Principal Component Analysis"),
+                     div(style = "padding: 20px;",
+                         p("PCA is performed on normalized expression data after log2 transformation. Outliers are detected based on a Z-score > 3 on PC1 or PC2."),
+                         uiOutput("pca_data_source_note"),
+                         fluidRow(
+                           column(6,
+                                  h4(icon("users"), " PCA by Group"),
+                                  shinycssloaders::withSpinner(plotlyOutput("pca_group_plot", height = "500px"), type = 4, color = "#3498db"),
+                                  downloadButton("download_pca_group_png", "Download Group PCA", class = "btn btn-sm btn-outline-success")
+                           ),
+                           column(6,
+                                  h4(icon("layer-group"), " PCA by Batch"),
+                                  shinycssloaders::withSpinner(plotlyOutput("pca_batch_plot", height = "500px"), type = 4, color = "#3498db"),
+                                  downloadButton("download_pca_batch_png", "Download Batch PCA", class = "btn btn-sm btn-outline-success")
+                           )
+                         ),
+                         hr(),
+                         h4(icon("exclamation-triangle"), " Outlier Detection"),
+                         verbatimTextOutput("pca_outlier_info")
+                     )
+                 )
+          )
+        )
       )
     )
   )

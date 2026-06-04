@@ -11,7 +11,6 @@ source("ui/grouping_ui.R", local = TRUE)         # 分组页面
 source("ui/comparisons_ui.R", local = TRUE)      # 比较页面
 source("ui/parameters_ui.R", local = TRUE)       # 参数页面
 source("ui/plots_ui.R", local = TRUE)
-# source("ui/venn_upset_ui.R", local = TRUE)     # 移除独立页面
 source("ui/export_ui.R", local = TRUE)
 
 build_ui <- function() {
@@ -148,7 +147,6 @@ build_ui <- function() {
       comparisons_ui(),
       parameters_ui(),
       plots_ui(),
-      # venn_upset_ui(),  # 已移除独立页面
       export_ui()
     )
   )
@@ -175,7 +173,8 @@ server <- function(input, output, session) {
   source("server/heatmap_plot.R", local = TRUE)
   source("server/volcano_plot.R", local = TRUE)
   source("server/export_server.R", local = TRUE)
-  source("server/plots_venn_upset.R", local = TRUE)   # 韦恩/UpSet 服务器逻辑（位于Plots内）
+  source("server/plots_venn_upset.R", local = TRUE)
+  source("server/pca_plot.R", local = TRUE)          # 新增 PCA 服务器逻辑
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)

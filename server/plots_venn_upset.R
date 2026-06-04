@@ -20,7 +20,7 @@ plot_venn_diagram <- function(sets, fill_colors = NULL) {
   }
 }
 
-# ---------- 颜色选择器（用于韦恩图） ----------
+# ---------- 颜色选择器 ----------
 venn_colors_for_plot <- reactive({
   n <- length(input$venn_comparisons)
   if (n == 0) return(character(0))
@@ -58,6 +58,9 @@ venn_data <- eventReactive(input$generate_venn, {
   reg_type <- input$venn_type
   message("[DEBUG] plots_venn_upset: generating data for ", reg_type, " in comparisons: ", paste(comps, collapse = ", "))
   
+  # 将比较名中的空格替换为下划线，避免 UpSetR 出错
+  safe_comps <- gsub(" ", "_", comps)
+  
   protein_sets <- lapply(comps, function(comp_name) {
     res <- all_res$results[[comp_name]]
     if (is.null(res)) {
@@ -70,9 +73,9 @@ venn_data <- eventReactive(input$generate_venn, {
     message("[DEBUG] plots_venn_upset: ", comp_name, " - ", length(ids), " proteins")
     unique(ids)
   })
-  names(protein_sets) <- comps
+  names(protein_sets) <- safe_comps
   
-  # 过滤掉空集合，避免 UpSet 出错
+  # 过滤掉空集合
   non_empty <- lengths(protein_sets) > 0
   if (!all(non_empty)) {
     message("[DEBUG] plots_venn_upset: empty sets removed: ", paste(names(protein_sets)[!non_empty], collapse = ", "))
@@ -132,9 +135,14 @@ output$upset_plot <- renderPlot({
   }
   colors <- venn_colors_for_plot()
   
+  # 将列表转换为 UpSetR 所需格式
+  upset_list <- UpSetR::fromList(sets)
+  colnames(upset_list) <- names(sets)  # 确保列名正确
+  message("[DEBUG] UpSet columns: ", paste(colnames(upset_list), collapse = ", "))
+  
   tryCatch({
-    upset_obj <- UpSetR::upset(
-      UpSetR::fromList(sets),
+    UpSetR::upset(
+      upset_list,
       nsets = length(sets),
       order.by = "freq",
       decreasing = TRUE,
@@ -142,9 +150,9 @@ output$upset_plot <- renderPlot({
       sets.bar.color = colors,
       matrix.color = "#34495e",
       mainbar.y.label = "Intersection Size",
-      sets.x.label = "Set Size"
+      sets.x.label = "Set Size",
+      text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2)  # 固定文本大小
     )
-    print(upset_obj)
   }, error = function(e) {
     message("[ERROR] UpSet plot: ", e$message)
     plot.new()
@@ -182,15 +190,13 @@ output$download_upset_png <- downloadHandler(
       return()
     }
     colors <- venn_colors_for_plot()
+    upset_list <- UpSetR::fromList(sets)
+    colnames(upset_list) <- names(sets)
     png(file, width = 1200, height = 800, res = 120)
     tryCatch({
-      print(UpSetR::upset(UpSetR::fromList(sets),
-                          nsets = length(sets),
-                          order.by = "freq",
-                          decreasing = TRUE,
-                          main.bar.color = "#3498db",
-                          sets.bar.color = colors,
-                          matrix.color = "#34495e"))
+      UpSetR::upset(upset_list, nsets = length(sets), order.by = "freq", decreasing = TRUE,
+                    main.bar.color = "#3498db", sets.bar.color = colors, matrix.color = "#34495e",
+                    text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2))
     }, error = function(e) {
       plot.new(); text(0.5,0.5, paste("Error:", e$message))
     })
