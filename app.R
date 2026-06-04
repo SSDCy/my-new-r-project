@@ -5,11 +5,11 @@ library(shiny)
 source("global.R", local = TRUE)
 source("ui/upload_ui.R", local = TRUE)
 source("ui/cleaning_ui.R", local = TRUE)
-source("ui/normalization_ui.R", local = TRUE)   # 归一化 UI
+source("ui/normalization_ui.R", local = TRUE)
 source("ui/preprocessing_ui.R", local = TRUE)
-source("ui/grouping_ui.R", local = TRUE)         # 分组页面
-source("ui/comparisons_ui.R", local = TRUE)      # 比较页面
-source("ui/parameters_ui.R", local = TRUE)       # 参数页面
+source("ui/grouping_ui.R", local = TRUE)
+source("ui/comparisons_ui.R", local = TRUE)
+source("ui/parameters_ui.R", local = TRUE)
 source("ui/plots_ui.R", local = TRUE)
 source("ui/export_ui.R", local = TRUE)
 
@@ -143,9 +143,9 @@ build_ui <- function() {
       cleaning_ui(),
       preprocessing_ui(),
       normalization_ui(),
-      grouping_ui(),          # 独立的分组页面
-      comparisons_ui(),       # 独立的比较页面
-      parameters_ui(),        # 独立的参数页面
+      grouping_ui(),
+      comparisons_ui(),
+      parameters_ui(),
       plots_ui(),
       export_ui()
     )
@@ -156,7 +156,8 @@ ui <- build_ui()
 
 server <- function(input, output, session) {
   source("server/reactive_values.R", local = TRUE)
-  source("server/data_upload.R", local = TRUE)
+  source("server/data_upload_core.R", local = TRUE)      # 替换原来的 data_upload.R
+  source("server/data_upload_quality.R", local = TRUE)   # 数据质量分析
   source("server/cleaning_server.R", local = TRUE)
   source("server/normalization_server.R", local = TRUE)
   source("server/preprocessing_helpers.R", local = TRUE)

@@ -180,7 +180,7 @@ preprocessing_ui <- function() {
                         choices = c("k-Nearest Neighbors (KNN)" = "knn", "Probabilistic PCA (PPCA)" = "ppca",
                                     "Minimum Value (Fixed)" = "minvalue", "Quantile (e.g. 1% quantile)" = "quantile",
                                     "None (skip imputation)" = "none"),
-                        selected = "knn"),
+                        selected = "quantile"),   # 默认改为 quantile
             conditionalPanel(condition = "input.imputation_method == 'knn'", numericInput("knn_k", "KNN: number of neighbors (k)", value = 10, min = 1, max = 50, step = 1)),
             conditionalPanel(condition = "input.imputation_method == 'minvalue'", numericInput("minvalue_fixed", "Fixed minimum value", value = 1e-4, min = 0, step = 1e-5)),
             conditionalPanel(condition = "input.imputation_method == 'quantile'", numericInput("quantile_prob", "Quantile (e.g. 0.01 for 1%)", value = 0.01, min = 0.001, max = 0.5, step = 0.01)),

@@ -37,15 +37,6 @@ color_mapping_vector <- reactive({
 
 color_mapping <- reactive(list(Up=input$color_up, Down=input$color_down, Increase=input$color_increase, Decrease=input$color_decrease, NS=input$color_ns))
 
-safe_get_analysis_matrix <- function() {
-  tryCatch({
-    mat <- get_analysis_matrix()
-    if (is.null(mat)) { message("[DEBUG] volcano: get_analysis_matrix() returned NULL"); return(NULL) }
-    message("[DEBUG] volcano: got analysis matrix, dim = ", nrow(mat), " x ", ncol(mat))
-    mat
-  }, error = function(e) { message("[ERROR] volcano: failed to get analysis matrix: ", e$message); NULL })
-}
-
 selected_volcano_comparison <- reactive({
   comp_name <- input$selected_comparison
   if (is.null(comp_name) || comp_name == "") return(NULL)
@@ -68,37 +59,56 @@ observe({
   }
 })
 
+# ---------- 统一的差异分析（基于归一化数据，应用 unique peptide 过滤） ----------
 volcano_de_result <- reactive({
   comp <- selected_volcano_comparison(); req(comp)
-  mat <- safe_get_analysis_matrix(); req(mat)
+  nd <- norm_data_full()
+  if (is.null(nd)) { message("[DEBUG] volcano: norm_data_full() is NULL"); return(NULL) }
+  
+  # 应用 unique peptide 过滤（与导出部分保持一致）
+  unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
+  if (!is.na(unique_col) && input$min_unique_pep > 1) {
+    nd[[unique_col]] <- as.numeric(nd[[unique_col]])
+    nd <- nd[nd[[unique_col]] >= input$min_unique_pep, ]
+    message("[DEBUG] volcano: after unique peptide filter (>= ", input$min_unique_pep, "), nrow = ", nrow(nd))
+  }
+  
   treat_group <- comp$treat; ctrl_group <- comp$ctrl
   treat_samples <- rv$groups[[treat_group]]; ctrl_samples <- rv$groups[[ctrl_group]]
   if (length(treat_samples) == 0 || length(ctrl_samples) == 0) {
     showNotification("One of the groups has no samples.", type = "error"); return(NULL)
   }
-  mat_colnames <- colnames(mat); mat_short <- extract_sample_names(mat_colnames)
-  treat_idx <- which(mat_short %in% treat_samples); ctrl_idx <- which(mat_short %in% ctrl_samples)
-  if (length(treat_idx) == 0 || length(ctrl_idx) == 0) {
-    showNotification("Sample names mismatch. Please check group assignments.", type = "error"); return(NULL)
-  }
-  message("[DEBUG] volcano: matched treat = ", length(treat_idx), " samples, ctrl = ", length(ctrl_idx), " samples")
-  sub_mat <- mat[, c(treat_idx, ctrl_idx), drop = FALSE]; protein_ids <- rownames(sub_mat)
-  sub_df <- as.data.frame(sub_mat); sub_df$`Master protein IDs` <- protein_ids
-  fc_up <- input$fc_up; fc_down <- input$fc_down; p_cut <- as.numeric(input$p_cut)
   
-  # 统计方法：如果参数页面没有 stat_method 输入，则默认为 "t-test"
-  stat_method <- input$stat_method
-  if (is.null(stat_method) || stat_method == "") {
-    stat_method <- "t-test"
-    message("[DEBUG] volcano: stat_method not set, defaulting to t-test")
+  treat_cols <- paste0("Norm_LFQ intensity ", treat_samples)
+  ctrl_cols <- paste0("Norm_LFQ intensity ", ctrl_samples)
+  treat_cols <- treat_cols[treat_cols %in% colnames(nd)]
+  ctrl_cols <- ctrl_cols[ctrl_cols %in% colnames(nd)]
+  if (length(treat_cols) == 0 || length(ctrl_cols) == 0) {
+    showNotification("Sample columns mismatch. Please check group assignments.", type = "error"); return(NULL)
   }
+  
+  message("[DEBUG] volcano: matched treat = ", length(treat_cols), " columns, ctrl = ", length(ctrl_cols), " columns")
+  
+  # 构建子集（只保留 Master protein IDs 和强度列）
+  sub_df <- nd[, c("Master protein IDs", treat_cols, ctrl_cols), drop = FALSE]
+  
+  fc_up <- input$fc_up; fc_down <- input$fc_down; p_cut <- as.numeric(input$p_cut)
+  stat_method <- input$stat_method
+  if (is.null(stat_method) || stat_method == "") stat_method <- "t-test"
   message("[DEBUG] volcano: running DE with method=", stat_method, ", FC_up=", fc_up, ", FC_down=", fc_down, ", p_cut=", p_cut)
   
   res <- tryCatch({
-    run_de_analysis(data_subset = sub_df, treat_cols = colnames(sub_mat)[1:length(treat_idx)],
-                    ctrl_cols = colnames(sub_mat)[(length(treat_idx)+1):ncol(sub_mat)],
+    run_de_analysis(data_subset = sub_df, treat_cols = treat_cols,
+                    ctrl_cols = ctrl_cols,
                     fc_up = fc_up, fc_down = fc_down, p_cut = p_cut, stat_method = stat_method)
-  }, error = function(e) { message("[ERROR] volcano: DE analysis failed: ", e$message); NULL })
+  }, error = function(e) { message("[ERROR] volcano: DE failed: ", e$message); NULL })
+  
+  if (!is.null(res)) {
+    # 补全缺失列（防御）
+    for (col in c("log2FC","log10P","regulation")) {
+      if (!(col %in% colnames(res))) res[[col]] <- NA_real_
+    }
+  }
   if (is.null(res) || nrow(res) == 0) { message("[DEBUG] volcano: DE result empty"); return(NULL) }
   message("[DEBUG] volcano: DE completed, nrow = ", nrow(res), ", Up = ", sum(res$regulation == "Up"),
           ", Down = ", sum(res$regulation == "Down"), ", Increase = ", sum(res$regulation == "Increase"),
@@ -205,17 +215,85 @@ output$protein_profile_plot <- renderPlotly({
   ggplotly(p, tooltip = "text") %>% layout(plot_bgcolor = 'white', paper_bgcolor = 'white', margin = list(b = 80))
 })
 
+# ---------- 预处理步骤展示 ----------
+output$volcano_preprocess_steps <- renderUI({
+  steps <- list()
+  # 读取预处理参数
+  if (is.null(preprocessing_params)) return(NULL)
+  
+  # 缺失值过滤
+  steps <- c(steps, paste0("Missing Value Filter (threshold=", input$max_missing_fraction %||% "0.5", 
+                           ", mode=", preprocessing_params$missing_filter_mode %||% "global", ")"))
+  # 强度过滤
+  if (!is.null(input$min_intensity) && input$min_intensity > 0) {
+    steps <- c(steps, paste0("Minimum Intensity Filter (threshold=", input$min_intensity, 
+                             ", min.samples=", input$min_samples_above_intensity %||% 1, ")"))
+  } else {
+    steps <- c(steps, "Intensity Filter not applied")
+  }
+  # 填补
+  imp <- preprocessing_params$imputation_method %||% "none"
+  if (imp == "none") {
+    steps <- c(steps, "Imputation: skipped")
+  } else {
+    detail <- ""
+    if (grepl("knn", imp)) detail <- paste0(" (k=", preprocessing_params$knn_k %||% 10, ")")
+    else if (imp == "minvalue") detail <- paste0(" (value=", preprocessing_params$min_value %||% "0.0001", ")")
+    else if (imp == "quantile") detail <- paste0(" (prob=", preprocessing_params$quantile_prob %||% "0.01", ")")
+    steps <- c(steps, paste0("Missing Value Imputation: ", imp, detail))
+  }
+  # 批次校正
+  if (isTRUE(preprocessing_params$batch_performed)) {
+    steps <- c(steps, "Batch Correction (ComBat) applied")
+  } else {
+    steps <- c(steps, "Batch Correction: not applied")
+  }
+  # 构建带箭头的 HTML
+  step_tags <- lapply(seq_along(steps), function(i) {
+    tagList(
+      if (i > 1) tags$span(style = "font-size: 20px; color: #3498db; margin: 0 8px;", "→"),
+      tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
+    )
+  })
+  div(
+    style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;",
+    p(strong(icon("info-circle"), " Data preprocessing steps applied before this volcano plot:")),
+    div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
+  )
+})
+
+# ---------- 下载单图（与组合图一致的数据源） ----------
 output$download_volcano_png <- downloadHandler(
   filename = function() paste0("Volcano_", Sys.Date(), ".png"),
   content = function(file) {
-    res <- volcano_de_result(); if (is.null(res)) return()
-    df <- res; if (!"Master protein IDs" %in% colnames(df)) df$`Master protein IDs` <- rownames(df)
-    cols <- color_mapping_vector(); point_size <- input$point_size
-    p <- ggplot(df, aes(log2FC, log10P, color = regulation)) + geom_point(size = point_size, alpha = 0.6) + scale_color_manual(values = cols) +
-      geom_vline(xintercept = log2(c(input$fc_down, input$fc_up)), lty = 2, color = "gray40") +
-      geom_hline(yintercept = -log10(as.numeric(input$p_cut)), lty = 2, color = "gray40") +
-      labs(title = input$single_plot_title, x = "log2(Fold Change)", y = "-log10(P-value)") + theme_bw()
-    ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
+    tryCatch({
+      res <- volcano_de_result()
+      if (is.null(res)) { png(file); plot.new(); text(0.5,0.5,"No data"); dev.off(); return() }
+      df <- res; if (!"Master protein IDs" %in% colnames(df)) df$`Master protein IDs` <- rownames(df)
+      required <- c("log2FC", "log10P", "regulation")
+      if (!all(required %in% colnames(df))) { png(file); plot.new(); text(0.5,0.5,"Missing columns"); dev.off(); return() }
+      cols <- color_mapping_vector()
+      point_size <- input$point_size
+      comp_name <- selected_volcano_comparison()$name
+      download_title <- if (!is.null(input$single_plot_title) && input$single_plot_title != "") input$single_plot_title else comp_name
+      cnt <- volcano_counts()
+      y_annot <- max(df$log10P, na.rm = TRUE) * 1.05
+      if (is.infinite(y_annot) || is.na(y_annot)) y_annot <- 8
+      p <- ggplot(df, aes(log2FC, log10P, color = regulation)) +
+        geom_point(size = point_size, alpha = 0.6) + scale_color_manual(values = cols) +
+        geom_vline(xintercept = log2(c(input$fc_down, input$fc_up)), lty = 2, color = "gray40") +
+        geom_hline(yintercept = -log10(as.numeric(input$p_cut)), lty = 2, color = "gray40") +
+        labs(title = download_title, x = expression(Log[2]~"(Fold Change)"), y = expression(-Log[10]~"(P-Value)")) +
+        volcano_theme() +
+        annotate("text", x = -4.5, y = y_annot, label = sprintf("%d", cnt$Down), color = cols["Down"], fontface = "bold", size = 5, hjust = 1) +
+        annotate("text", x = -4.5 + 0.1, y = y_annot, label = sprintf("(%d)", cnt$Decrease), color = cols["Decrease"], fontface = "bold", size = 5, hjust = 0) +
+        annotate("text", x = 4.5, y = y_annot, label = sprintf("%d", cnt$Up), color = cols["Up"], fontface = "bold", size = 5, hjust = 1) +
+        annotate("text", x = 4.5 + 0.1, y = y_annot, label = sprintf("(%d)", cnt$Increase), color = cols["Increase"], fontface = "bold", size = 5, hjust = 0)
+      ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
+    }, error = function(e) {
+      message("[ERROR] download_volcano_png: ", e$message)
+      png(file); plot.new(); text(0.5,0.5, paste("Error:", e$message)); dev.off()
+    })
   }
 )
 

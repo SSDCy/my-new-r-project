@@ -1,7 +1,6 @@
 # server/heatmap_plot.R
 # ============================================================
 # 热图数据准备与绘制模块
-# 已修复 Intensity 模式行名，并增加数据源信息与调试输出
 # ============================================================
 
 # ---------- 辅助函数 ----------
@@ -446,7 +445,7 @@ output$download_heatmap_png <- downloadHandler(
   }
 )
 
-# ========== 新增：热图数据源信息（增强调试输出） ==========
+# ========== 热图数据源信息 ==========
 output$heatmap_data_source_info <- renderPrint({
   message("[DEBUG] output$heatmap_data_source_info called")
   src <- input$heatmap_data_source
@@ -466,4 +465,37 @@ output$heatmap_data_source_info <- renderPrint({
     message("[DEBUG] heatmap_data_source_info: Intensity mode (raw data)")
   }
 })
+
+# ========== 热图预处理步骤指示器 ==========
+output$heatmap_preprocess_steps <- renderUI({
+  steps <- list()
+  src <- input$heatmap_data_source
+  if (src == "LFQ") {
+    # 读取预处理参数
+    steps <- c(steps, "Data source: Preprocessed data (after filtering, imputation, batch correction)")
+    if (!is.null(preprocessing_params$last_run_time)) {
+      steps <- c(steps, paste0("Last preprocessing: ", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M")))
+    }
+    steps <- c(steps, "log2(Intensity + 1) transformation applied")
+    steps <- c(steps, "Per-row Z-score normalization (scale)")
+  } else {
+    steps <- c(steps, "Data source: Raw Intensity columns")
+    steps <- c(steps, "log2(Intensity + 1) transformation applied")
+    steps <- c(steps, "Per-row Z-score normalization (scale)")
+    steps <- c(steps, "Note: Missing values are removed row-wise; no imputation is performed.")
+  }
+  
+  step_tags <- lapply(seq_along(steps), function(i) {
+    tagList(
+      if (i > 1) tags$span(style = "font-size: 20px; color: #e67e22; margin: 0 8px;", "→"),
+      tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
+    )
+  })
+  div(
+    style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;",
+    p(strong(icon("info-circle"), " Data processing steps for heatmap:")),
+    div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
+  )
+})
+
 message("[DEBUG] heatmap_plot.R fully loaded")

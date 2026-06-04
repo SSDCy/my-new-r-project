@@ -16,12 +16,37 @@ get_optimal_layout <- function(n_plots) {
   return(list(ncol = ceiling(sqrt(n_plots)), nrow = ceiling(n_plots / ceiling(sqrt(n_plots)))))
 }
 
+plot_volcano_single_annotated <- function(df, fc_up, fc_down, p_cut, cols, point_size = 1.8, title = "") {
+  if (!is.data.frame(df) || nrow(df) == 0) return(NULL)
+  required <- c("log2FC", "log10P", "regulation")
+  if (!all(required %in% colnames(df))) return(NULL)
+  cnt <- list(Up = sum(df$regulation == "Up", na.rm = TRUE),
+              Down = sum(df$regulation == "Down", na.rm = TRUE),
+              Increase = sum(df$regulation == "Increase", na.rm = TRUE),
+              Decrease = sum(df$regulation == "Decrease", na.rm = TRUE))
+  y_annot <- max(df$log10P, na.rm = TRUE) * 1.05
+  if (is.infinite(y_annot) || is.na(y_annot)) y_annot <- 8
+  p <- ggplot(df, aes(x = log2FC, y = log10P, color = regulation)) +
+    geom_point(size = point_size, alpha = 0.6) +
+    scale_color_manual(values = cols) +
+    geom_vline(xintercept = log2(c(fc_down, fc_up)), lty = 2, color = "gray40") +
+    geom_hline(yintercept = -log10(p_cut), lty = 2, color = "gray40") +
+    labs(title = title, x = expression(Log[2]~"(Fold Change)"), y = expression(-Log[10]~"(P-Value)")) +
+    volcano_theme() +
+    annotate("text", x = -4.5, y = y_annot, label = sprintf("%d", cnt$Down), color = cols["Down"], fontface = "bold", size = 5, hjust = 1) +
+    annotate("text", x = -4.5 + 0.1, y = y_annot, label = sprintf("(%d)", cnt$Decrease), color = cols["Decrease"], fontface = "bold", size = 5, hjust = 0) +
+    annotate("text", x = 4.5, y = y_annot, label = sprintf("%d", cnt$Up), color = cols["Up"], fontface = "bold", size = 5, hjust = 1) +
+    annotate("text", x = 4.5 + 0.1, y = y_annot, label = sprintf("(%d)", cnt$Increase), color = cols["Increase"], fontface = "bold", size = 5, hjust = 0)
+  return(p)
+}
+
 plot_volcano_core_combined <- function(df, fc_up, fc_down, p_cut, cols, point_size = 1.8) {
   if (!is.data.frame(df) || nrow(df) == 0) {
     message("[DEBUG] plot_volcano_core_combined: invalid df")
     return(NULL)
   }
-  if (!all(c("log2FC","log10P","regulation") %in% colnames(df))) {
+  required <- c("log2FC", "log10P", "regulation")
+  if (!all(required %in% colnames(df))) {
     message("[DEBUG] plot_volcano_core_combined: missing required columns")
     return(NULL)
   }
@@ -40,21 +65,21 @@ plot_volcano_core_combined <- function(df, fc_up, fc_down, p_cut, cols, point_si
     theme(legend.position = "none", plot.title = element_blank(), axis.title = element_blank(),
           axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_blank(),
           panel.border = element_blank(), plot.margin = margin(5, 5, 5, 5))
-  p <- p + annotate("text", x = -4.5, y = 8.0, label = sprintf("%d", cnt$Down), color = cols$Down, fontface = "bold", size = 5, hjust = 1) +
-    annotate("text", x = -4.5 + 0.1, y = 8.0, label = sprintf("(%d)", cnt$Decrease), color = cols$Decrease, fontface = "bold", size = 5, hjust = 0) +
-    annotate("text", x = 4.5, y = 8.0, label = sprintf("%d", cnt$Up), color = cols$Up, fontface = "bold", size = 5, hjust = 1) +
-    annotate("text", x = 4.5 + 0.1, y = 8.0, label = sprintf("(%d)", cnt$Increase), color = cols$Increase, fontface = "bold", size = 5, hjust = 0)
+  p <- p + annotate("text", x = -4.5, y = 8.0, label = sprintf("%d", cnt$Down), color = cols["Down"], fontface = "bold", size = 5, hjust = 1) +
+    annotate("text", x = -4.5 + 0.1, y = 8.0, label = sprintf("(%d)", cnt$Decrease), color = cols["Decrease"], fontface = "bold", size = 5, hjust = 0) +
+    annotate("text", x = 4.5, y = 8.0, label = sprintf("%d", cnt$Up), color = cols["Up"], fontface = "bold", size = 5, hjust = 1) +
+    annotate("text", x = 4.5 + 0.1, y = 8.0, label = sprintf("(%d)", cnt$Increase), color = cols["Increase"], fontface = "bold", size = 5, hjust = 0)
   return(p)
 }
 
 build_combined_plot <- function(results_list, fcu, fcd, pc, cols, main_title, sub_titles = NULL, point_size = 1.8) {
-  # 过滤确保 data 是有效数据框，并且包含必要列
   results_list <- Filter(function(x) {
     if (!is.list(x) || !is.data.frame(x$data)) return(FALSE)
     df <- x$data
     if (nrow(df) == 0) return(FALSE)
-    if (!all(c("log2FC","log10P","regulation") %in% colnames(df))) {
-      message("[DEBUG] build_combined_plot: removing entry with missing columns: ", x$name)
+    required <- c("log2FC", "log10P", "regulation")
+    if (!all(required %in% colnames(df))) {
+      message("[DEBUG] build_combined_plot: removing ", x$name, " due to missing columns")
       return(FALSE)
     }
     TRUE
@@ -209,7 +234,6 @@ all_analysis_results <- reactive({
   if (is.null(stat_method) || stat_method == "") stat_method <- "t-test"
   message("[DEBUG] export: params: FC_up=", fcu, ", FC_down=", fcd, ", p_cut=", pc, ", method=", stat_method)
   
-  # 仅使用 Norm_ 开头的列进行差异分析，原始强度列不参与
   norm_cols <- grep("^Norm_LFQ intensity ", colnames(nd), value = TRUE)
   if (length(norm_cols) == 0) {
     message("[DEBUG] export: no Norm_LFQ intensity columns found")
@@ -241,9 +265,7 @@ all_analysis_results <- reactive({
       next
     }
     
-    annotation_cols <- intersect(c("Protein IDs", "Majority protein IDs", "Master protein IDs", "Unique peptides"), colnames(nd))
-    select_cols <- c(annotation_cols, treat_cols, ctrl_cols)
-    sub_df <- nd[, select_cols, drop = FALSE]
+    sub_df <- nd[, c("Master protein IDs", treat_cols, ctrl_cols), drop = FALSE]
     
     message("[DEBUG] export: running DE for ", comp_name, " with ", length(treat_cols), " treat and ", length(ctrl_cols), " ctrl columns")
     
@@ -262,13 +284,25 @@ all_analysis_results <- reactive({
       NULL
     })
     
-    if (!is.null(res) && is.data.frame(res) && nrow(res) > 0) {
+    if (!is.null(res) && is.data.frame(res)) {
+      required <- c("log2FC", "log10P", "regulation")
+      for (col in required) {
+        if (!(col %in% colnames(res))) {
+          res[[col]] <- NA_real_
+          message("[DEBUG] export: added missing column ", col, " for ", comp_name)
+        }
+      }
+      annotation_cols <- intersect(c("Protein IDs", "Majority protein IDs", "Unique peptides"), colnames(nd))
+      if (length(annotation_cols) > 0) {
+        anno_df <- nd[, c("Master protein IDs", annotation_cols), drop = FALSE]
+        res <- merge(res, anno_df, by = "Master protein IDs", sort = FALSE)
+      }
       results[[comp_name]] <- list(data = res, treat = treat_group, ctrl = ctrl_group, name = comp_name)
       message("[DEBUG] export: DE completed for ", comp_name, ", nrow=", nrow(res),
               ", Up=", sum(res$regulation == "Up"), ", Down=", sum(res$regulation == "Down"),
               ", Increase=", sum(res$regulation == "Increase"), ", Decrease=", sum(res$regulation == "Decrease"))
     } else {
-      message("[DEBUG] export: DE result empty or not a data frame for ", comp_name)
+      message("[DEBUG] export: DE result empty or invalid for ", comp_name)
     }
   }
   
@@ -282,14 +316,13 @@ all_analysis_results <- reactive({
   list(
     raw = raw_data,
     clean = clean_data,
-    norm = nd,             # 包含原始强度列
+    norm = nd,
     filtered = nd,
     unique_col = if (!is.na(unique_col)) unique_col else NA_character_,
     results = results
   )
 })
 
-# 更新导出比较选择器
 observe({
   comp_names <- sapply(sorted_comps(), function(c) c$name)
   updateSelectInput(session, "export_comparisons", choices = comp_names, selected = comp_names)
@@ -302,29 +335,27 @@ output$download_plot <- downloadHandler(
     paste0("Volcano_", s, "_", Sys.Date(), ".", input$plot_format)
   },
   content = function(f) {
-    res <- volcano_de_result()
-    if (is.null(res)) {
-      png(f, 800, 600); plot(0,0,type="n"); text(0.5,0.5,"No data"); dev.off()
-      return()
-    }
-    df <- res$data; comp_name <- res$name
-    cols <- color_mapping_vector()
-    width_val <- as.integer(input$plot_width); height_val <- as.integer(input$plot_height)
-    if (is.na(width_val) || width_val < 5 || width_val > 30) width_val <- 10
-    if (is.na(height_val) || height_val < 5 || height_val > 30) height_val <- 8
-    point_size <- input$point_size
-    download_title <- if (!is.null(input$download_single_title) && input$download_single_title != "") input$download_single_title else comp_name
-    
-    p <- ggplot(df, aes(log2FC, log10P, color = regulation)) + geom_point(size = point_size, alpha = 0.6) + scale_color_manual(values = cols) +
-      geom_vline(xintercept = log2(c(input$fc_down, input$fc_up)), lty = 2, color = "gray40") +
-      geom_hline(yintercept = -log10(as.numeric(input$p_cut)), lty = 2, color = "gray40") +
-      labs(title = download_title, x = expression(Log[2]~"(Fold Change)"), y = expression(-Log[10]~"(P-Value)")) +
-      volcano_theme() + guides(color = guide_legend(override.aes = list(size = 4, alpha = 1), ncol = 1))
-    ggsave(f, plot = p, width = width_val, height = height_val, dpi = 300, device = input$plot_format)
+    tryCatch({
+      res <- volcano_de_result()
+      if (is.null(res)) { png(f); plot.new(); text(0.5,0.5,"No data"); dev.off(); return() }
+      cols <- color_mapping_vector()
+      point_size <- input$point_size
+      comp_name <- selected_volcano_comparison()$name
+      title <- if (!is.null(input$download_single_title) && input$download_single_title != "") input$download_single_title else comp_name
+      p <- plot_volcano_single_annotated(res, input$fc_up, input$fc_down, as.numeric(input$p_cut), cols, point_size, title)
+      if (is.null(p)) { png(f); plot.new(); text(0.5,0.5,"Invalid data"); dev.off(); return() }
+      width_val <- as.integer(input$plot_width); height_val <- as.integer(input$plot_height)
+      if (is.na(width_val) || width_val < 5 || width_val > 30) width_val <- 10
+      if (is.na(height_val) || height_val < 5 || height_val > 30) height_val <- 8
+      ggsave(f, plot = p, width = width_val, height = height_val, dpi = 300, device = input$plot_format)
+    }, error = function(e) {
+      message("[ERROR] download_plot: ", e$message)
+      png(f); plot.new(); text(0.5,0.5, paste("Error:", e$message)); dev.off()
+    })
   }
 )
 
-# ---------- 组合图下载（修复原子向量错误） ----------
+# ---------- 组合图下载 ----------
 output$download_combined_plot <- downloadHandler(
   filename = function() {
     title_clean <- gsub("[^a-zA-Z0-9_]", "_", input$combined_plot_title)
@@ -358,14 +389,6 @@ output$download_combined_plot <- downloadHandler(
       sub_titles <- sapply(seq_along(results_list), function(i) get_subplot_title(i, default_display[i]))
       point_size <- input$point_size
       
-      # 打印每个结果的概况，便于调试
-      for (nm in names(results_list)) {
-        d <- results_list[[nm]]$data
-        message("[DEBUG] build_combined_plot: ", nm, " - is.df=", is.data.frame(d),
-                ", nrow=", if (is.data.frame(d)) nrow(d) else NA,
-                ", cols=", paste(colnames(d)[1:min(5,ncol(d))], collapse=","))
-      }
-      
       final_plot <- build_combined_plot(results_list, fcu, fcd, pc, cols, custom_title, sub_titles, point_size)
       
       if (is.null(final_plot)) {
@@ -396,7 +419,7 @@ output$download_combined_plot <- downloadHandler(
   }
 )
 
-# ---------- Excel 导出 ----------
+# ---------- Excel 导出（直接统计计数，不再依赖 attr） ----------
 output$download_excel <- downloadHandler(
   filename = function() paste0("Proteomics_Report_", Sys.Date(), ".xlsx"),
   content = function(f) {
@@ -433,27 +456,40 @@ output$download_excel <- downloadHandler(
     results_list <- all_res$results
     stats_list <- lapply(selected_comps, function(nm) {
       res <- results_list[[nm]]
-      if (is.null(res)) return(data.frame(Comparison = nm, Up = 0, Down = 0, Increase = 0, Decrease = 0, NS = 0, Total = 0))
-      cnt <- attr(res$data, "counts")
-      data.frame(Comparison = nm, Up = cnt$Up, Down = cnt$Down, Increase = cnt$Increase, Decrease = cnt$Decrease, NS = cnt$NS,
-                 Total = cnt$Up + cnt$Down + cnt$Increase + cnt$Decrease, stringsAsFactors = FALSE)
+      if (is.null(res) || !is.data.frame(res$data)) {
+        message("[DEBUG] export_excel: missing data for ", nm)
+        return(data.frame(Comparison = nm, Up = 0, Down = 0, Increase = 0, Decrease = 0, NS = 0, Total = 0))
+      }
+      df <- res$data
+      up_cnt <- sum(df$regulation == "Up", na.rm = TRUE)
+      down_cnt <- sum(df$regulation == "Down", na.rm = TRUE)
+      inc_cnt <- sum(df$regulation == "Increase", na.rm = TRUE)
+      dec_cnt <- sum(df$regulation == "Decrease", na.rm = TRUE)
+      ns_cnt <- sum(df$regulation == "NS", na.rm = TRUE)
+      total_cnt <- up_cnt + down_cnt + inc_cnt + dec_cnt
+      data.frame(Comparison = nm,
+                 Up = up_cnt,
+                 Down = down_cnt,
+                 Increase = inc_cnt,
+                 Decrease = dec_cnt,
+                 NS = ns_cnt,
+                 Total = total_cnt,
+                 stringsAsFactors = FALSE)
     })
     stats_df <- do.call(rbind, stats_list)
     writeData(wb, "DE Summary", stats_df)
     
-    # 构建 Norm_ 列到组名的映射（基于 rv$groups）
+    # 构建 Norm_ 列到组名的映射
     norm_colnames <- grep("^Norm_LFQ intensity ", colnames(all_res$norm), value = TRUE)
-    # 从样本短名找到对应分组
     sample_short <- gsub("^Norm_LFQ intensity ", "", norm_colnames)
     group_of_sample <- function(short_name) {
       for (gn in names(rv$groups)) {
         if (short_name %in% rv$groups[[gn]]) return(gn)
       }
-      return(short_name)  # 未分配则用样本名
+      return(short_name)
     }
     col_to_group <- setNames(sapply(sample_short, group_of_sample), norm_colnames)
     
-    # 为每个组分配颜色
     all_groups <- unique(col_to_group)
     group_colors <- get_group_colors(all_groups)
     message("[DEBUG] export_excel: groups for coloring: ", paste(all_groups, collapse = ", "))
@@ -462,7 +498,7 @@ output$download_excel <- downloadHandler(
     style_bold <- createStyle(textDecoration = "bold")
     style_note <- createStyle(fontColour = "#2c3e50", wrapText = TRUE)
     
-    # 对 Normalized 和 Unique Filtered 表应用组颜色（仅 Norm_ 列）
+    # 应用组颜色
     for (sheet_name in c("Normalized", "Unique Filtered")) {
       df_sheet <- if (sheet_name == "Normalized") all_res$norm else all_res$filtered
       if (is.null(df_sheet) || nrow(df_sheet) == 0) next
@@ -477,7 +513,6 @@ output$download_excel <- downloadHandler(
       }
     }
     
-    # 标准红色标注
     for (sheet_name in c("Normalized", "Unique Filtered")) {
       df_sheet <- if (sheet_name == "Normalized") all_res$norm else all_res$filtered
       if (is.null(df_sheet) || nrow(df_sheet) == 0) next
@@ -521,7 +556,6 @@ output$download_excel <- downloadHandler(
       df_diff <- res_item$data
       writeData(wb, sheet_name, df_diff)
       
-      # 差异表的 Norm_ 列也按组着色
       norm_cols_diff <- grep("^Norm_LFQ intensity", colnames(df_diff), value = TRUE)
       for (cn in norm_cols_diff) {
         col_idx <- which(colnames(df_diff) == cn)

@@ -725,11 +725,10 @@ output$dq_group_missing_test <- renderPrint({
   if (pval < 0.05) cat("Significant difference among groups.") else cat("No significant difference.")
 })
 
-# ==================== PCA（基于 expression_data，绝对稳定） ====================
+# ==================== PCA 分析 ====================
 dq_pca_full <- reactive({
   message("[DEBUG] dq_pca_full: starting PCA computation")
   
-  # 1. 获取基础矩阵（始终可用）
   expr <- tryCatch({
     mat <- expression_data()
     message("[DEBUG] dq_pca_full: expression_data() returned dim=", nrow(mat), "x", ncol(mat))
@@ -744,7 +743,6 @@ dq_pca_full <- reactive({
     return(NULL)
   }
   
-  # 2. 尝试使用预处理后的数据替换（如果可用且强度类型匹配）
   proc_mat <- tryCatch(get_analysis_matrix(), error = function(e) NULL)
   if (!is.null(proc_mat)) {
     message("[DEBUG] dq_pca_full: using preprocessed data (dim=", nrow(proc_mat), "x", ncol(proc_mat), ")")
@@ -755,12 +753,10 @@ dq_pca_full <- reactive({
     data_source <- "Raw"
   }
   
-  # 3. 统一列名为短样本名
   sample_short <- extract_sample_names(colnames(expr))
   colnames(expr) <- sample_short
   message("[DEBUG] dq_pca_full: columns standardized, first 3: ", paste(head(sample_short, 3), collapse = ", "))
   
-  # 4. 填充缺失值
   filled <- tryCatch({
     if (requireNamespace("impute", quietly = TRUE)) {
       message("[DEBUG] dq_pca_full: running KNN imputation")
@@ -826,14 +822,14 @@ dq_pca_full <- reactive({
 output$pca_data_source_note <- renderUI({
   pca_full <- dq_pca_full()
   if (is.null(pca_full)) {
-    return(div(style = "margin-bottom: 10px; color: #e74c3c;", "PCA 计算失败，请检查数据或运行预处理。"))
+    return(div(style = "margin-bottom: 10px; color: #e74c3c;", "PCA calculation failed. Please check your data or run preprocessing."))
   }
   if (pca_full$data_source == "Preprocessed") {
     div(style = "margin-bottom: 10px; color: #27ae60; font-weight: bold;",
-        icon("check-circle"), " PCA 数据来源：预处理后的数据")
+        icon("check-circle"), " PCA data source: Preprocessed data")
   } else {
     div(style = "margin-bottom: 10px; color: #e67e22; font-weight: bold;",
-        icon("exclamation-triangle"), " PCA 数据来源：原始数据（KNN 填充），运行预处理后将自动切换")
+        icon("exclamation-triangle"), " PCA data source: Raw data (KNN imputed). Running preprocessing will automatically switch to preprocessed data.")
   }
 })
 

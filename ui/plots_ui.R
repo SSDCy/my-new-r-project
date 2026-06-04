@@ -16,6 +16,8 @@ plots_ui <- function() {
                  div(class = "card-modern",
                      div(class = "card-header-modern", icon("th"), " Differential Protein Heatmap"),
                      div(style = "padding: 20px;",
+                         # 新增：热图预处理步骤指示器
+                         uiOutput("heatmap_preprocess_steps"),
                          p("Expression patterns of proteins. Per-protein log2 + Z-score normalization is applied, followed by hierarchical clustering."),
                          fluidRow(
                            column(4,
@@ -62,7 +64,7 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- 火山图选项卡（左对齐） ----
+      # ---- 火山图选项卡 ----
       tabPanel(
         title = "Volcano Plot",
         value = "volcano_sub",
@@ -75,6 +77,8 @@ plots_ui <- function() {
                          span(style = "font-size: 14px; font-weight: normal;",
                               "(Click on any dot to view the protein's expression profile across all groups)")),
                      div(style = "padding: 20px;",
+                         # 预处理步骤指示器
+                         uiOutput("volcano_preprocess_steps"),
                          # 颜色选择器行
                          div(class = "color-palette-row",
                              div(class = "color-card",

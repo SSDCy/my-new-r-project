@@ -9,7 +9,8 @@ normalization_ui <- function() {
       column(12,
              div(style = "background: #f8f9fa; border-radius: 10px; padding: 15px; margin-bottom: 20px;",
                  h4(icon("calculator"), " Total Intensity Normalization", style = "margin-top: 0;"),
-                 p("To correct for differences in total protein amounts between samples, we normalize each sample's total intensity to that of a chosen baseline sample. This step is performed automatically after preprocessing, but you can select the baseline here and preview the result.")
+                 p("To correct for differences in total protein amounts between samples, we normalize each sample's total intensity to that of a chosen baseline sample. This step is performed automatically after preprocessing, but you can select the baseline here and preview the result."),
+                 p("This normalization is applied to the preprocessed data and is used for all downstream analyses including volcano plots and heatmaps.")
              )
       )
     ),
