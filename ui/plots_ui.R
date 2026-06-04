@@ -24,6 +24,14 @@ plots_ui <- function() {
                                                choices = c("LFQ Intensity (per-row Z-score)" = "LFQ",
                                                            "Intensity (per-row Z-score)" = "Intensity"),
                                                selected = "LFQ"),
+                                  # 新增：归一化选项（仅在 LFQ 模式下可用）
+                                  conditionalPanel(
+                                    condition = "input.heatmap_data_source == 'LFQ'",
+                                    radioButtons("heatmap_normalization", "Normalization",
+                                                 choices = c("None (preprocessed raw intensity)" = "none",
+                                                             "Total Intensity (baseline sample)" = "total"),
+                                                 selected = "none")
+                                  ),
                                   verbatimTextOutput("heatmap_data_source_info"),
                                   hr(),
                                   radioButtons("heatmap_protein_mode", "Protein Selection Mode",
@@ -145,6 +153,7 @@ plots_ui <- function() {
       tabPanel(
         title = "Venn / UpSet",
         value = "venn_upset_sub",
+        # 保持不变...
         fluidRow(
           column(12,
                  div(class = "card-modern",
@@ -188,6 +197,7 @@ plots_ui <- function() {
       tabPanel(
         title = "PCA",
         value = "pca_sub",
+        # 保持不变...
         fluidRow(
           column(12,
                  div(class = "card-modern",
@@ -220,6 +230,7 @@ plots_ui <- function() {
       tabPanel(
         title = "Sample Correlation",
         value = "sample_cor_sub",
+        # 保持不变...
         fluidRow(
           column(12,
                  div(class = "card-modern",

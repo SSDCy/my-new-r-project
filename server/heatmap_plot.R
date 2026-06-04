@@ -1,6 +1,6 @@
 # server/heatmap_plot.R
 # ============================================================
-# 热图数据准备与绘制模块（静态 pheatmap）
+# 热图数据准备与绘制模块（支持归一化选项，并解释 Z-score 的影响）
 # ============================================================
 
 # ---------- 辅助函数 ----------
@@ -192,7 +192,7 @@ output$heatmap_group_selection_ui <- renderUI({
 
 # ---------- 核心热图数据准备 ----------
 heatmap_data <- eventReactive(input$generate_heatmap, {
-  message("[DEBUG] heatmap_data triggered by Generate Heatmap button (click=", input$generate_heatmap, ")")
+  message("[DEBUG] heatmap_data triggered by Generate Heatmap button")
   result <- list(error = NULL, mat = NULL, has_na = FALSE, na_rows_removed = 0)
   
   if (is.null(rv$raw_data)) {
@@ -208,14 +208,40 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     global_id_map <- as.character(rv$clean_data$`Master protein IDs`)
   }
   
-  if (input$heatmap_data_source == "LFQ") {
-    data_src <- get_analysis_matrix()
-    if (is.null(data_src)) {
-      result$error <- "Preprocessing has not been run or data is not available for the current intensity type. Please run preprocessing first."
-      return(result)
+  # 数据源选择逻辑
+  data_source_type <- input$heatmap_data_source
+  use_normalized <- FALSE
+  if (data_source_type == "LFQ" && !is.null(input$heatmap_normalization)) {
+    use_normalized <- (input$heatmap_normalization == "total")
+    message("[DEBUG] heatmap_data: use_normalized = ", use_normalized)
+  }
+  
+  if (data_source_type == "LFQ") {
+    if (use_normalized) {
+      nd <- norm_data_full()
+      if (is.null(nd)) {
+        result$error <- "Normalized data not available. Please run preprocessing and set a baseline sample."
+        return(result)
+      }
+      norm_cols <- grep("^Norm_LFQ intensity ", colnames(nd), value = TRUE)
+      if (length(norm_cols) == 0) {
+        result$error <- "No normalized LFQ intensity columns found."
+        return(result)
+      }
+      data_src <- nd
+      src_colnames <- norm_cols
+      src_short <- gsub("^Norm_LFQ intensity ", "", norm_cols)
+      message("[DEBUG] heatmap_data: using normalized data, columns: ", paste(head(src_short, 3), collapse = ", "))
+    } else {
+      data_src <- get_analysis_matrix()
+      if (is.null(data_src)) {
+        result$error <- "Preprocessing has not been run or data is not available for the current intensity type. Please run preprocessing first."
+        return(result)
+      }
+      src_colnames <- colnames(data_src)
+      src_short <- extract_sample_names(src_colnames)
+      message("[DEBUG] heatmap_data: using preprocessed raw data")
     }
-    src_colnames <- colnames(data_src)
-    src_short <- extract_sample_names(src_colnames)
     
     if (is.null(input$heatmap_groups) || length(input$heatmap_groups) == 0) {
       result$error <- "Please select at least one group."
@@ -319,6 +345,7 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
   result$annotation_col <- ann_col
   result$annotation_colors <- ann_colors
   result$show_sample_names <- input$heatmap_show_sample_names
+  result$use_normalized <- use_normalized
   
   heatmap_generated_version(data_changed_trigger())
   message("[DEBUG] heatmap_data: successfully generated, heatmap_generated_version set to ", data_changed_trigger())
@@ -407,11 +434,17 @@ output$download_heatmap_png <- downloadHandler(
 output$heatmap_data_source_info <- renderPrint({
   message("[DEBUG] output$heatmap_data_source_info called")
   src <- input$heatmap_data_source
-  cat("Data Source:", if (src == "LFQ") "LFQ Intensity (per-row Z-score)" else "Intensity (per-row Z-score)", "\n")
+  norm <- input$heatmap_normalization %||% "none"
+  cat("Data Source:", if (src == "LFQ") "LFQ Intensity" else "Intensity", "\n")
   if (src == "LFQ") {
-    cat("Derived from: Preprocessed data (after filtering, imputation, batch correction; before total intensity normalization)\n")
+    if (norm == "total") {
+      cat("Normalization: Total Intensity (baseline sample) applied\n")
+    } else {
+      cat("Normalization: None (preprocessed raw intensity)\n")
+    }
+    cat("Derived from: ", if (norm == "total") "Normalized data (Norm_LFQ intensity)" else "Preprocessed data (LFQ columns)", "\n")
     if (is.null(processed_data())) {
-      cat("Status: Preprocessing has NOT been run. Please click 'Run Preprocessing' in Data Preprocessing tab before generating heatmaps.\n")
+      cat("Status: Preprocessing has NOT been run.\n")
     } else {
       cat("Preprocessing was performed at:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
     }
@@ -421,7 +454,7 @@ output$heatmap_data_source_info <- renderPrint({
   }
 })
 
-# 热图预处理步骤指示器（可折叠）
+# 热图预处理步骤指示器（解释 Z-score 消除缩放差异）
 output$heatmap_preprocess_steps <- renderUI({
   steps <- list()
   steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
@@ -439,10 +472,18 @@ output$heatmap_preprocess_steps <- renderUI({
   } else {
     steps <- c(steps, "Batch Correction: not applied")
   }
-  steps <- c(steps, "Normalization: No total intensity normalization applied (uses preprocessed raw intensity)")
-  steps <- c(steps, "Data source: Preprocessed data (LFQ/Intensity columns)")
+  
+  norm_choice <- input$heatmap_normalization %||% "none"
+  if (norm_choice == "total") {
+    steps <- c(steps, "Normalization: Total intensity normalization (baseline sample) applied")
+    steps <- c(steps, "Data source: Normalized expression data (Norm_LFQ intensity columns)")
+  } else {
+    steps <- c(steps, "Normalization: No total intensity normalization applied (uses preprocessed raw intensity)")
+    steps <- c(steps, "Data source: Preprocessed data (LFQ/Intensity columns)")
+  }
   steps <- c(steps, "log2(Intensity + 1) transformation applied")
   steps <- c(steps, "Per-row Z-score normalization (scale)")
+  steps <- c(steps, "Note: Z-score removes sample-wise scaling, so total intensity normalization does not affect the heatmap pattern.")
   
   step_tags <- lapply(seq_along(steps), function(i) {
     tagList(
