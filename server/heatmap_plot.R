@@ -419,23 +419,28 @@ output$heatmap_data_source_info <- renderPrint({
   }
 })
 
-# 热图预处理步骤指示器（明确说明数据未归一化）
+# 热图预处理步骤指示器（可折叠）
 output$heatmap_preprocess_steps <- renderUI({
   steps <- list()
-  src <- input$heatmap_data_source
-  if (src == "LFQ") {
-    steps <- c(steps, "Data source: Preprocessed data (filtered, imputed, batch-corrected, NOT total-intensity normalized)")
-    if (!is.null(preprocessing_params$last_run_time)) {
-      steps <- c(steps, paste0("Last preprocessing: ", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M")))
-    }
-    steps <- c(steps, "log2(Intensity + 1) transformation applied")
-    steps <- c(steps, "Per-row Z-score normalization (scale)")
+  steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
+                           ", mode = ", preprocessing_params$missing_filter_mode %||% "global"))
+  steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", input$min_intensity,
+                           ", min samples = ", input$min_samples_above_intensity %||% 1))
+  imp <- preprocessing_params$imputation_method %||% "none"
+  if (imp == "none") {
+    steps <- c(steps, "Missing Value Imputation: none (rows with missing values will be removed)")
   } else {
-    steps <- c(steps, "Data source: Raw Intensity columns (no preprocessing)")
-    steps <- c(steps, "log2(Intensity + 1) transformation applied")
-    steps <- c(steps, "Per-row Z-score normalization (scale)")
-    steps <- c(steps, "Note: Missing values are removed row-wise; no imputation is performed.")
+    steps <- c(steps, paste0("Missing Value Imputation: ", imp))
   }
+  if (isTRUE(preprocessing_params$batch_performed)) {
+    steps <- c(steps, "Batch Correction (ComBat): applied")
+  } else {
+    steps <- c(steps, "Batch Correction: not applied")
+  }
+  steps <- c(steps, "Normalization: No total intensity normalization applied (uses preprocessed raw intensity)")
+  steps <- c(steps, "Data source: Preprocessed data (LFQ/Intensity columns)")
+  steps <- c(steps, "log2(Intensity + 1) transformation applied")
+  steps <- c(steps, "Per-row Z-score normalization (scale)")
   
   step_tags <- lapply(seq_along(steps), function(i) {
     tagList(
@@ -443,9 +448,8 @@ output$heatmap_preprocess_steps <- renderUI({
       tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
     )
   })
-  div(
-    style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;",
-    p(strong(icon("info-circle"), " Data processing steps for heatmap:")),
+  tags$details(
+    tags$summary("Data processing steps for heatmap", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
     div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
   )
 })

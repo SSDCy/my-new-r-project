@@ -58,9 +58,6 @@ venn_data <- eventReactive(input$generate_venn, {
   reg_type <- input$venn_type
   message("[DEBUG] plots_venn_upset: generating data for ", reg_type, " in comparisons: ", paste(comps, collapse = ", "))
   
-  # 将比较名中的空格替换为下划线，避免 UpSetR 出错
-  safe_comps <- gsub(" ", "_", comps)
-  
   protein_sets <- lapply(comps, function(comp_name) {
     res <- all_res$results[[comp_name]]
     if (is.null(res)) {
@@ -73,9 +70,8 @@ venn_data <- eventReactive(input$generate_venn, {
     message("[DEBUG] plots_venn_upset: ", comp_name, " - ", length(ids), " proteins")
     unique(ids)
   })
-  names(protein_sets) <- safe_comps
+  names(protein_sets) <- comps
   
-  # 过滤掉空集合
   non_empty <- lengths(protein_sets) > 0
   if (!all(non_empty)) {
     message("[DEBUG] plots_venn_upset: empty sets removed: ", paste(names(protein_sets)[!non_empty], collapse = ", "))
@@ -135,9 +131,8 @@ output$upset_plot <- renderPlot({
   }
   colors <- venn_colors_for_plot()
   
-  # 将列表转换为 UpSetR 所需格式
   upset_list <- UpSetR::fromList(sets)
-  colnames(upset_list) <- names(sets)  # 确保列名正确
+  colnames(upset_list) <- names(sets)
   message("[DEBUG] UpSet columns: ", paste(colnames(upset_list), collapse = ", "))
   
   tryCatch({
@@ -151,7 +146,7 @@ output$upset_plot <- renderPlot({
       matrix.color = "#34495e",
       mainbar.y.label = "Intersection Size",
       sets.x.label = "Set Size",
-      text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2)  # 固定文本大小
+      text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2)
     )
   }, error = function(e) {
     message("[ERROR] UpSet plot: ", e$message)
@@ -231,5 +226,38 @@ output$download_venn_region <- downloadHandler(
     write.csv(data.frame(`Master Protein IDs` = venn_data()$regions[[input$venn_region]]$proteins, check.names = FALSE), file, row.names = FALSE)
   }
 )
+
+# ---------- 步骤指示器（可折叠） ----------
+output$venn_preprocess_steps <- renderUI({
+  steps <- list()
+  steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
+                           ", mode = ", preprocessing_params$missing_filter_mode %||% "global"))
+  steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", input$min_intensity,
+                           ", min samples = ", input$min_samples_above_intensity %||% 1))
+  imp <- preprocessing_params$imputation_method %||% "none"
+  if (imp == "none") {
+    steps <- c(steps, "Missing Value Imputation: none")
+  } else {
+    steps <- c(steps, paste0("Missing Value Imputation: ", imp))
+  }
+  if (isTRUE(preprocessing_params$batch_performed)) {
+    steps <- c(steps, "Batch Correction (ComBat): applied")
+  } else {
+    steps <- c(steps, "Batch Correction: not applied")
+  }
+  steps <- c(steps, "Normalization: Total intensity normalization (baseline sample) + unique peptide filter")
+  steps <- c(steps, "Data source: Normalized expression data (Norm_LFQ intensity columns)")
+  
+  step_tags <- lapply(seq_along(steps), function(i) {
+    tagList(
+      if (i > 1) tags$span(style = "font-size: 20px; color: #3498db; margin: 0 8px;", "→"),
+      tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
+    )
+  })
+  tags$details(
+    tags$summary("Data preprocessing steps for Venn/UpSet", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+    div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
+  )
+})
 
 message("[DEBUG] plots_venn_upset.R loaded successfully.")

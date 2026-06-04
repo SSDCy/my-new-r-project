@@ -75,41 +75,7 @@ upload_ui <- function() {
       tabPanel(
         title = "Data Quality Analysis",
         div(style = "padding: 10px;",
-            # ========== 顶部总评分卡片 ==========
-            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px;",
-                fluidRow(
-                  column(4, align = "center",
-                         div(style = "font-size: 60px; font-weight: bold; margin-bottom: 5px;", textOutput("dq_score", inline = TRUE)),
-                         div(style = "margin-top: 10px; font-size: 14px; opacity: 0.9;", "Data Quality Score")
-                  ),
-                  column(8,
-                         h4("Score Breakdown", style = "margin-top: 0;"),
-                         fluidRow(
-                           column(4, align = "center",
-                                  div(style = "background: rgba(255,255,255,0.15); border-radius: 8px; padding: 10px;",
-                                      div(style = "font-weight: bold; font-size: 16px;", "Missing Rate"),
-                                      div(style = "font-size: 22px; font-weight: bold; margin-top: 5px;", textOutput("dq_missing_score_frac", inline = TRUE)),
-                                      div(style = "font-size: 14px; margin-top: 3px;", textOutput("dq_missing_rate", inline = TRUE))
-                                  )
-                           ),
-                           column(4, align = "center",
-                                  div(style = "background: rgba(255,255,255,0.15); border-radius: 8px; padding: 10px;",
-                                      div(style = "font-weight: bold; font-size: 16px;", "Sample Consistency"),
-                                      div(style = "font-size: 22px; font-weight: bold; margin-top: 5px;", textOutput("dq_consistency_score_frac", inline = TRUE))
-                                  )
-                           ),
-                           column(4, align = "center",
-                                  div(style = "background: rgba(255,255,255,0.15); border-radius: 8px; padding: 10px;",
-                                      div(style = "font-weight: bold; font-size: 16px;", "Protein Quality"),
-                                      div(style = "font-size: 22px; font-weight: bold; margin-top: 5px;", textOutput("dq_protein_score_frac", inline = TRUE))
-                                  )
-                           )
-                         )
-                  )
-                )
-            ),
-            # ========== 第一行：缺失值分析 ==========
-            hr(),
+            # ========== 缺失值分析 ==========
             h4(icon("exclamation-triangle"), " Missing Value Analysis"),
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("database"), " Missing Value Analysis", style = "margin: 0 0 15px 0; font-size: 18px;"),
@@ -139,7 +105,7 @@ upload_ui <- function() {
                     plotOutput("dq_missing_heatmap", height = "400px")
                 )
             ),
-            # ========== 第二行：蛋白缺失率分布 + 样本缺失率 ==========
+            # ========== 蛋白缺失率分布 + 样本缺失率 ==========
             fluidRow(
               column(6,
                      div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
@@ -164,7 +130,7 @@ upload_ui <- function() {
                      )
               )
             ),
-            # ========== 第三行：缺失值相关性热图 ==========
+            # ========== 缺失值相关性热图 ==========
             fluidRow(
               column(12,
                      div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
@@ -191,7 +157,7 @@ upload_ui <- function() {
                      )
               )
             ),
-            # ========== 新增：缺失值定量统计 ==========
+            # ========== 缺失值定量统计 ==========
             fluidRow(
               column(12,
                      div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
@@ -231,23 +197,7 @@ upload_ui <- function() {
                      )
               )
             ),
-            # ========== 第四行：样本相关性热图 ==========
-            fluidRow(
-              column(12,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_cor_heatmap", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
-                                 downloadButton("download_cor_matrix", "CSV", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download correlation matrix CSV"),
-                                 actionButton("help_cor_heatmap", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
-                             ),
-                             plotOutput("dq_cor_heatmap", height = "600px")
-                         )
-                     )
-              )
-            ),
-            # ========== 第五行：蛋白强度分布 ==========
+            # ========== 蛋白强度分布 ==========
             fluidRow(
               column(12,
                      div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
@@ -263,7 +213,7 @@ upload_ui <- function() {
                      )
               )
             ),
-            # ========== 第六行：PCA 分析（含数据源提示） ==========
+            # ========== PCA 分析（含数据源提示） ==========
             h4(icon("project-diagram"), " PCA Analysis (Dual-view)"),
             uiOutput("pca_data_source_note"),
             fluidRow(

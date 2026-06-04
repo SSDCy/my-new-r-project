@@ -150,6 +150,7 @@ plots_ui <- function() {
                  div(class = "card-modern",
                      div(class = "card-header-modern", icon("chart-pie"), " Shared & Unique Proteins"),
                      div(style = "padding: 20px;",
+                         uiOutput("venn_preprocess_steps"),
                          p("Select regulation type and at least 2 comparisons. Venn diagram works best with 2-5; UpSet can handle all."),
                          radioButtons("venn_upset_method", "Visualization Method",
                                       choices = c("Venn Diagram (max 5)" = "venn", "UpSet Plot (unlimited)" = "upset"),
@@ -183,7 +184,7 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- PCA 选项卡（新增） ----
+      # ---- PCA 选项卡 ----
       tabPanel(
         title = "PCA",
         value = "pca_sub",
@@ -192,6 +193,7 @@ plots_ui <- function() {
                  div(class = "card-modern",
                      div(class = "card-header-modern", icon("project-diagram"), " Principal Component Analysis"),
                      div(style = "padding: 20px;",
+                         uiOutput("pca_preprocess_steps"),
                          p("PCA is performed on normalized expression data after log2 transformation. Outliers are detected based on a Z-score > 3 on PC1 or PC2."),
                          uiOutput("pca_data_source_note"),
                          fluidRow(
@@ -209,6 +211,34 @@ plots_ui <- function() {
                          hr(),
                          h4(icon("exclamation-triangle"), " Outlier Detection"),
                          verbatimTextOutput("pca_outlier_info")
+                     )
+                 )
+          )
+        )
+      ),
+      # ---- 样本相关性热图 ----
+      tabPanel(
+        title = "Sample Correlation",
+        value = "sample_cor_sub",
+        fluidRow(
+          column(12,
+                 div(class = "card-modern",
+                     div(class = "card-header-modern", icon("th"), " Sample Correlation Heatmap"),
+                     div(style = "padding: 20px;",
+                         uiOutput("sample_cor_preprocess_steps"),
+                         p("Pearson correlation between samples based on the normalized expression data (log2 transformed). The heatmap uses the top 500 most variable proteins."),
+                         uiOutput("sample_cor_data_source_note"),
+                         fluidRow(
+                           column(4,
+                                  actionButton("generate_sample_cor", "Generate Correlation Heatmap", class = "btn btn-primary btn-block"),
+                                  hr(),
+                                  downloadButton("download_sample_cor_png", "Download Heatmap PNG", class = "btn btn-sm btn-outline-success"),
+                                  downloadButton("download_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn btn-sm btn-outline-secondary")
+                           ),
+                           column(8,
+                                  shinycssloaders::withSpinner(plotOutput("sample_cor_heatmap", height = "600px"), type = 4, color = "#e67e22")
+                           )
+                         )
                      )
                  )
           )

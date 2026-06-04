@@ -37,6 +37,15 @@ color_mapping_vector <- reactive({
 
 color_mapping <- reactive(list(Up=input$color_up, Down=input$color_down, Increase=input$color_increase, Decrease=input$color_decrease, NS=input$color_ns))
 
+safe_get_analysis_matrix <- function() {
+  tryCatch({
+    mat <- get_analysis_matrix()
+    if (is.null(mat)) { message("[DEBUG] volcano: get_analysis_matrix() returned NULL"); return(NULL) }
+    message("[DEBUG] volcano: got analysis matrix, dim = ", nrow(mat), " x ", ncol(mat))
+    mat
+  }, error = function(e) { message("[ERROR] volcano: failed to get analysis matrix: ", e$message); NULL })
+}
+
 selected_volcano_comparison <- reactive({
   comp_name <- input$selected_comparison
   if (is.null(comp_name) || comp_name == "") return(NULL)
@@ -59,13 +68,12 @@ observe({
   }
 })
 
-# ---------- 统一的差异分析（基于归一化数据，应用 unique peptide 过滤） ----------
 volcano_de_result <- reactive({
   comp <- selected_volcano_comparison(); req(comp)
   nd <- norm_data_full()
   if (is.null(nd)) { message("[DEBUG] volcano: norm_data_full() is NULL"); return(NULL) }
   
-  # 应用 unique peptide 过滤（与导出部分保持一致）
+  # 应用 unique peptide 过滤
   unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
   if (!is.na(unique_col) && input$min_unique_pep > 1) {
     nd[[unique_col]] <- as.numeric(nd[[unique_col]])
@@ -89,7 +97,6 @@ volcano_de_result <- reactive({
   
   message("[DEBUG] volcano: matched treat = ", length(treat_cols), " columns, ctrl = ", length(ctrl_cols), " columns")
   
-  # 构建子集（只保留 Master protein IDs 和强度列）
   sub_df <- nd[, c("Master protein IDs", treat_cols, ctrl_cols), drop = FALSE]
   
   fc_up <- input$fc_up; fc_down <- input$fc_down; p_cut <- as.numeric(input$p_cut)
@@ -104,7 +111,6 @@ volcano_de_result <- reactive({
   }, error = function(e) { message("[ERROR] volcano: DE failed: ", e$message); NULL })
   
   if (!is.null(res)) {
-    # 补全缺失列（防御）
     for (col in c("log2FC","log10P","regulation")) {
       if (!(col %in% colnames(res))) res[[col]] <- NA_real_
     }
@@ -215,54 +221,40 @@ output$protein_profile_plot <- renderPlotly({
   ggplotly(p, tooltip = "text") %>% layout(plot_bgcolor = 'white', paper_bgcolor = 'white', margin = list(b = 80))
 })
 
-# ---------- 预处理步骤展示 ----------
+# ---------- 预处理步骤指示器（可折叠） ----------
 output$volcano_preprocess_steps <- renderUI({
   steps <- list()
-  # 读取预处理参数
-  if (is.null(preprocessing_params)) return(NULL)
-  
-  # 缺失值过滤
-  steps <- c(steps, paste0("Missing Value Filter (threshold=", input$max_missing_fraction %||% "0.5", 
-                           ", mode=", preprocessing_params$missing_filter_mode %||% "global", ")"))
-  # 强度过滤
-  if (!is.null(input$min_intensity) && input$min_intensity > 0) {
-    steps <- c(steps, paste0("Minimum Intensity Filter (threshold=", input$min_intensity, 
-                             ", min.samples=", input$min_samples_above_intensity %||% 1, ")"))
-  } else {
-    steps <- c(steps, "Intensity Filter not applied")
-  }
-  # 填补
+  steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
+                           ", mode = ", preprocessing_params$missing_filter_mode %||% "global"))
+  steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", input$min_intensity,
+                           ", min samples = ", input$min_samples_above_intensity %||% 1))
   imp <- preprocessing_params$imputation_method %||% "none"
   if (imp == "none") {
-    steps <- c(steps, "Imputation: skipped")
+    steps <- c(steps, "Missing Value Imputation: none (some proteins may have missing values)")
   } else {
-    detail <- ""
-    if (grepl("knn", imp)) detail <- paste0(" (k=", preprocessing_params$knn_k %||% 10, ")")
-    else if (imp == "minvalue") detail <- paste0(" (value=", preprocessing_params$min_value %||% "0.0001", ")")
-    else if (imp == "quantile") detail <- paste0(" (prob=", preprocessing_params$quantile_prob %||% "0.01", ")")
-    steps <- c(steps, paste0("Missing Value Imputation: ", imp, detail))
+    steps <- c(steps, paste0("Missing Value Imputation: ", imp))
   }
-  # 批次校正
   if (isTRUE(preprocessing_params$batch_performed)) {
-    steps <- c(steps, "Batch Correction (ComBat) applied")
+    steps <- c(steps, "Batch Correction (ComBat): applied")
   } else {
     steps <- c(steps, "Batch Correction: not applied")
   }
-  # 构建带箭头的 HTML
+  steps <- c(steps, "Normalization: Total intensity normalization (baseline sample) + unique peptide filter")
+  steps <- c(steps, "Data source: Normalized expression data (Norm_LFQ intensity columns)")
+  
   step_tags <- lapply(seq_along(steps), function(i) {
     tagList(
       if (i > 1) tags$span(style = "font-size: 20px; color: #3498db; margin: 0 8px;", "→"),
       tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
     )
   })
-  div(
-    style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;",
-    p(strong(icon("info-circle"), " Data preprocessing steps applied before this volcano plot:")),
+  tags$details(
+    tags$summary("Data preprocessing steps applied before this volcano plot", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
     div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
   )
 })
 
-# ---------- 下载单图（与组合图一致的数据源） ----------
+# ---------- 下载单图 ----------
 output$download_volcano_png <- downloadHandler(
   filename = function() paste0("Volcano_", Sys.Date(), ".png"),
   content = function(file) {

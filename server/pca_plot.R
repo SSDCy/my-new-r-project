@@ -32,10 +32,12 @@ pca_data <- reactive({
   expr_mat <- as.matrix(nd[, norm_cols])
   rownames(expr_mat) <- nd$`Master protein IDs`
   
-  # 填补缺失值（如果存在）
+  # 填补缺失值（如果存在）——使用 1% 分位数填补
   if (any(is.na(expr_mat))) {
-    message("[DEBUG] pca_plot: imputing missing values with KNN")
-    expr_mat <- as.matrix(impute_missing_values(as.data.frame(expr_mat), method = "knn"))
+    message("[DEBUG] pca_plot: imputing missing values with Quantile (1%)")
+    expr_mat <- as.matrix(impute_missing_values(
+      as.data.frame(expr_mat), method = "quantile", quantile_prob = 0.01
+    ))
   }
   
   # log2 转换
@@ -84,11 +86,12 @@ pca_data <- reactive({
     }
   }
   
-  # 修正 Batch 匹配
+  # 修正 Batch 匹配：将样本信息表的行名转换为短名再匹配
   if (!is.null(rv$sample_info) && "Batch" %in% colnames(rv$sample_info)) {
     si <- rv$sample_info
+    # 提取样本信息表的短名：去掉 "LFQ intensity " 前缀，再标准化
     info_full <- rownames(si)
-    info_short <- extract_sample_names(info_full)
+    info_short <- extract_sample_names(info_full)   # 得到类似 "WT.1", "100.12.1" 等
     info_short_std <- standardize_sample_name(info_short)
     sample_std <- standardize_sample_name(sample_short)
     idx <- match(sample_std, info_short_std)
@@ -106,10 +109,10 @@ pca_data <- reactive({
   # 离群样本检测
   z1 <- abs((scores$PC1 - mean(scores$PC1)) / sd(scores$PC1))
   z2 <- abs((scores$PC2 - mean(scores$PC2)) / sd(scores$PC2))
-  scores$Outlier <- ifelse(z1 > 3 | z2 > 3, "Potential outlier", "Normal sample")
+  scores$Outlier <- ifelse(z1 > 3 | z2 > 3, "Outlier", "Normal")
   
   message("[DEBUG] pca_plot: PCA completed. PC1=", variance[1], "%, PC2=", variance[2],
-          "%, outliers=", sum(scores$Outlier == "Potential outlier"))
+          "%, outliers=", sum(scores$Outlier == "Outlier"))
   
   list(scores = scores, variance = variance)
 })
@@ -123,19 +126,6 @@ output$pca_data_source_note <- renderUI({
       icon("check-circle"), " Data source: Normalized expression data (total intensity normalization)")
 })
 
-# ---------- 颜色生成函数（确保每个组有唯一颜色） ----------
-get_unique_group_colors <- function(groups) {
-  n <- length(groups)
-  if (n == 0) return(character(0))
-  # 使用一个丰富的调色板，即使组数很多也能区分
-  if (n <= 12) {
-    cols <- RColorBrewer::brewer.pal(max(3, n), "Set3")
-  } else {
-    cols <- colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(n)
-  }
-  setNames(cols, groups)
-}
-
 # ---------- PCA by Group ----------
 output$pca_group_plot <- renderPlotly({
   dat <- pca_data()
@@ -143,19 +133,21 @@ output$pca_group_plot <- renderPlotly({
   scores <- dat$scores
   var <- dat$variance
   
+  # 颜色配置
   groups <- unique(scores$Group)
-  group_colors <- get_unique_group_colors(groups)
-  message("[DEBUG] pca_group_plot: group colors: ", paste(names(group_colors), group_colors, sep = "=", collapse = ", "))
+  group_colors <- get_group_colors(groups)
+  
+  # 形状区分离群样本
+  scores$shape <- ifelse(scores$Outlier == "Outlier", "circle-open", "circle")
   
   p <- plot_ly(
     data = scores,
     x = ~PC1, y = ~PC2,
     color = ~Group, colors = group_colors,
-    symbol = ~Outlier,
-    symbols = c("circle", "circle-open"),   # Normal sample -> circle, Potential outlier -> circle-open
+    symbol = ~Outlier, symbols = c("circle", "circle-open"),
     type = "scatter", mode = "markers",
     marker = list(size = 10),
-    text = ~paste("Sample:", SampleShort, "<br>Group:", Group, "<br>Status:", Outlier),
+    text = ~paste("Sample:", SampleShort, "<br>Group:", Group, "<br>Outlier:", Outlier),
     hoverinfo = "text"
   ) %>%
     layout(
@@ -174,23 +166,24 @@ output$pca_batch_plot <- renderPlotly({
   scores <- dat$scores
   var <- dat$variance
   
+  # 检查是否有 Batch 信息
   if (all(is.na(scores$Batch))) {
     return(plotly::plot_ly() %>% layout(title = "No Batch information available"))
   }
   
   batches <- unique(na.omit(scores$Batch))
   batch_colors <- setNames(rainbow(length(batches)), batches)
-  message("[DEBUG] pca_batch_plot: batch colors: ", paste(names(batch_colors), batch_colors, sep = "=", collapse = ", "))
+  
+  scores$shape <- ifelse(scores$Outlier == "Outlier", "circle-open", "circle")
   
   p <- plot_ly(
     data = scores,
     x = ~PC1, y = ~PC2,
     color = ~Batch, colors = batch_colors,
-    symbol = ~Outlier,
-    symbols = c("circle", "circle-open"),
+    symbol = ~Outlier, symbols = c("circle", "circle-open"),
     type = "scatter", mode = "markers",
     marker = list(size = 10),
-    text = ~paste("Sample:", SampleShort, "<br>Batch:", Batch, "<br>Status:", Outlier),
+    text = ~paste("Sample:", SampleShort, "<br>Batch:", Batch, "<br>Outlier:", Outlier),
     hoverinfo = "text"
   ) %>%
     layout(
@@ -209,7 +202,7 @@ output$pca_outlier_info <- renderPrint({
     cat("PCA not available.\n")
     return()
   }
-  outliers <- dat$scores[dat$scores$Outlier == "Potential outlier", "SampleShort"]
+  outliers <- dat$scores[dat$scores$Outlier == "Outlier", "SampleShort"]
   if (length(outliers) == 0) {
     cat("No outlier samples detected (Z-score > 3 on PC1 or PC2).\n")
   } else {
@@ -228,11 +221,11 @@ output$download_pca_group_png <- downloadHandler(
     scores <- dat$scores
     var <- dat$variance
     groups <- unique(scores$Group)
-    group_colors <- get_unique_group_colors(groups)
+    group_colors <- get_group_colors(groups)
     p <- ggplot(scores, aes(x = PC1, y = PC2, color = Group, shape = Outlier)) +
       geom_point(size = 3) +
       scale_color_manual(values = group_colors) +
-      scale_shape_manual(values = c("Normal sample" = 16, "Potential outlier" = 1)) +
+      scale_shape_manual(values = c("Normal" = 16, "Outlier" = 1)) +
       labs(title = "PCA by Group", x = paste0("PC1 (", var[1], "%)"), y = paste0("PC2 (", var[2], "%)")) +
       theme_bw()
     ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
@@ -249,11 +242,45 @@ output$download_pca_batch_png <- downloadHandler(
     if (all(is.na(scores$Batch))) return()
     p <- ggplot(scores, aes(x = PC1, y = PC2, color = Batch, shape = Outlier)) +
       geom_point(size = 3) +
-      scale_shape_manual(values = c("Normal sample" = 16, "Potential outlier" = 1)) +
+      scale_shape_manual(values = c("Normal" = 16, "Outlier" = 1)) +
       labs(title = "PCA by Batch", x = paste0("PC1 (", var[1], "%)"), y = paste0("PC2 (", var[2], "%)")) +
       theme_bw()
     ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
   }
 )
+
+# ---------- 步骤指示器（可折叠） ----------
+output$pca_preprocess_steps <- renderUI({
+  steps <- list()
+  steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
+                           ", mode = ", preprocessing_params$missing_filter_mode %||% "global"))
+  steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", input$min_intensity,
+                           ", min samples = ", input$min_samples_above_intensity %||% 1))
+  imp <- preprocessing_params$imputation_method %||% "none"
+  if (imp == "none") {
+    steps <- c(steps, "Missing Value Imputation: none (Quantile 1% auto-applied if missing values present)")
+  } else {
+    steps <- c(steps, paste0("Missing Value Imputation: ", imp))
+  }
+  if (isTRUE(preprocessing_params$batch_performed)) {
+    steps <- c(steps, "Batch Correction (ComBat): applied")
+  } else {
+    steps <- c(steps, "Batch Correction: not applied")
+  }
+  steps <- c(steps, "Normalization: Total intensity normalization (baseline sample)")
+  steps <- c(steps, "Data source: Normalized expression data (Norm_LFQ intensity columns) + log2 transformation")
+  steps <- c(steps, "Missing values imputed with Quantile 1% (if any)")
+  
+  step_tags <- lapply(seq_along(steps), function(i) {
+    tagList(
+      if (i > 1) tags$span(style = "font-size: 20px; color: #27ae60; margin: 0 8px;", "→"),
+      tags$span(style = "background: #e8f0fe; padding: 6px 12px; border-radius: 15px; font-size: 13px;", steps[[i]])
+    )
+  })
+  tags$details(
+    tags$summary("Data preprocessing steps for PCA", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+    div(style = "display: flex; flex-wrap: wrap; align-items: center;", do.call(tagList, step_tags))
+  )
+})
 
 message("[DEBUG] pca_plot.R loaded successfully.")

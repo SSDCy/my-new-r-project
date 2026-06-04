@@ -174,7 +174,8 @@ server <- function(input, output, session) {
   source("server/volcano_plot.R", local = TRUE)
   source("server/export_server.R", local = TRUE)
   source("server/plots_venn_upset.R", local = TRUE)
-  source("server/pca_plot.R", local = TRUE)          # 新增 PCA 服务器逻辑
+  source("server/pca_plot.R", local = TRUE)
+  source("server/sample_correlation_plot.R", local = TRUE)   # 样本相关性热图
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)
