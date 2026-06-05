@@ -12,8 +12,7 @@ cleaning_ui <- function() {
                  p("Upon uploading, the following filters are applied automatically to remove unreliable identifications:",
                    tags$ul(
                      tags$li(tags$b("Reverse hits:"), " proteins matching the reverse database (column 'Reverse' equals '+')."),
-                     tags$li(tags$b("Potential contaminants:"), " common contaminants (column 'Potential contaminant' equals '+')."),
-                     tags$li(tags$b("CON_ contaminants:"), " proteins with IDs starting with 'CON_'.")
+                     tags$li(tags$b("CON_ contaminants:"), " proteins with IDs starting with 'CON_' (common contaminants).")
                    )
                  )
              )
@@ -40,10 +39,6 @@ cleaning_ui <- function() {
                        verbatimTextOutput("cleaning_reverse_ids")
                      ),
                      tags$details(
-                       tags$summary("Potential contaminants", style = "cursor: pointer; font-weight: bold; margin-bottom: 5px;"),
-                       verbatimTextOutput("cleaning_contaminant_ids")
-                     ),
-                     tags$details(
                        tags$summary("CON_ contaminants", style = "cursor: pointer; font-weight: bold; margin-bottom: 5px;"),
                        verbatimTextOutput("cleaning_con_ids")
                      )
@@ -53,4 +48,5 @@ cleaning_ui <- function() {
     )
   )
 }
+
 message("[DEBUG] cleaning_ui.R fully defined")
