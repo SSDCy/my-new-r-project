@@ -1,5 +1,5 @@
 # server/heatmap_plot.R
-message("[DEBUG] heatmap_plot.R loading... (Intensity SubGroup matching fixed for all cases)")
+message("[DEBUG] heatmap_plot.R loading... (Arial font in pheatmap)")
 
 # ---------- 辅助函数 ----------
 prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL, id_map = NULL) {
@@ -121,7 +121,6 @@ heatmap_raw_data <- reactive({
   mat
 })
 
-# ---------- 分组逻辑：根据数据源类型匹配 SubGroup ----------
 observe({
   req(input$heatmap_data_source == "Intensity")
   samples <- heatmap_raw_sample_names()
@@ -158,14 +157,11 @@ observeEvent(input$heatmap_apply_grouping, {
   if (!is.null(rv$sample_info) && "SubGroup" %in% colnames(rv$sample_info)) {
     message("[DEBUG] heatmap_apply_grouping: using SubGroup from sample info")
     si <- rv$sample_info
-    # 关键修改：将样本信息表的行名转换为短名（去掉 LFQ intensity / Intensity 前缀），再标准化
+    # 提取样本信息表的短名，并标准化
     info_raw <- rownames(si)
-    # 提取短名
-    info_short <- extract_sample_names(info_raw)
-    # 标准化短名
-    info_std <- standardize_sample_name(info_short)
+    info_std <- standardize_sample_name(info_raw)
     
-    # 标准化当前 Intensity 样本名
+    # 标准化当前样本名
     samples_std <- standardize_sample_name(samples)
     
     # 匹配
@@ -419,16 +415,9 @@ output$heatmap_plot <- renderPlot({
                             main = "Expression Heatmap",
                             fontsize_row = 8,
                             fontsize_col = 8,
+                            fontfamily = "Arial",   # 设置字体
                             silent = FALSE)
-    if (!is.null(p$tree_row)) {
-      row_order <- p$tree_row$order
-      message("[DEBUG] heatmap_plot: row clusters (protein order): ", paste(rownames(dat$mat)[row_order], collapse = ", "))
-    }
-    if (!is.null(p$tree_col)) {
-      col_order <- p$tree_col$order
-      message("[DEBUG] heatmap_plot: col clusters (sample order): ", paste(colnames(dat$mat)[col_order], collapse = ", "))
-    }
-    message("[DEBUG] heatmap_plot: pheatmap rendered successfully")
+    message("[DEBUG] heatmap_plot: pheatmap rendered with Arial font")
   }, error = function(e) {
     message("[ERROR] heatmap_plot: ", e$message)
     plot.new()
@@ -450,7 +439,7 @@ output$download_heatmap_png <- downloadHandler(
       plot.new(); text(0.5, 0.5, "No data to display", cex = 1.5); dev.off()
       return()
     }
-    png(file, width = 1200, height = 1000, res = 150)
+    png(file, width = 1200, height = 1000, res = 150, family = "Arial")
     brks <- make_heatmap_breaks(dat$mat)
     ann <- dat$annotation_col
     if (!is.null(ann) && nrow(ann) == 0) ann <- NULL
@@ -465,7 +454,8 @@ output$download_heatmap_png <- downloadHandler(
                          show_colnames = dat$show_sample_names,
                          annotation_col = ann,
                          annotation_colors = dat$annotation_colors,
-                         main = "Expression Heatmap")
+                         main = "Expression Heatmap",
+                         fontfamily = "Arial")
       dev.off()
     }, error = function(e) {
       message("[ERROR] download_heatmap_png: ", e$message)
@@ -541,4 +531,4 @@ output$heatmap_preprocess_steps <- renderUI({
   )
 })
 
-message("[DEBUG] heatmap_plot.R fully loaded (Intensity SubGroup matching robust)")
+message("[DEBUG] heatmap_plot.R fully loaded (Arial font)")

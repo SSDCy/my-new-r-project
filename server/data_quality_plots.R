@@ -1,5 +1,5 @@
 # server/data_quality_plots.R
-message("[DEBUG] data_quality_plots.R loaded - heatmap + histogram + PCA without ellipses (no labels, single legend)")
+message("[DEBUG] data_quality_plots.R loaded - added histogram download and grid removal")
 
 `%then%` <- function(a, b) { if (a) b else TRUE }
 validate_condition <- function(condition, message) {
@@ -8,7 +8,7 @@ validate_condition <- function(condition, message) {
 
 # ==================== 样本选择 ====================
 observeEvent(rv$sample_names, {
-  message("[DEBUG] Updating heatmap_sample_select choices")
+  message("[DEBUG] Updating heatmap_sample_select choices, n=", length(rv$sample_names))
   updateSelectizeInput(session, "heatmap_sample_select", choices = rv$sample_names, selected = rv$sample_names, server = TRUE)
 }, ignoreNULL = TRUE, once = FALSE)
 
@@ -50,10 +50,10 @@ observe({
   }
 })
 
-# ---------- 可靠的多级自然排序 ----------
+# ---------- 可靠的自然排序（下划线兼容） ----------
 natural_order <- function(x) {
   if (length(x) == 0) return(integer(0))
-  parts <- strsplit(as.character(x), "\\.")
+  parts <- strsplit(as.character(x), "_")
   max_len <- max(sapply(parts, length))
   num_mat <- t(sapply(parts, function(p) {
     nums <- suppressWarnings(as.numeric(p))
@@ -75,9 +75,12 @@ ordered_samples <- reactive({
   grp <- NULL
   if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
     si <- rv$sample_info
-    si$ShortName <- extract_sample_names(rownames(si))
-    idx <- match(sel, si$ShortName)
+    info_short <- extract_sample_names(rownames(si))
+    info_std <- standardize_sample_name(info_short)
+    sel_std <- standardize_sample_name(sel)
+    idx <- match(sel_std, info_std)
     grp <- ifelse(is.na(idx), "Unassigned", si$Group[idx])
+    message("[DEBUG] ordered_samples: matched ", sum(!is.na(idx)), " groups, ", sum(is.na(idx)), " unmatched")
   } else {
     grp <- rep("All", length(sel))
   }
@@ -96,7 +99,7 @@ ordered_samples <- reactive({
     }
   }
   result <- sel[ord]
-  message("[DEBUG] ordered_samples: first 10 = ", paste(head(result, 10), collapse = ", "), 
+  message("[DEBUG] ordered_samples: first 10 = ", paste(head(result, 10), collapse = ", "),
           " ... total ", length(result))
   result
 })
@@ -114,8 +117,10 @@ dq_missing_heatmap_plot_obj <- reactive({
   annot_df <- NULL
   if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
     si <- rv$sample_info
-    si$ShortName <- extract_sample_names(rownames(si))
-    idx <- match(common_s, si$ShortName)
+    info_short <- extract_sample_names(rownames(si))
+    info_std <- standardize_sample_name(info_short)
+    common_std <- standardize_sample_name(common_s)
+    idx <- match(common_std, info_std)
     groups <- ifelse(is.na(idx), "Unknown", si$Group[idx])
     annot_df <- data.frame(Group = factor(groups), row.names = common_s)
   }
@@ -198,7 +203,7 @@ observeEvent(input$help_missing_heatmap, {
   message("[DEBUG] help_missing_heatmap")
 })
 
-# ==================== 非缺失值直方图 ====================
+# ==================== 非缺失值直方图（去除网格线、高度调整、增加下载） ====================
 output$sample_nonmiss_hist <- renderPlot({
   req(dq_expr_matrix())
   mat <- dq_expr_matrix()
@@ -209,7 +214,7 @@ output$sample_nonmiss_hist <- renderPlot({
   nonmiss <- colSums(!is.na(mat[, common_s, drop = FALSE]))
   
   extract_prefix <- function(sample_name) {
-    pref <- sub("\\.[0-9]+(\\.[0-9]+)*$", "", sample_name)
+    pref <- sub("_[0-9]+(_[0-9]+)*$", "", sample_name)
     if (nchar(pref) == 0) sample_name else pref
   }
   prefixes <- sapply(common_s, extract_prefix)
@@ -246,10 +251,48 @@ output$sample_nonmiss_hist <- renderPlot({
          y = "Non-Missing Count", x = NULL) +
     theme_bw() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
-          legend.position = "right")
+          legend.position = "right",
+          panel.grid = element_blank())  # 去除网格线
 })
 
-# ==================== 原始数据 PCA（无椭圆，无标签，单图例） ====================
+output$download_sample_nonmiss_hist <- downloadHandler(
+  filename = function() "valid_values_per_sample.png",
+  content = function(file) {
+    req(dq_expr_matrix())
+    mat <- dq_expr_matrix()
+    common_s <- selected_samples()
+    common_s <- intersect(common_s, colnames(mat))
+    if (length(common_s) == 0) {
+      showNotification("No samples selected", type = "error")
+      return()
+    }
+    nonmiss <- colSums(!is.na(mat[, common_s, drop = FALSE]))
+    extract_prefix <- function(sample_name) {
+      pref <- sub("_[0-9]+(_[0-9]+)*$", "", sample_name)
+      if (nchar(pref) == 0) sample_name else pref
+    }
+    prefixes <- sapply(common_s, extract_prefix)
+    unique_prefixes <- unique(prefixes)
+    color_map <- c("WT"="#FFB3B3","100"="#B3FFB3","200"="#B3D9FF")
+    extra_colors <- setNames(RColorBrewer::brewer.pal(min(length(unique_prefixes),8),"Pastel1")[1:length(unique_prefixes)], unique_prefixes)
+    fill_colors <- color_map[unique_prefixes]
+    missing_pref <- unique_prefixes[!unique_prefixes %in% names(color_map)]
+    if (length(missing_pref)>0) fill_colors[missing_pref] <- extra_colors[missing_pref]
+    fill_colors <- fill_colors[!is.na(fill_colors)]
+    df <- data.frame(Sample = factor(common_s, levels=common_s), NonMissing=nonmiss, Prefix=factor(prefixes, levels=unique_prefixes))
+    p <- ggplot(df, aes(x=Sample, y=NonMissing, fill=Prefix)) +
+      geom_col() +
+      geom_text(aes(label=NonMissing), vjust=-0.5, size=3.5, color="#333333") +
+      scale_fill_manual(values=fill_colors, name="Treatment Group") +
+      labs(title="Number of Quantified Proteins per Sample", y="Non-Missing Count", x=NULL) +
+      theme_bw() +
+      theme(axis.text.x=element_text(angle=45, hjust=1, size=8), legend.position="right", panel.grid=element_blank())
+    ggsave(file, plot=p, width=12, height=6, dpi=150)
+    message("[DEBUG] download_sample_nonmiss_hist: saved")
+  }
+)
+
+# ==================== 原始数据 PCA ====================
 dq_pca_data <- reactive({
   tryCatch({
     raw <- expression_data()
@@ -272,11 +315,14 @@ dq_pca_data <- reactive({
     scores <- as.data.frame(pca$x[, 1:2])
     scores$Sample <- rownames(scores)
     
+    # 匹配样本信息表
     if (!is.null(rv$sample_info)) {
       si <- rv$sample_info
-      scores_std <- standardize_sample_name(scores$Sample)
-      info_std <- standardize_sample_name(rownames(si))
-      idx <- match(scores_std, info_std)
+      short_names <- extract_sample_names(scores$Sample)
+      short_std <- standardize_sample_name(short_names)
+      info_short <- extract_sample_names(rownames(si))
+      info_std <- standardize_sample_name(info_short)
+      idx <- match(short_std, info_std)
       matched_count <- sum(!is.na(idx))
       message("[DEBUG] dq_pca_data: matched ", matched_count, " out of ", nrow(scores), " PCA samples to sample info")
       
@@ -299,7 +345,6 @@ dq_pca_data <- reactive({
       message("[DEBUG] dq_pca_data: no sample info uploaded")
     }
     
-    # 自定义排序：WT 最前，其余按浓度和时间数值排序
     custom_order <- function(groups) {
       uniq <- unique(groups)
       wt <- grep("^WT$", uniq, ignore.case = TRUE, value = TRUE)
@@ -361,7 +406,7 @@ output$dq_pca_plot <- renderPlot({
   }
   message("[DEBUG] dq_pca_plot: using colors: ", paste(group_colors, collapse=", "))
   
-  p <- ggplot(scores, aes(x = PC1, y = PC2, color = Group)) +
+  ggplot(scores, aes(x = PC1, y = PC2, color = Group)) +
     geom_point(size = 4, alpha = 0.9) +
     scale_color_manual(values = group_colors, drop = FALSE) +
     labs(title = "PCA (Raw Data, 1% quantile imputation) by SubGroup",
@@ -369,8 +414,6 @@ output$dq_pca_plot <- renderPlot({
          y = paste0("PC2 (", var[2], "%)")) +
     theme_bw() +
     theme(legend.position = "right")
-  
-  p
 })
 
-message("[DEBUG] data_quality_plots.R: all outputs defined (no ellipses, no labels, single legend)")
+message("[DEBUG] data_quality_plots.R: all outputs defined (complete with download and grid removal)")

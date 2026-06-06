@@ -1,35 +1,8 @@
 # server/data_upload_core.R
-message("[DEBUG] data_upload_core.R loading...")
+message("[DEBUG] data_upload_core.R loading... (expression_data column names enforced underscore)")
 
-# ================== 全局辅助函数（本文件专用） ==================
-extract_sample_names <- function(cols) {
-  short <- sub("^(LFQ intensity |Intensity )", "", cols, ignore.case = TRUE)
-  still_full <- which(short == cols)
-  if (length(still_full) > 0) {
-    short[still_full] <- sub("^(LFQ[._]?intensity[._]?|Intensity[._]?)", "", cols[still_full], ignore.case = TRUE)
-  }
-  short <- sub("^[^[:alnum:]]+", "", short)
-  short <- sub("[^[:alnum:]]+$", "", short)
-  short <- gsub("-", ".", short)
-  short
-}
-
-standardize_sample_name <- function(x) {
-  if (is.null(x) || length(x) == 0) return(character(0))
-  original <- x
-  x <- as.character(x)
-  x <- gsub("[-_]+", ".", x)
-  x <- gsub("\\s+", ".", x)
-  x <- gsub("\\.+", ".", x)
-  x <- gsub("^\\.", "", x)
-  x <- gsub("\\.$", "", x)
-  if (length(x) > 0) {
-    message("[DEBUG] standardize_sample_name: transformed first 3: ",
-            paste(head(original, 3), collapse = ", "), " -> ",
-            paste(head(x, 3), collapse = ", "))
-  }
-  return(x)
-}
+# ================== 全局辅助函数（使用 global.R 中的定义） ==================
+# 不再重复定义 extract_sample_names 和 standardize_sample_name
 
 get_raw_prefix <- function(type = input$intensity_type) {
   if (type == "LFQ") "LFQ intensity " else "Intensity "
@@ -48,27 +21,23 @@ get_group_colors <- function(groups) {
   if (length(groups) == 0) return(character(0))
   pal <- c("#FFB6C1","#90EE90","#87CEEB","#DDA0DD","#FFD700",
            "#FFA07A","#98FB98","#B0C4DE","#FFB347","#C9A0DC")
-  if (length(groups) > length(pal)) {
-    pal <- colorRampPalette(pal)(length(groups))
-  }
+  if (length(groups) > length(pal)) pal <- colorRampPalette(pal)(length(groups))
   setNames(pal[1:length(groups)], groups)
 }
 
 # ================== 数据上传与预处理 ==================
 output$download_sample_template <- downloadHandler(
-  filename = function() { "sample_info_template.xlsx" },
+  filename = function() "sample_info_template.xlsx",
   content = function(file) {
-    message("[DEBUG] download_sample_template: generating template with SubGroup column")
     prefix <- get_raw_prefix()
     template <- data.frame(
-      SampleName = paste0(prefix, c("L2.1.1", "L2.1.2", "L2.1.3", "L2.2.1", "L2.2.2", "L2.2.3")),
+      SampleName = paste0(prefix, c("L2_1_1", "L2_1_2", "L2_1_3", "L2_2_1", "L2_2_2", "L2_2_3")),
       Group = c("Control", "Control", "Control", "Treatment", "Treatment", "Treatment"),
-      SubGroup = c("L2.1", "L2.1", "L2.1", "L2.2", "L2.2", "L2.2"),
+      SubGroup = c("L2_1", "L2_1", "L2_1", "L2_2", "L2_2", "L2_2"),
       Batch = c("Batch1", "Batch1", "Batch2", "Batch1", "Batch2", "Batch2"),
       Note = c("", "", "", "", "", "")
     )
     writexl::write_xlsx(template, file)
-    message("[DEBUG] download_sample_template: template written")
   }
 )
 
@@ -78,12 +47,9 @@ read_sample_info <- function(file_path) {
     df <- read.csv(file_path, header = TRUE, row.names = NULL, check.names = FALSE, stringsAsFactors = FALSE)
   } else if (ext %in% c("xlsx", "xls")) {
     df <- as.data.frame(readxl::read_excel(file_path, col_names = TRUE))
-  } else {
-    stop("Unsupported file format for sample info.")
-  }
+  } else stop("Unsupported file format for sample info.")
   rownames(df) <- as.character(df[[1]])
   df <- df[, -1, drop = FALSE]
-  message("[DEBUG] read_sample_info: columns = ", paste(colnames(df), collapse = ", "))
   return(df)
 }
 
@@ -107,14 +73,13 @@ observeEvent(input$intensity_type, {
       showNotification("No matching intensity columns found for the selected type.", type = "error", duration = 5)
     }
   }
-  
   updateRadioButtons(session, "heatmap_data_source", selected = "LFQ")
   updateRadioButtons(session, "heatmap_protein_mode", selected = "top_n")
   updateNumericInput(session, "heatmap_top_n", value = 20)
   updateTextAreaInput(session, "heatmap_custom_ids", value = "")
   heatmap_raw_groups(NULL)
   data_changed_trigger(data_changed_trigger() + 1)
-  message("[DEBUG] intensity type changed, data_changed_trigger increased to ", data_changed_trigger())
+  message("[DEBUG] intensity type changed")
 }, ignoreInit = TRUE)
 
 observeEvent(input$expression_file, {
@@ -138,7 +103,7 @@ observeEvent(input$expression_file, {
   updateSliderInput(session, "max_missing_fraction", value = 0.5)
   updateNumericInput(session, "min_intensity", value = 1e5)
   updateNumericInput(session, "min_samples_above_intensity", value = 1)
-  updateSelectInput(session, "imputation_method", selected = "quantile")   # 默认 quantile
+  updateSelectInput(session, "imputation_method", selected = "quantile")
   updateNumericInput(session, "knn_k", value = 10)
   updateCheckboxInput(session, "perform_batch_correction", value = FALSE)
   updateNumericInput(session, "fc_up", value = 1.2)
@@ -157,7 +122,7 @@ observeEvent(input$expression_file, {
   updateTextAreaInput(session, "heatmap_custom_ids", value = "")
   heatmap_raw_groups(NULL)
   data_changed_trigger(data_changed_trigger() + 1)
-  message("[DEBUG] expression file uploaded, data_changed_trigger increased to ", data_changed_trigger())
+  message("[DEBUG] expression file uploaded")
   
   tryCatch({
     file_path <- input$expression_file$datapath
@@ -167,10 +132,18 @@ observeEvent(input$expression_file, {
     }
     lfq_cols <- grep(paste0("^", get_raw_prefix()), colnames(data), value = TRUE)
     if (length(lfq_cols) == 0) {
-      showNotification("No matching intensity columns found. Please check intensity type.", type = "error", duration = 5)
+      showNotification("No matching intensity columns found.", type = "error", duration = 5)
       return()
     }
+    # 将列名中的点替换为下划线（保留前缀）
+    lfq_cols_underscore <- gsub("\\.", "_", lfq_cols)
+    names(data)[match(lfq_cols, names(data))] <- lfq_cols_underscore
+    lfq_cols <- lfq_cols_underscore
+    
     sample_names <- extract_sample_names(lfq_cols)
+    sample_names <- gsub("\\.", "_", sample_names)
+    message("[DEBUG] data_upload_core: sample_names after underscore: ", paste(head(sample_names, 3), collapse = ", "), " ... total ", length(sample_names))
+    
     clean_data <- data
     if ("Reverse" %in% colnames(clean_data)) clean_data <- filter(clean_data, is.na(Reverse) | Reverse != "+")
     if ("Potential contaminant" %in% colnames(clean_data)) clean_data <- filter(clean_data, is.na(`Potential contaminant`) | `Potential contaminant` != "+")
@@ -196,7 +169,6 @@ observeEvent(input$sample_info_file, {
     if (input$intensity_type == "LFQ") cached_sample_info$LFQ <- df
     else cached_sample_info$Intensity <- df
     showNotification("Sample info uploaded successfully!", type = "message", duration = 3)
-    message("[DEBUG] sample_info_file uploaded, columns: ", paste(colnames(df), collapse = ", "))
   }, error = function(e) {
     showNotification(paste("Error reading sample info:", e$message), type = "error", duration = 5)
   })
@@ -238,9 +210,7 @@ output$upload_preview <- DT::renderDataTable({
   message("[DEBUG] upload_preview: rv$lfq_cols length = ", length(rv$lfq_cols))
   req(rv$clean_data, rv$lfq_cols)
   df <- rv$clean_data[, rv$lfq_cols, drop = FALSE]
-  DT::datatable(df,
-                options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE)
+  DT::datatable(df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$sample_info_preview <- DT::renderDataTable({
@@ -248,9 +218,7 @@ output$sample_info_preview <- DT::renderDataTable({
   req(rv$sample_info)
   df <- rv$sample_info
   df_display <- data.frame(SampleName = rownames(df), df, check.names = FALSE, stringsAsFactors = FALSE)
-  DT::datatable(df_display,
-                options = list(pageLength = 10, scrollX = TRUE),
-                rownames = FALSE)
+  DT::datatable(df_display, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
 })
 
 output$data_summary_ui <- renderUI({
@@ -369,7 +337,6 @@ get_analysis_matrix <- reactive({
     message("[DEBUG] get_analysis_matrix: processed data unavailable or intensity type mismatch")
     return(NULL)
   }
-  
   proc <- tryCatch(processed_data(), error = function(e) NULL)
   if (!is.null(proc)) {
     message("[DEBUG] get_analysis_matrix: returning processed data")
@@ -380,7 +347,6 @@ get_analysis_matrix <- reactive({
   }
 })
 
-# ---------- norm_data_before_batch ----------
 norm_data_before_batch <- reactive({
   mat <- get_analysis_matrix()
   if (is.null(mat)) {
@@ -515,18 +481,17 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
+# 关键修改：expression_data 最后强制替换点号为下划线
 expression_data <- reactive({
   message("[DEBUG] expression_data (from data_upload_core.R) triggered")
   req(rv$clean_data)
   
   if (is.null(rv$lfq_cols) || length(rv$lfq_cols) == 0) {
-    message("[DEBUG] expression_data: no lfq_cols found, will validate")
     validate(need(FALSE, "No intensity columns found. Please upload data first."))
   }
   
   df <- rv$clean_data
   if (!"Master protein IDs" %in% colnames(df)) {
-    message("[DEBUG] expression_data: Master protein IDs column missing")
     validate(need(FALSE, "Master protein IDs column not found in cleaned data."))
   }
   
@@ -535,12 +500,14 @@ expression_data <- reactive({
   df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
   df[df == 0] <- NA
   
+  # 强制将列名中的点替换为下划线
+  colnames(df) <- gsub("\\.", "_", colnames(df))
+  message("[DEBUG] expression_data: column names after underscore enforcement: ", paste(head(colnames(df), 3), collapse = ", "))
+  
   if (ncol(df) == 0) {
-    message("[DEBUG] expression_data: zero columns after subsetting")
     validate(need(FALSE, "No intensity columns found."))
   }
   if (nrow(df) == 0) {
-    message("[DEBUG] expression_data: zero rows")
     validate(need(FALSE, "No protein rows found."))
   }
   
@@ -548,4 +515,4 @@ expression_data <- reactive({
   df
 })
 
-message("[DEBUG] data_upload_core.R loaded successfully.")
+message("[DEBUG] data_upload_core.R loaded successfully (column name underscore enforced in expression_data).")

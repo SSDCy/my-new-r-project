@@ -11,12 +11,10 @@ message("[DEBUG] global.R loading started...")
 options(shiny.maxRequestSize = 200 * 1024^2)   # 允许上传最大 200MB 文件
 options(shiny.fullstacktrace = TRUE)
 options(warn = -1)
-# 修正 jsonlite 选项，避免 keep_vec_names 警告
 options(jsonlite.keep_vec_names = FALSE)
 
 # =====================================================
-# 加载所有可能在 UI/Server 模块中直接或间接调用的包
-# 将这些包在全局环境中 attach，确保 source 的每个模块都能找到它们
+# 包加载
 # =====================================================
 library(shiny)
 library(shinythemes)
@@ -39,7 +37,7 @@ library(RColorBrewer)
 library(ggVennDiagram)
 library(UpSetR)
 library(pheatmap)
-library(ComplexHeatmap)   # 热图备用，确保不报错
+library(ComplexHeatmap)
 library(scales)
 library(limma)
 library(sva)
@@ -48,16 +46,22 @@ library(jsonlite)
 library(reshape2)
 library(writexl)
 library(readxl)
-library(ggseqlogo)        # 序列 logo 图
+library(ggseqlogo)
 
 # =====================================================
-# 工具函数（与之前完全一致）
+# 全局字体设置：所有 ggplot2 图表默认使用 Arial
+# =====================================================
+theme_set(theme_bw(base_family = "Arial"))
+message("[DEBUG] ggplot2 global theme set to Arial")
+
+# =====================================================
+# 工具函数
 # =====================================================
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
 volcano_theme <- function() {
-  theme_bw(base_size = 14) +
+  theme_bw(base_size = 14, base_family = "Arial") +
     theme(
       plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
       axis.title = element_text(size = 14, face = "bold"),
@@ -163,9 +167,7 @@ handle_missing <- function(mat, filter_threshold = NULL, impute = FALSE) {
     keep <- na_frac <= filter_threshold
     mat <- mat[keep, , drop = FALSE]
   }
-  if (impute) {
-    mat[is.na(mat)] <- 0.01
-  }
+  if (impute) mat[is.na(mat)] <- 0.01
   mat
 }
 
@@ -196,7 +198,6 @@ textInputMax <- function(inputId, label, value = "", maxlength = 500,
   )
 }
 
-# 流程步骤指示器
 step_indicator <- function(steps, current_step) {
   step_items <- lapply(seq_along(steps), function(i) {
     is_active <- i == current_step
@@ -211,17 +212,46 @@ step_indicator <- function(steps, current_step) {
 }
 
 # =====================================================
-# 缺失值填充函数（minvalue 改为最小强度乘以因子）
+# 样本名处理：点→下划线
+# =====================================================
+extract_sample_names <- function(cols) {
+  short <- sub("^(LFQ intensity |Intensity )", "", cols, ignore.case = TRUE)
+  still_full <- which(short == cols)
+  if (length(still_full) > 0) {
+    short[still_full] <- sub("^(LFQ[._]?intensity[._]?|Intensity[._]?)", "", cols[still_full], ignore.case = TRUE)
+  }
+  short <- sub("^[^[:alnum:]]+", "", short)
+  short <- sub("[^[:alnum:]]+$", "", short)
+  short <- gsub("-", ".", short)        # 先转为点
+  short <- gsub("\\.", "_", short)      # 再将点替换为下划线
+  message("[DEBUG] extract_sample_names: first 3 = ", paste(head(short, 3), collapse = ", "))
+  short
+}
+
+standardize_sample_name <- function(x) {
+  if (is.null(x) || length(x) == 0) return(character(0))
+  original <- x
+  x <- as.character(x)
+  # 将所有分隔符（-、_、空格、点）统一为下划线，但保留单词完整性
+  x <- gsub("[-_\\s\\.]+", "_", x)
+  x <- gsub("\\.", "_", x)           # 二次保险
+  x <- gsub("^_", "", x)
+  x <- gsub("_$", "", x)
+  message("[DEBUG] standardize_sample_name: first 3: ",
+          paste(head(original, 3), collapse = ", "), " -> ",
+          paste(head(x, 3), collapse = ", "))
+  x
+}
+
+# =====================================================
+# 缺失值填充函数
 # =====================================================
 impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4,
                                   quantile_prob = 0.01) {
-  message("[DEBUG] impute_missing_values (global): method = ", method,
-          ", k = ", k, ", min_value = ", min_value,
-          ", quantile_prob = ", quantile_prob)
+  message("[DEBUG] impute_missing_values: method = ", method, ", k = ", k, ", min_value = ", min_value, ", quantile_prob = ", quantile_prob)
   
   if (method == "none") {
     attr(data, "actual_method") <- "none"
-    message("[DEBUG] impute_missing_values: no imputation (none)")
     return(data)
   }
   
@@ -229,23 +259,16 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
   actual_method <- method
   
   if (method == "knn") {
-    if (!requireNamespace("impute", quietly = TRUE))
-      stop("impute package required for KNN. Run BiocManager::install('impute')")
-    message("[DEBUG] impute_missing_values: KNN imputation with k = ", k)
+    if (!requireNamespace("impute", quietly = TRUE)) stop("impute package required for KNN")
     suppressMessages({
       impute_result <- impute::impute.knn(data_matrix, k = k)
     })
     data_matrix <- impute_result$data
     actual_method <- "knn"
-    
   } else if (method == "ppca") {
-    if (!requireNamespace("pcaMethods", quietly = TRUE))
-      stop("pcaMethods package required for PPCA. Run BiocManager::install('pcaMethods')")
-    
-    message("[DEBUG] impute_missing_values: PPCA started")
+    if (!requireNamespace("pcaMethods", quietly = TRUE)) stop("pcaMethods package required for PPCA")
     orig_rows <- rownames(data)
     orig_cols <- colnames(data)
-    
     storage.mode(data_matrix) <- "numeric"
     
     na_rows <- which(rowSums(is.na(data_matrix)) == ncol(data_matrix))
@@ -253,30 +276,22 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
     constant_cols <- which(apply(data_matrix, 2, var, na.rm = TRUE) == 0)
     remove_cols <- unique(c(na_cols, constant_cols))
     
-    message("[DEBUG] impute_missing_values: PPCA - na_rows=", length(na_rows),
-            ", na_cols=", length(na_cols), ", constant_cols=", length(constant_cols))
-    
     clean <- data_matrix
     if (length(na_rows) > 0) clean <- clean[-na_rows, , drop = FALSE]
     if (length(remove_cols) > 0) clean <- clean[, -remove_cols, drop = FALSE]
     
-    message("[DEBUG] impute_missing_values: PPCA - clean matrix dim=", nrow(clean), "x", ncol(clean))
-    
     if (nrow(clean) < 2 || ncol(clean) < 2) {
-      message("[DEBUG] impute_missing_values: PPCA not feasible (dim too small), falling back to KNN")
       result <- impute_missing_values(data, method = "knn", k = k)
-      attr(result, "actual_method") <- "knn (fallback from ppca, small dim)"
+      attr(result, "actual_method") <- "knn (fallback from ppca)"
       return(result)
     }
     
     if (anyNA(clean)) {
-      message("[DEBUG] impute_missing_values: PPCA - clean matrix still has NAs, pre-filling with KNN")
       clean <- impute_missing_values(as.data.frame(clean), method = "knn", k = min(k, ncol(clean)-1))
       clean <- as.matrix(clean)
       if (anyNA(clean)) {
-        message("[DEBUG] impute_missing_values: PPCA - still NAs after KNN prefill, falling back")
         result <- impute_missing_values(data, method = "knn", k = k)
-        attr(result, "actual_method") <- "knn (fallback from ppca, NAs remain)"
+        attr(result, "actual_method") <- "knn (fallback from ppca)"
         return(result)
       }
     }
@@ -286,65 +301,38 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
       pc <- pcaMethods::pca(clean, method = "ppca", nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
       imputed_clean <- as.matrix(pcaMethods::completeObs(pc))
       success <- TRUE
-      message("[DEBUG] impute_missing_values: PPCA succeeded via pcaMethods::pca")
-    }, error = function(e) {
-      message("[DEBUG] impute_missing_values: PPCA failed with error: ", e$message)
-    })
+    }, error = function(e) {})
     
     if (!success) {
-      message("[DEBUG] impute_missing_values: PPCA failed, falling back to KNN")
       result <- impute_missing_values(data, method = "knn", k = k)
       attr(result, "actual_method") <- "knn (fallback from ppca)"
       return(result)
     }
     
     full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
-    rownames(full_matrix) <- orig_rows
-    colnames(full_matrix) <- orig_cols
-    
+    rownames(full_matrix) <- orig_rows; colnames(full_matrix) <- orig_cols
     row_idx <- setdiff(seq_len(nrow(data_matrix)), na_rows)
     col_idx <- setdiff(seq_len(ncol(data_matrix)), remove_cols)
     full_matrix[row_idx, col_idx] <- imputed_clean
-    
     if (length(na_rows) > 0) full_matrix[na_rows, ] <- min_value
     if (length(na_cols) > 0) full_matrix[, na_cols] <- min_value
-    if (length(constant_cols) > 0) {
-      for (j in constant_cols) {
-        full_matrix[, j] <- data_matrix[, j]
-      }
-    }
-    
+    if (length(constant_cols) > 0) for (j in constant_cols) full_matrix[, j] <- data_matrix[, j]
     data_matrix <- full_matrix
     actual_method <- "ppca"
-    
   } else if (method == "minvalue") {
-    # 计算全局最小强度（忽略缺失值和0？按需求，应使用非缺失正数的最小值）
-    message("[DEBUG] impute_missing_values: minvalue method - calculating global minimum intensity")
-    # 获取所有非缺失、大于0的值中的最小值（如果需要包含0，可调整，一般应大于0）
     all_vals <- data_matrix[!is.na(data_matrix) & data_matrix > 0]
-    if (length(all_vals) == 0) {
-      # 如果没有任何有效值，回退到极小值1e-4
-      global_min <- 1e-4
-      message("[DEBUG] impute_missing_values: no valid positive values, using fallback global_min = ", global_min)
-    } else {
-      global_min <- min(all_vals, na.rm = TRUE)
-      message("[DEBUG] impute_missing_values: global minimum intensity = ", global_min)
-    }
+    if (length(all_vals) == 0) { global_min <- 1e-4 } else { global_min <- min(all_vals, na.rm = TRUE) }
     factor <- min_value
     actual_fill <- global_min * factor
-    message("[DEBUG] impute_missing_values: factor = ", factor, ", actual fill value = ", actual_fill)
-    
+    message("[DEBUG] minvalue: global_min=", global_min, ", factor=", factor, ", fill=", actual_fill)
     data_matrix[is.na(data_matrix)] <- actual_fill
     actual_method <- "minvalue"
-    # 将全局最小强度和填充值存储为属性，供外部使用
     attr(data_matrix, "global_min_intensity") <- global_min
     attr(data_matrix, "fill_factor") <- factor
     attr(data_matrix, "actual_fill_value") <- actual_fill
-    
   } else if (method == "quantile") {
     qp <- quantile_prob
     if (is.null(qp) || is.na(qp) || qp <= 0 || qp >= 1) qp <- 0.01
-    message("[DEBUG] impute_missing_values: quantile imputation with prob = ", qp)
     for (j in seq_len(ncol(data_matrix))) {
       col_vals <- data_matrix[, j]
       na_idx <- which(is.na(col_vals))
@@ -352,23 +340,15 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
       qval <- quantile(col_vals, probs = qp, na.rm = TRUE)
       if (!is.finite(qval) || length(qval) == 0) qval <- min_value
       data_matrix[na_idx, j] <- qval
-      message(sprintf("[DEBUG] quantile: column %d: %d NAs replaced with %g (prob=%.3f)", j, length(na_idx), qval, qp))
     }
     actual_method <- "quantile"
-    
-  } else {
-    stop("Unknown imputation method.")
-  }
+  } else stop("Unknown imputation method.")
   
-  rownames(data_matrix) <- rownames(data)
-  colnames(data_matrix) <- colnames(data)
+  rownames(data_matrix) <- rownames(data); colnames(data_matrix) <- colnames(data)
   result <- as.data.frame(data_matrix)
   attr(result, "actual_method") <- actual_method
-  message("[DEBUG] impute_missing_values (global): completed with actual method = ", actual_method)
-  return(result)
+  message("[DEBUG] impute_missing_values: completed with method ", actual_method)
+  result
 }
 
-# =====================================================
-# 调试信息：global.R 加载完成
-# =====================================================
-message("[DEBUG] global.R loaded successfully (with minvalue factor logic).")
+message("[DEBUG] global.R loaded successfully (Arial font global)")

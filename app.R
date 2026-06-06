@@ -3,11 +3,11 @@
 library(shiny)
 
 source("global.R", local = TRUE)
-source("ui/upload_ui.R", local = TRUE)               # <-- 必须包含这一行
+source("ui/upload_ui.R", local = TRUE)
 source("ui/data_processing_ui.R", local = TRUE)      # 合并了 Cleaning, Preprocessing, Normalization
 source("ui/grouping_ui.R", local = TRUE)             # Define Groups
 source("ui/comparisons_ui.R", local = TRUE)          # Set Comparisons
-source("ui/plots_ui.R", local = TRUE)                # Plots（包含 Parameters 和 Export）
+source("ui/plots_ui.R", local = TRUE)                # Plots（包含 Parameters 和 Export，以及 UpSet）
 
 build_ui <- function() {
   fluidPage(
@@ -21,6 +21,7 @@ build_ui <- function() {
     shinyjs::useShinyjs(),
     tags$head(
       tags$style(HTML("
+        * { font-family: Arial, sans-serif; }
         .navbar-brand {font-weight: bold; font-size: 18px;}
         .card-modern {border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); margin-bottom: 20px; border: none;}
         .card-header-modern {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px 12px 0 0; padding: 15px 20px; font-weight: bold;}
@@ -137,9 +138,12 @@ build_ui <- function() {
       id = "main_navbar", collapsible = TRUE, windowTitle = "Proteomics Analysis",
       upload_ui(),
       data_processing_ui(),
-      grouping_ui(),
-      comparisons_ui(),
-      plots_ui()    # Plots 页面已包含 Parameters 和 Export
+      navbarMenu(
+        title = div(icon("chart-line"), "Differential Analysis"),
+        grouping_ui(),
+        comparisons_ui(),
+        plots_ui()
+      )
     )
   )
 }

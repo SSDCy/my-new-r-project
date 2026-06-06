@@ -1,5 +1,5 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - added Sample Correlation heatmap in Data Quality")
+message("[DEBUG] upload_ui.R loaded - added download buttons for histogram and correlation heatmap, complete Upload & Preview")
 
 upload_ui <- function() {
   tabPanel(
@@ -104,7 +104,8 @@ upload_ui <- function() {
                     ),
                     plotOutput("dq_missing_heatmap", height = "600px"),
                     h5("Valid Values per Sample"),
-                    plotOutput("sample_nonmiss_hist", height = "300px")
+                    downloadButton("download_sample_nonmiss_hist", "Download Histogram", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
+                    plotOutput("sample_nonmiss_hist", height = "500px")
                 )
             ),
             # ========== PCA 分析 ==========
@@ -115,11 +116,13 @@ upload_ui <- function() {
                     plotOutput("dq_pca_plot", height = "500px")
                 )
             ),
-            # ========== 样本相关性热图（新增） ==========
+            # ========== 样本相关性热图 ==========
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
-                    p("Pearson correlation between selected samples based on raw expression data (1% quantile imputation + log2 transformation). Top 500 most variable proteins are used. Samples are colored by Group and Batch if available."),
+                    p("Pearson correlation between selected samples based on raw expression data (1% quantile imputation + log2 transformation). Top 500 most variable proteins are used. Samples are colored by Group and SubGroup if available."),
+                    downloadButton("download_dq_sample_cor_png", "Download Heatmap PNG", class = "btn-sm btn-outline-success", style = "margin-right: 5px;"),
+                    downloadButton("download_dq_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn-sm btn-outline-secondary"),
                     plotOutput("dq_sample_cor_heatmap", height = "600px")
                 )
             )
@@ -128,4 +131,4 @@ upload_ui <- function() {
     )
   )
 }
-message("[DEBUG] upload_ui.R fully defined - Sample Correlation added")
+message("[DEBUG] upload_ui.R fully defined")

@@ -1,5 +1,5 @@
 # ui/plots_ui.R
-message("[DEBUG] plots_ui.R loaded - Sample Correlation tab removed, PCA already removed")
+message("[DEBUG] plots_ui.R loaded - export formats SVG/TIFF, sample names use underscores")
 
 plots_ui <- function() {
   tabPanel(
@@ -86,10 +86,9 @@ plots_ui <- function() {
                      div(style = "padding: 20px;",
                          uiOutput("volcano_preprocess_steps"),
                          
-                         # ========== 可折叠的 Parameters ==========
+                         # Parameters
                          tags$details(
-                           tags$summary("Parameters",
-                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
+                           tags$summary("Parameters", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
                            div(style = "margin-top: 10px;",
                                fluidRow(
                                  column(6,
@@ -144,10 +143,9 @@ plots_ui <- function() {
                            )
                          ),
                          
-                         # ========== 可折叠的调色板和点大小 ==========
+                         # Color Palette & Point Size
                          tags$details(
-                           tags$summary("Color Palette & Point Size",
-                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+                           tags$summary("Color Palette & Point Size", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                            div(style = "margin-top: 10px;",
                                div(class = "color-palette-row",
                                    div(class = "color-card",
@@ -196,16 +194,15 @@ plots_ui <- function() {
                            )
                          ),
                          
-                         # ========== 可折叠的 Export ==========
+                         # Export
                          tags$details(
-                           tags$summary("Export",
-                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
+                           tags$summary("Export", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
                            div(style = "margin-top: 10px;",
                                fluidRow(
                                  column(6,
                                         div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px;",
                                             h5(icon("image"), " Single Plot Export"),
-                                            selectInput("plot_format", "Image Format", choices = c("PNG" = "png", "JPG" = "jpg"), selected = "png"),
+                                            selectInput("plot_format", "Image Format", choices = c("SVG" = "svg", "TIFF" = "tiff"), selected = "svg"),
                                             fluidRow(
                                               column(12,
                                                      div(class="input-row-with-reset",
@@ -268,40 +265,26 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- 韦恩图 / UpSet 选项卡 ----
+      # ---- UpSet 选项卡 ----
       tabPanel(
-        title = "Venn / UpSet",
-        value = "venn_upset_sub",
+        title = "UpSet",
+        value = "upset_sub",
         fluidRow(
           column(12,
                  div(class = "card-modern",
-                     div(class = "card-header-modern", icon("chart-pie"), " Shared & Unique Proteins"),
+                     div(class = "card-header-modern", icon("chart-bar"), " UpSet Plot"),
                      div(style = "padding: 20px;",
                          uiOutput("venn_preprocess_steps"),
-                         p("Select regulation type and at least 2 comparisons. Venn diagram works best with 2-5; UpSet can handle all."),
-                         radioButtons("venn_upset_method", "Visualization Method",
-                                      choices = c("Venn Diagram (max 5)" = "venn", "UpSet Plot (unlimited)" = "upset"),
-                                      selected = "venn", inline = TRUE),
+                         p("Select regulation type and at least 2 comparisons to display shared and unique proteins using UpSet plot."),
                          fluidRow(
                            column(4, selectInput("venn_type", "Regulation Type", choices = c("Up", "Down", "Increase", "Decrease"), selected = "Up")),
                            column(6, selectizeInput("venn_comparisons", "Comparisons (min. 2)", choices = NULL, multiple = TRUE, 
                                                     options = list(placeholder = 'Select at least 2 comparisons'))),
                            column(2, br(), actionButton("generate_venn", "Generate", class = "btn btn-primary btn-block"))
                          ),
-                         uiOutput("venn_message_ui"),
-                         conditionalPanel(
-                           condition = "input.venn_upset_method == 'venn'",
-                           shinycssloaders::withSpinner(plotOutput("venn_plot", height = "500px"), type = 4, color = "#3498db"),
-                           fluidRow(
-                             column(6, downloadButton("download_venn_png", "Download Venn PNG", class = "btn btn-sm btn-outline-success"))
-                           )
-                         ),
-                         conditionalPanel(
-                           condition = "input.venn_upset_method == 'upset'",
-                           shinycssloaders::withSpinner(plotOutput("upset_plot", height = "600px"), type = 4, color = "#3498db"),
-                           fluidRow(
-                             column(6, downloadButton("download_upset_png", "Download UpSet PNG", class = "btn btn-sm btn-outline-success"))
-                           )
+                         shinycssloaders::withSpinner(plotOutput("upset_plot", height = "600px"), type = 4, color = "#3498db"),
+                         fluidRow(
+                           column(6, downloadButton("download_upset_png", "Download UpSet PNG", class = "btn btn-sm btn-outline-success"))
                          ),
                          uiOutput("venn_region_select_ui"),
                          shinycssloaders::withSpinner(DTOutput("venn_region_table"), type = 4, color = "#3498db"),
@@ -314,4 +297,4 @@ plots_ui <- function() {
     )
   )
 }
-message("[DEBUG] plots_ui.R fully defined - no Sample Correlation tab")
+message("[DEBUG] plots_ui.R fully defined - export formats updated")

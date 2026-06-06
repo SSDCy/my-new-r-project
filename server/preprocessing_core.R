@@ -1,5 +1,5 @@
 # server/preprocessing_core.R
-message("[DEBUG] preprocessing_core.R loaded - minvalue with full sample name")
+message("[DEBUG] preprocessing_core.R loaded - minvalue sample shows full underscored column name")
 
 preprocessing_params <- reactiveValues(
   imputation_method = NULL,
@@ -70,9 +70,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
       preprocessing_params$global_min_sample <- NULL
       preprocessing_params$fill_factor <- NULL
       preprocessing_params$actual_fill_value <- NULL
-      message("[DEBUG] processed_data: imputation skipped")
     } else if (imp_method == "minvalue") {
-      # 查找全局最小非缺失正值，获取真实蛋白ID和完整样本名
       mat <- as.matrix(data)
       pos_indices <- which(!is.na(mat) & mat > 0, arr.ind = TRUE)
       if (nrow(pos_indices) == 0) {
@@ -86,7 +84,7 @@ processed_data <- eventReactive(input$run_preprocessing, {
         min_col <- pos_indices[min_idx, "col"]
         global_min <- vals[min_idx]
         
-        # 映射真正的蛋白ID
+        # 蛋白 ID
         protein_id_raw <- rownames(data)[min_row]
         if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
           if (suppressWarnings(!is.na(as.numeric(protein_id_raw)))) {
@@ -99,8 +97,9 @@ processed_data <- eventReactive(input$run_preprocessing, {
         }
         min_protein <- protein_id_raw
         
-        # 使用完整的原始列名
-        min_sample <- colnames(data)[min_col]
+        # 样本完整列名（已经是下划线格式）
+        sample_long <- colnames(data)[min_col]
+        min_sample <- sample_long   # 直接使用，如 "LFQ intensity WT_3"
       }
       factor_val <- input$minvalue_fixed
       actual_fill <- global_min * factor_val
@@ -108,7 +107,6 @@ processed_data <- eventReactive(input$run_preprocessing, {
       message(sprintf("[DEBUG] processed_data: minvalue gmin=%g from protein '%s', sample '%s'", 
                       global_min, min_protein, min_sample))
       
-      # 执行填充
       data_matrix <- as.matrix(data)
       data_matrix[is.na(data_matrix)] <- actual_fill
       data <- as.data.frame(data_matrix)
@@ -151,46 +149,8 @@ processed_data <- eventReactive(input$run_preprocessing, {
   })
 })
 
-observeEvent(input$expression_file, {
-  preprocessing_params$batch_performed <- FALSE
-})
-
-observeEvent(input$intensity_type, {
-  preprocessing_params$batch_performed <- FALSE
-})
-
-# ========== Post-Processed Overview ==========
-output$pre_processed_summary <- renderPrint({
-  proc_df <- processed_data()
-  req(proc_df)
-  cat("Processed data dimensions:", nrow(proc_df), "proteins,", ncol(proc_df), "samples\n")
-  cat("Remaining missing values:", sum(is.na(proc_df)), "\n")
-  cat("Inf proteins removed:", preprocessing_params$inf_filtered_count, "\n")
-  
-  method <- preprocessing_params$imputation_method
-  if (!is.null(method) && method != "none") {
-    cat("\n--- Imputation ---\n")
-    cat("Method:", method, "\n")
-    if (method == "minvalue") {
-      cat("Fill factor:", format(preprocessing_params$fill_factor), "\n")
-      cat("Global minimum intensity:", format(preprocessing_params$global_min_intensity), "\n")
-      cat("  (Protein:", preprocessing_params$global_min_protein, 
-          ", Sample:", preprocessing_params$global_min_sample, ")\n")
-      cat("Actual fill value:", format(preprocessing_params$actual_fill_value), "\n")
-      message("[DEBUG] pre_processed_summary: displayed minvalue params with full sample name")
-    }
-  }
-  cat("Last run:", format(preprocessing_params$last_run_time, "%Y-%m-%d %H:%M:%S"), "\n")
-})
-
-output$pre_processed_missing_plot <- renderPlot({
-  req(processed_data())
-  missing_per_protein <- rowMeans(is.na(processed_data()))
-  hist(missing_per_protein, breaks = 20,
-       main = "Processed Data: Missing Value Proportion",
-       xlab = "Missing Proportion", ylab = "Number of Proteins",
-       col = "lightgreen", border = "white")
-})
+observeEvent(input$expression_file, { preprocessing_params$batch_performed <- FALSE })
+observeEvent(input$intensity_type, { preprocessing_params$batch_performed <- FALSE })
 
 output$pre_processed_table <- DT::renderDT({
   req(processed_data())
@@ -200,9 +160,7 @@ output$pre_processed_table <- DT::renderDT({
     if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
       original_ids <- rv$clean_data$`Master protein IDs`
       idx <- as.integer(ids)
-      if (max(idx, na.rm = TRUE) <= length(original_ids)) {
-        ids <- original_ids[idx]
-      }
+      if (max(idx, na.rm = TRUE) <= length(original_ids)) ids <- original_ids[idx]
     }
   }
   df <- cbind(`Master Protein ID` = ids, df)
@@ -219,9 +177,7 @@ output$imputation_skipped <- reactive({
 })
 outputOptions(output, "imputation_skipped", suspendWhenHidden = FALSE)
 
-output$intensity_info <- renderPrint({
-  cat("Minimum intensity filter disabled.\n")
-})
+output$intensity_info <- renderPrint({ cat("Minimum intensity filter disabled.\n") })
 
 output$preprocessing_steps_summary <- renderPrint({
   proc_df <- processed_data()
@@ -242,11 +198,11 @@ output$preprocessing_steps_summary <- renderPrint({
       cat("     (Protein:", preprocessing_params$global_min_protein, 
           ", Sample:", preprocessing_params$global_min_sample, ")\n")
       cat("   Actual fill value:", format(preprocessing_params$actual_fill_value), "\n")
-      message("[DEBUG] steps_summary: displayed minvalue params with full sample name")
+      message("[DEBUG] steps_summary: displayed minvalue params with full underscored column name")
     }
   } else cat("   Skipped.\n")
   cat("Final data dimensions:", nrow(proc_df), "proteins,", ncol(proc_df), "samples\n")
   cat("Remaining missing values:", sum(is.na(proc_df)), "\n")
 })
 
-message("[DEBUG] preprocessing_core.R: minvalue displays full sample name")
+message("[DEBUG] preprocessing_core.R: minvalue sample name now uses full column name (underscored)")
