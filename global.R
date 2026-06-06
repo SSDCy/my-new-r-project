@@ -48,6 +48,7 @@ library(jsonlite)
 library(reshape2)
 library(writexl)
 library(readxl)
+library(ggseqlogo)        # 序列 logo 图
 
 # =====================================================
 # 工具函数（与之前完全一致）
@@ -210,7 +211,7 @@ step_indicator <- function(steps, current_step) {
 }
 
 # =====================================================
-# 缺失值填充函数（最终版：使用 pcaMethods::pca 避免 ppca 参数问题）
+# 缺失值填充函数（minvalue 改为最小强度乘以因子）
 # =====================================================
 impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4,
                                   quantile_prob = 0.01) {
@@ -282,7 +283,6 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
     
     success <- FALSE
     tryCatch({
-      # 使用 pcaMethods::pca 泛型函数，指定 method = "ppca"
       pc <- pcaMethods::pca(clean, method = "ppca", nPcs = min(2, ncol(clean)), scale = "uv", center = TRUE)
       imputed_clean <- as.matrix(pcaMethods::completeObs(pc))
       success <- TRUE
@@ -298,7 +298,6 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
       return(result)
     }
     
-    # 重构完整矩阵
     full_matrix <- matrix(NA, nrow = nrow(data_matrix), ncol = ncol(data_matrix))
     rownames(full_matrix) <- orig_rows
     colnames(full_matrix) <- orig_cols
@@ -319,10 +318,28 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
     actual_method <- "ppca"
     
   } else if (method == "minvalue") {
-    val <- if (is.null(min_value) || is.na(min_value)) 1e-4 else min_value
-    message("[DEBUG] impute_missing_values: minvalue imputation with fixed value = ", val)
-    data_matrix[is.na(data_matrix)] <- val
+    # 计算全局最小强度（忽略缺失值和0？按需求，应使用非缺失正数的最小值）
+    message("[DEBUG] impute_missing_values: minvalue method - calculating global minimum intensity")
+    # 获取所有非缺失、大于0的值中的最小值（如果需要包含0，可调整，一般应大于0）
+    all_vals <- data_matrix[!is.na(data_matrix) & data_matrix > 0]
+    if (length(all_vals) == 0) {
+      # 如果没有任何有效值，回退到极小值1e-4
+      global_min <- 1e-4
+      message("[DEBUG] impute_missing_values: no valid positive values, using fallback global_min = ", global_min)
+    } else {
+      global_min <- min(all_vals, na.rm = TRUE)
+      message("[DEBUG] impute_missing_values: global minimum intensity = ", global_min)
+    }
+    factor <- min_value
+    actual_fill <- global_min * factor
+    message("[DEBUG] impute_missing_values: factor = ", factor, ", actual fill value = ", actual_fill)
+    
+    data_matrix[is.na(data_matrix)] <- actual_fill
     actual_method <- "minvalue"
+    # 将全局最小强度和填充值存储为属性，供外部使用
+    attr(data_matrix, "global_min_intensity") <- global_min
+    attr(data_matrix, "fill_factor") <- factor
+    attr(data_matrix, "actual_fill_value") <- actual_fill
     
   } else if (method == "quantile") {
     qp <- quantile_prob
@@ -354,4 +371,4 @@ impute_missing_values <- function(data, method = "knn", k = 10, min_value = 1e-4
 # =====================================================
 # 调试信息：global.R 加载完成
 # =====================================================
-message("[DEBUG] global.R loaded successfully (with impute_missing_values).")
+message("[DEBUG] global.R loaded successfully (with minvalue factor logic).")

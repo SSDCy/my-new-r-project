@@ -1,5 +1,5 @@
 # server/volcano_plot.R
-message("[DEBUG] volcano_plot.R loading...")
+message("[DEBUG] volcano_plot.R loading... (safe stat_method and min_unique_pep)")
 
 # ---------- 默认颜色 ----------
 default_colors <- reactive(list(Up="#FF0000", Down="#0000FF", Increase="#C00000", Decrease="#0945A5", NS="#7f7e83"))
@@ -73,9 +73,9 @@ volcano_de_result <- reactive({
   nd <- norm_data_full()
   if (is.null(nd)) { message("[DEBUG] volcano: norm_data_full() is NULL"); return(NULL) }
   
-  # 应用 unique peptide 过滤
+  # 应用 unique peptide 过滤（安全处理）
   unique_col <- grep("^Unique peptides$", colnames(nd), value = TRUE)[1]
-  if (!is.na(unique_col) && input$min_unique_pep > 1) {
+  if (!is.na(unique_col) && !is.null(input$min_unique_pep) && input$min_unique_pep > 1) {
     nd[[unique_col]] <- as.numeric(nd[[unique_col]])
     nd <- nd[nd[[unique_col]] >= input$min_unique_pep, ]
     message("[DEBUG] volcano: after unique peptide filter (>= ", input$min_unique_pep, "), nrow = ", nrow(nd))
@@ -100,8 +100,7 @@ volcano_de_result <- reactive({
   sub_df <- nd[, c("Master protein IDs", treat_cols, ctrl_cols), drop = FALSE]
   
   fc_up <- input$fc_up; fc_down <- input$fc_down; p_cut <- as.numeric(input$p_cut)
-  stat_method <- input$stat_method
-  if (is.null(stat_method) || stat_method == "") stat_method <- "t-test"
+  stat_method <- input$stat_method %||% "t-test"   # 安全默认
   message("[DEBUG] volcano: running DE with method=", stat_method, ", FC_up=", fc_up, ", FC_down=", fc_down, ", p_cut=", p_cut)
   
   res <- tryCatch({
@@ -289,4 +288,4 @@ output$download_volcano_png <- downloadHandler(
   }
 )
 
-message("[DEBUG] volcano_plot.R loaded successfully.")
+message("[DEBUG] volcano_plot.R loaded successfully (safe).")

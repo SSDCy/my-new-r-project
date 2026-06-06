@@ -1,4 +1,5 @@
 # ui/plots_ui.R
+message("[DEBUG] plots_ui.R loaded - Sample Correlation tab removed, PCA already removed")
 
 plots_ui <- function() {
   tabPanel(
@@ -24,7 +25,6 @@ plots_ui <- function() {
                                                choices = c("LFQ Intensity (per-row Z-score)" = "LFQ",
                                                            "Intensity (per-row Z-score)" = "Intensity"),
                                                selected = "LFQ"),
-                                  # 新增：归一化选项（仅在 LFQ 模式下可用）
                                   conditionalPanel(
                                     condition = "input.heatmap_data_source == 'LFQ'",
                                     radioButtons("heatmap_normalization", "Normalization",
@@ -71,7 +71,7 @@ plots_ui <- function() {
           )
         )
       ),
-      # ---- 火山图选项卡 ----
+      # ---- 火山图选项卡（整合 Parameters 和 Export） ----
       tabPanel(
         title = "Volcano Plot",
         value = "volcano_sub",
@@ -85,63 +85,182 @@ plots_ui <- function() {
                               "(Click on any dot to view the protein's expression profile across all groups)")),
                      div(style = "padding: 20px;",
                          uiOutput("volcano_preprocess_steps"),
-                         div(class = "color-palette-row",
-                             div(class = "color-card",
-                                 div(class = "color-card-label", "Up"),
-                                 colourpicker::colourInput("color_up", NULL, value = "#FF0000",
-                                                           showColour = "background",
-                                                           allowTransparent = FALSE),
-                                 div(class = "color-card-value", textOutput("val_up", inline = TRUE))
-                             ),
-                             div(class = "color-card",
-                                 div(class = "color-card-label", "Down"),
-                                 colourpicker::colourInput("color_down", NULL, value = "#0000FF",
-                                                           showColour = "background",
-                                                           allowTransparent = FALSE),
-                                 div(class = "color-card-value", textOutput("val_down", inline = TRUE))
-                             ),
-                             div(class = "color-card",
-                                 div(class = "color-card-label", "Increase"),
-                                 colourpicker::colourInput("color_increase", NULL, value = "#C00000",
-                                                           showColour = "background",
-                                                           allowTransparent = FALSE),
-                                 div(class = "color-card-value", textOutput("val_inc", inline = TRUE))
-                             ),
-                             div(class = "color-card",
-                                 div(class = "color-card-label", "Decrease"),
-                                 colourpicker::colourInput("color_decrease", NULL, value = "#0945A5",
-                                                           showColour = "background",
-                                                           allowTransparent = FALSE),
-                                 div(class = "color-card-value", textOutput("val_dec", inline = TRUE))
-                             ),
-                             div(class = "color-card",
-                                 div(class = "color-card-label", "NS"),
-                                 colourpicker::colourInput("color_ns", NULL, value = "#7f7e83",
-                                                           showColour = "background",
-                                                           allowTransparent = FALSE),
-                                 div(class = "color-card-value", textOutput("val_ns", inline = TRUE))
-                             ),
-                             div(class = "reset-btn-wrapper",
-                                 actionButton("reset_color", icon("undo"), class = "btn-circle-modern")
-                             )
+                         
+                         # ========== 可折叠的 Parameters ==========
+                         tags$details(
+                           tags$summary("Parameters",
+                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
+                           div(style = "margin-top: 10px;",
+                               fluidRow(
+                                 column(6,
+                                        div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
+                                            h5(icon("balance-scale"), " Fold Change Thresholds"),
+                                            numericInput("fc_up", "FC up >", value = 1.2, min = 1, step = 0.1),
+                                            uiOutput("fc_up_warning"),
+                                            p(class = "param-hint", "Must be ≥ 1.0. Up-regulated proteins fold change threshold."),
+                                            numericInput("fc_down", "FC down <", value = 0.84, min = 0, max = 1, step = 0.01),
+                                            uiOutput("fc_down_warning"),
+                                            p(class = "param-hint", "Must be between 0.0 and 1.0. Down-regulated proteins fold change threshold."),
+                                            hr(),
+                                            h5(icon("chart-line"), " Statistical Significance"),
+                                            selectInput("p_cut", "P-value threshold", choices = c("0.05", "0.01"), selected = "0.05"),
+                                            p(class = "param-hint", "Select significance level (P-value threshold)."),
+                                            h5(icon("flask"), " Statistical Method"),
+                                            selectInput("stat_method", "Method", choices = c("t-test", "wilcoxon", "limma"), selected = "t-test"),
+                                            p(class = "param-hint", "Choose the statistical test for differential analysis.")
+                                        )
+                                 ),
+                                 column(6,
+                                        div(style = "background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;",
+                                            h5(icon("check-circle"), " Valid Replicates"),
+                                            div(style = "display: flex; align-items: center; gap: 10px; margin-bottom: 10px;",
+                                                numericInput("replicate_fill_all", "Set All Thresholds", value = 2, min = 1, max = 10, step = 1, width = "100px"),
+                                                actionButton("apply_replicate_fill", "Apply to All", class = "btn-sm btn-info")
+                                            ),
+                                            numericInput("min_treat_valid", "Treatment group min valid replicates", value = 2, min = 1, max = 20),
+                                            uiOutput("min_treat_valid_warning"),
+                                            numericInput("min_ctrl_valid", "Control group min valid replicates", value = 2, min = 1, max = 20),
+                                            uiOutput("min_ctrl_valid_warning"),
+                                            numericInput("min_rep_ttest", "Min replicates for t-test", value = 2, min = 1, max = 10),
+                                            uiOutput("min_rep_ttest_warning"),
+                                            numericInput("min_rep_inc", "Min replicates for 'Increase'", value = 2, min = 1, max = 10),
+                                            uiOutput("min_rep_inc_warning"),
+                                            numericInput("min_rep_dec", "Min replicates for 'Decrease'", value = 2, min = 1, max = 10),
+                                            uiOutput("min_rep_dec_warning"),
+                                            p(class = "param-hint", "Use the 'Set All' field above to fill all replicate thresholds at once, or adjust individually.")
+                                        )
+                                 )
+                               ),
+                               fluidRow(
+                                 column(12,
+                                        div(style = "background: #e3f2fd; padding: 15px; border-radius: 10px;",
+                                            h5(icon("filter"), " Protein Filtering (Unique Peptides)"),
+                                            numericInput("min_unique_pep", "Minimum Unique Peptides", value = 2, min = 1, max = 20, step = 1),
+                                            uiOutput("min_unique_pep_warning"),
+                                            p(class = "param-hint", "Filter proteins with unique peptides ≥ this value (integer ≥ 1). Common values: 1, 2, 3, 6.")
+                                        )
+                                 )
+                               )
+                           )
                          ),
-                         uiOutput("color_preview"),
-                         fluidRow(
-                           column(4, numericInput("point_size", "Point Size", value = 4, min = 0.5, max = 10, step = 0.1))
+                         
+                         # ========== 可折叠的调色板和点大小 ==========
+                         tags$details(
+                           tags$summary("Color Palette & Point Size",
+                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+                           div(style = "margin-top: 10px;",
+                               div(class = "color-palette-row",
+                                   div(class = "color-card",
+                                       div(class = "color-card-label", "Up"),
+                                       colourpicker::colourInput("color_up", NULL, value = "#FF0000", showColour = "background", allowTransparent = FALSE),
+                                       div(class = "color-card-value", textOutput("val_up", inline = TRUE))
+                                   ),
+                                   div(class = "color-card",
+                                       div(class = "color-card-label", "Down"),
+                                       colourpicker::colourInput("color_down", NULL, value = "#0000FF", showColour = "background", allowTransparent = FALSE),
+                                       div(class = "color-card-value", textOutput("val_down", inline = TRUE))
+                                   ),
+                                   div(class = "color-card",
+                                       div(class = "color-card-label", "Increase"),
+                                       colourpicker::colourInput("color_increase", NULL, value = "#C00000", showColour = "background", allowTransparent = FALSE),
+                                       div(class = "color-card-value", textOutput("val_inc", inline = TRUE))
+                                   ),
+                                   div(class = "color-card",
+                                       div(class = "color-card-label", "Decrease"),
+                                       colourpicker::colourInput("color_decrease", NULL, value = "#0945A5", showColour = "background", allowTransparent = FALSE),
+                                       div(class = "color-card-value", textOutput("val_dec", inline = TRUE))
+                                   ),
+                                   div(class = "color-card",
+                                       div(class = "color-card-label", "NS"),
+                                       colourpicker::colourInput("color_ns", NULL, value = "#7f7e83", showColour = "background", allowTransparent = FALSE),
+                                       div(class = "color-card-value", textOutput("val_ns", inline = TRUE))
+                                   ),
+                                   div(class = "reset-btn-wrapper",
+                                       actionButton("reset_color", icon("undo"), class = "btn-circle-modern")
+                                   )
+                               ),
+                               uiOutput("color_preview"),
+                               numericInput("point_size", "Point Size", value = 4, min = 0.5, max = 10, step = 0.1)
+                           )
                          ),
+                         
                          hr(),
                          fluidRow(
-                           column(8,
-                                  selectInput("selected_comparison", "Select Comparison", choices = NULL, width = "100%")
-                           ),
-                           column(4,
-                                  textInputMax("single_plot_title", "Custom Title", value = "", placeholder = "Auto-generated", maxlength = 50, width = "100%")
-                           )
+                           column(8, selectInput("selected_comparison", "Select Comparison", choices = NULL, width = "100%")),
+                           column(4, textInputMax("single_plot_title", "Custom Title", value = "", placeholder = "Auto-generated", maxlength = 50, width = "100%"))
                          ),
                          fluidRow(column(12, uiOutput("plot_info_ui"))),
                          fluidRow(
                            column(12,
                                   shinycssloaders::withSpinner(plotlyOutput("volcano_plot", height = "700px"), type = 4, color = "#3498db")
+                           )
+                         ),
+                         
+                         # ========== 可折叠的 Export ==========
+                         tags$details(
+                           tags$summary("Export",
+                                        style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-top: 10px; margin-bottom: 10px;"),
+                           div(style = "margin-top: 10px;",
+                               fluidRow(
+                                 column(6,
+                                        div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px;",
+                                            h5(icon("image"), " Single Plot Export"),
+                                            selectInput("plot_format", "Image Format", choices = c("PNG" = "png", "JPG" = "jpg"), selected = "png"),
+                                            fluidRow(
+                                              column(12,
+                                                     div(class="input-row-with-reset",
+                                                         div(class="form-group shiny-input-container",
+                                                             tags$label(class="control-label", "Width (inch)"),
+                                                             tags$input(type="text", id="plot_width", class="form-control", value="10", placeholder="Enter width (5-30)")
+                                                         ),
+                                                         actionButton("reset_plot_size", icon("undo"), class = "btn btn-outline-secondary btn-reset-small", title = "Reset to default size")
+                                                     ),
+                                                     div(id="plot_width_warning", class="input-warning")
+                                              )
+                                            ),
+                                            fluidRow(
+                                              column(12,
+                                                     div(class="form-group shiny-input-container",
+                                                         tags$label(class="control-label", "Height (inch)"),
+                                                         tags$input(type="text", id="plot_height", class="form-control", value="8", placeholder="Enter height (5-30)")
+                                                     ),
+                                                     div(id="plot_height_warning", class="input-warning")
+                                              )
+                                            ),
+                                            br(),
+                                            textInputMax("download_single_title", "Custom Title", value = "", placeholder = "Use plot page title", maxlength = 25),
+                                            downloadButton("download_plot", "Download Single Plot",
+                                                           style = "width: 100%; background: #3498db; color: white; padding: 10px; margin-top: 10px;")
+                                        )
+                                 ),
+                                 column(6,
+                                        div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px;",
+                                            h5(icon("th"), " Combined Plot Export"),
+                                            textInputMax("combined_plot_title", "Main Title", value = "Combined Volcano Plots", maxlength = 30, width = "100%"),
+                                            hr(),
+                                            h5(icon("edit"), " Sub-plot Titles"),
+                                            p(class = "param-hint", "Customize titles for each sub-plot according to the order of comparisons. Leave blank for defaults."),
+                                            uiOutput("subplot_titles_ui"),
+                                            div(style = "margin: 10px 0;",
+                                                actionButton("goto_comparisons", "Go to Set Comparisons", icon = icon("arrow-left"), class = "btn-sm btn-outline-danger"),
+                                                span(class = "red-text", "Reorder comparisons in 'Set Comparisons' tab if needed.")
+                                            ),
+                                            downloadButton("download_combined_plot", "Download Combined Plots",
+                                                           style = "width: 100%; background: #9b59b6; color: white; padding: 10px; margin-top: 10px;")
+                                        )
+                                 )
+                               ),
+                               hr(),
+                               fluidRow(
+                                 column(12,
+                                        div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px;",
+                                            h5(icon("file-excel"), " Excel Export (select comparisons)"),
+                                            selectInput("export_comparisons", "Select comparisons to export", choices = NULL, multiple = TRUE),
+                                            downloadButton("download_excel", "Download Selected Excel Report",
+                                                           style = "width: 100%; background: #27ae60; color: white; padding: 10px;")
+                                        )
+                                 )
+                               )
                            )
                          )
                      )
@@ -153,7 +272,6 @@ plots_ui <- function() {
       tabPanel(
         title = "Venn / UpSet",
         value = "venn_upset_sub",
-        # 保持不变...
         fluidRow(
           column(12,
                  div(class = "card-modern",
@@ -192,69 +310,8 @@ plots_ui <- function() {
                  )
           )
         )
-      ),
-      # ---- PCA 选项卡 ----
-      tabPanel(
-        title = "PCA",
-        value = "pca_sub",
-        # 保持不变...
-        fluidRow(
-          column(12,
-                 div(class = "card-modern",
-                     div(class = "card-header-modern", icon("project-diagram"), " Principal Component Analysis"),
-                     div(style = "padding: 20px;",
-                         uiOutput("pca_preprocess_steps"),
-                         p("PCA is performed on normalized expression data after log2 transformation. Outliers are detected based on a Z-score > 3 on PC1 or PC2."),
-                         uiOutput("pca_data_source_note"),
-                         fluidRow(
-                           column(6,
-                                  h4(icon("users"), " PCA by Group"),
-                                  shinycssloaders::withSpinner(plotlyOutput("pca_group_plot", height = "500px"), type = 4, color = "#3498db"),
-                                  downloadButton("download_pca_group_png", "Download Group PCA", class = "btn btn-sm btn-outline-success")
-                           ),
-                           column(6,
-                                  h4(icon("layer-group"), " PCA by Batch"),
-                                  shinycssloaders::withSpinner(plotlyOutput("pca_batch_plot", height = "500px"), type = 4, color = "#3498db"),
-                                  downloadButton("download_pca_batch_png", "Download Batch PCA", class = "btn btn-sm btn-outline-success")
-                           )
-                         ),
-                         hr(),
-                         h4(icon("exclamation-triangle"), " Outlier Detection"),
-                         verbatimTextOutput("pca_outlier_info")
-                     )
-                 )
-          )
-        )
-      ),
-      # ---- 样本相关性热图选项卡 ----
-      tabPanel(
-        title = "Sample Correlation",
-        value = "sample_cor_sub",
-        # 保持不变...
-        fluidRow(
-          column(12,
-                 div(class = "card-modern",
-                     div(class = "card-header-modern", icon("th"), " Sample Correlation Heatmap"),
-                     div(style = "padding: 20px;",
-                         uiOutput("sample_cor_preprocess_steps"),
-                         p("Pearson correlation between samples based on the normalized expression data (log2 transformed). The heatmap uses the top 500 most variable proteins."),
-                         uiOutput("sample_cor_data_source_note"),
-                         fluidRow(
-                           column(4,
-                                  actionButton("generate_sample_cor", "Generate Correlation Heatmap", class = "btn btn-primary btn-block"),
-                                  hr(),
-                                  downloadButton("download_sample_cor_png", "Download Heatmap PNG", class = "btn btn-sm btn-outline-success"),
-                                  downloadButton("download_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn btn-sm btn-outline-secondary")
-                           ),
-                           column(8,
-                                  shinycssloaders::withSpinner(plotOutput("sample_cor_heatmap", height = "600px"), type = 4, color = "#e67e22")
-                           )
-                         )
-                     )
-                 )
-          )
-        )
       )
     )
   )
 }
+message("[DEBUG] plots_ui.R fully defined - no Sample Correlation tab")

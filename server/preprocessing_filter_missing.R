@@ -1,5 +1,5 @@
 # server/preprocessing_filter_missing.R
-message("[DEBUG] preprocessing_filter_missing.R loaded")
+message("[DEBUG] preprocessing_filter_missing.R loaded (group mode default)")
 
 # 样本信息Batch列预览
 output$batch_info_preview <- renderPrint({
@@ -28,14 +28,13 @@ observeEvent(input$preset_missing_0.7, {
   updateSliderInput(session, "max_missing_fraction", value = 0.7)
 })
 
-# 分组匹配状态 UI
+# 分组匹配状态 UI（已简化，只显示分组信息）
 output$filter_mode_group_match_ui <- renderUI({
   req(rv$sample_names)
-  if (input$missing_filter_mode != "group") return(NULL)
   
   if (is.null(rv$sample_info) || !"Group" %in% colnames(rv$sample_info)) {
     return(div(style = "color: #d9534f;", 
-               icon("times-circle"), " No sample info with Group column uploaded. Within Groups mode cannot be applied. Please upload sample info first."))
+               icon("times-circle"), " No sample info with Group column uploaded. Filtering will fall back to global mode."))
   }
   
   si <- rv$sample_info
@@ -50,7 +49,7 @@ output$filter_mode_group_match_ui <- renderUI({
     return(div(style = "color: #f0ad4e;",
                icon("exclamation-triangle"), 
                paste0(" Warning: ", unmatched, " sample(s) not matched to sample info. ",
-                      "Within Groups mode will fall back to Global during preprocessing."),
+                      "Filtering will fall back to Global mode."),
                br(),
                tags$small("Unmatched samples: ", sample_list)))
   }
@@ -69,150 +68,65 @@ output$filter_mode_group_match_ui <- renderUI({
   }
 })
 
-# 两种过滤模式的预测对比
-filter_mode_comparison <- reactive({
-  req(expression_data(), input$max_missing_fraction)
-  data <- expression_data()
-  threshold <- input$max_missing_fraction
-  
-  message("[DEBUG] filter_mode_comparison: computing global and group predictions")
-  
-  missing_global <- rowMeans(is.na(data))
-  global_keep <- sum(missing_global <= threshold)
-  message("[DEBUG] filter_mode_comparison: global mode would retain ", global_keep, " of ", nrow(data))
-  
-  group_keep <- NA
-  group_note <- ""
-  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
-    si <- rv$sample_info
-    si$short <- extract_sample_names(rownames(si))
-    sample_short <- rv$sample_names
-    idx <- match(sample_short, si$short)
-    if (!all(is.na(idx))) {
-      group_vec <- si$Group[idx]
-      group_vec[is.na(idx)] <- "Unknown"
-      message("[DEBUG] filter_mode_comparison: group assignment sample count - ", paste(capture.output(table(group_vec)), collapse = ", "))
-      keep <- rep(FALSE, nrow(data))
-      for (g in unique(group_vec)) {
-        cols_in_group <- which(group_vec == g)
-        if (length(cols_in_group) > 0) {
-          missing_frac_group <- rowMeans(is.na(data[, cols_in_group, drop = FALSE]))
-          keep <- keep | (missing_frac_group <= threshold)
-        }
-      }
-      group_keep <- sum(keep)
-      message("[DEBUG] filter_mode_comparison: group mode would retain ", group_keep)
-      if (any(is.na(idx))) {
-        unmatched_n <- sum(is.na(idx))
-        group_note <- paste0(" (Note: ", unmatched_n, " samples not matched, treated as separate group 'Unknown')")
-      }
-    }
-  }
-  
-  list(global_keep = global_keep, group_keep = group_keep, total = nrow(data), group_note = group_note)
-})
-
-output$missing_filter_comparison <- renderPrint({
-  comp <- filter_mode_comparison()
-  req(comp)
-  cat("Predicted retained proteins:\n")
-  cat(sprintf("Global mode:      %d / %d\n", comp$global_keep, comp$total))
-  if (!is.na(comp$group_keep)) {
-    cat(sprintf("Group mode:       %d / %d %s\n", comp$group_keep, comp$total, comp$group_note))
-    diff <- comp$group_keep - comp$global_keep
-    if (diff > 0) {
-      cat(sprintf("Group mode retains %d more proteins.\n", diff))
-    } else if (diff < 0) {
-      cat(sprintf("Group mode retains %d fewer proteins (unusual, check group assignments).\n", abs(diff)))
-    } else {
-      cat("Both modes retain the same number of proteins.\n")
-    }
-  } else {
-    cat("Group mode:       Not available (need sample info with Group column)\n")
-  }
-  cat("\n* These are predictions based on current threshold. Actual filtering may also consider other filters later.\n")
-})
-
-# 缺失值过滤效果（支持模式区分）
+# 缺失值过滤效果（只显示分组模式）
 missing_filter_prediction_detail <- reactive({
   req(expression_data(), input$max_missing_fraction)
   data <- expression_data()
   threshold <- input$max_missing_fraction
-  mode <- input$missing_filter_mode
+  # 强制使用分组模式
+  mode <- "group"
   
-  message("[DEBUG] missing_filter_prediction_detail: mode = ", mode)
+  detail <- list(
+    mode = "Within Groups",
+    total_proteins = nrow(data),
+    total_samples = ncol(data),
+    removed = NA,
+    retained = NA,
+    groups_detail = NULL
+  )
   
-  if (mode == "global") {
-    missing_per_protein <- rowMeans(is.na(data))
-    filtered <- sum(missing_per_protein > threshold)
-    retained <- nrow(data) - filtered
-    detail <- list(
-      mode = "Global",
-      total_proteins = nrow(data),
-      total_samples = ncol(data),
-      removed = filtered,
-      retained = retained,
-      groups_detail = NULL,
-      keep = missing_per_protein <= threshold,
-      missing_rate = missing_per_protein
+  if (is.null(rv$sample_info) || !"Group" %in% colnames(rv$sample_info)) {
+    detail$warning <- "No sample info with Group column available. Filtering will fall back to Global mode."
+    return(detail)
+  }
+  
+  si <- rv$sample_info
+  si$short <- extract_sample_names(rownames(si))
+  sample_short <- rv$sample_names
+  idx <- match(sample_short, si$short)
+  group_vec <- si$Group[idx]
+  group_vec[is.na(idx)] <- "Unknown"
+  
+  keep <- rep(FALSE, nrow(data))
+  groups_list <- unique(group_vec)
+  groups_detail <- list()
+  
+  per_group_pass <- matrix(FALSE, nrow = nrow(data), ncol = length(groups_list))
+  colnames(per_group_pass) <- groups_list
+  
+  for (i in seq_along(groups_list)) {
+    g <- groups_list[i]
+    cols_in_group <- which(group_vec == g)
+    if (length(cols_in_group) == 0) next
+    missing_frac_group <- rowMeans(is.na(data[, cols_in_group, drop = FALSE]))
+    keep_g <- missing_frac_group <= threshold
+    keep <- keep | keep_g
+    per_group_pass[, i] <- keep_g
+    groups_detail[[g]] <- list(
+      n_samples = length(cols_in_group),
+      proteins_kept_in_group = sum(keep_g)
     )
-    message("[DEBUG] missing_filter_prediction_detail (global): removed = ", filtered, ", retained = ", retained)
-  } else { # group mode
-    detail <- list(
-      mode = "Within Groups",
-      total_proteins = nrow(data),
-      total_samples = ncol(data),
-      removed = NA,
-      retained = NA,
-      groups_detail = NULL
-    )
-    
-    if (is.null(rv$sample_info) || !"Group" %in% colnames(rv$sample_info)) {
-      detail$warning <- "No sample info with Group column available. Within Groups mode cannot be applied; it will fall back to Global during preprocessing."
-      message("[DEBUG] missing_filter_prediction_detail: no sample info, warning")
-      return(detail)
-    }
-    
-    si <- rv$sample_info
-    si$short <- extract_sample_names(rownames(si))
-    sample_short <- rv$sample_names
-    idx <- match(sample_short, si$short)
-    group_vec <- si$Group[idx]
-    group_vec[is.na(idx)] <- "Unknown"
-    
-    keep <- rep(FALSE, nrow(data))
-    groups_list <- unique(group_vec)
-    groups_detail <- list()
-    
-    per_group_pass <- matrix(FALSE, nrow = nrow(data), ncol = length(groups_list))
-    colnames(per_group_pass) <- groups_list
-    
-    for (i in seq_along(groups_list)) {
-      g <- groups_list[i]
-      cols_in_group <- which(group_vec == g)
-      if (length(cols_in_group) == 0) next
-      missing_frac_group <- rowMeans(is.na(data[, cols_in_group, drop = FALSE]))
-      keep_g <- missing_frac_group <= threshold
-      keep <- keep | keep_g
-      per_group_pass[, i] <- keep_g
-      groups_detail[[g]] <- list(
-        n_samples = length(cols_in_group),
-        proteins_kept_in_group = sum(keep_g)
-      )
-    }
-    
-    detail$retained <- sum(keep)
-    detail$removed <- nrow(data) - detail$retained
-    detail$groups_detail <- groups_detail
-    detail$keep <- keep
-    detail$per_group_pass <- per_group_pass
-    detail$missing_rate <- rowMeans(is.na(data))
-    
-    if (sum(is.na(idx)) > 0) {
-      detail$warning <- paste0(sum(is.na(idx)), " samples not matched to sample info, treated as group 'Unknown'.")
-      message("[DEBUG] missing_filter_prediction_detail: unmatched samples = ", sum(is.na(idx)))
-    }
-    message("[DEBUG] missing_filter_prediction_detail (group): removed = ", detail$removed, ", retained = ", detail$retained)
+  }
+  
+  detail$retained <- sum(keep)
+  detail$removed <- nrow(data) - detail$retained
+  detail$groups_detail <- groups_detail
+  detail$keep <- keep
+  detail$per_group_pass <- per_group_pass
+  detail$missing_rate <- rowMeans(is.na(data))
+  
+  if (sum(is.na(idx)) > 0) {
+    detail$warning <- paste0(sum(is.na(idx)), " samples not matched, treated as group 'Unknown'.")
   }
   
   return(detail)
@@ -222,30 +136,24 @@ output$missing_filter_effect <- renderPrint({
   detail <- missing_filter_prediction_detail()
   req(detail)
   
-  cat("Current filter mode: ", detail$mode, "\n")
-  if (detail$mode == "Global") {
-    cat("Evaluating missing rate across all", detail$total_samples, "samples.\n")
-    cat("Predicted removal (missing rate > ", input$max_missing_fraction, "): ", detail$removed, " proteins\n", sep = "")
-    cat("Predicted retained: ", detail$retained, " proteins\n", sep = "")
-  } else {
-    if (!is.null(detail$warning)) {
-      cat("Warning: ", detail$warning, "\n")
-    }
-    cat("Evaluating missing rate within each group.\n")
-    cat("Groups and sample counts:\n")
-    if (!is.null(detail$groups_detail)) {
-      for (g in names(detail$groups_detail)) {
-        info <- detail$groups_detail[[g]]
-        cat(sprintf("  %s: %d samples, %d proteins pass threshold within group\n", g, info$n_samples, info$proteins_kept_in_group))
-      }
-    }
-    cat(sprintf("\nOverall predicted removal (need to pass at least one group): %d proteins\n", detail$removed))
-    cat(sprintf("Overall predicted retained: %d proteins\n", detail$retained))
+  cat("Current filter mode: Within Groups\n")
+  if (!is.null(detail$warning)) {
+    cat("Warning: ", detail$warning, "\n")
   }
-  cat("\nNote: This prediction only considers the missing rate filter, without prior Inf/Intensity filters. It is intended as a reference for threshold estimation.\n")
+  cat("Evaluating missing rate within each group.\n")
+  cat("Groups and sample counts:\n")
+  if (!is.null(detail$groups_detail)) {
+    for (g in names(detail$groups_detail)) {
+      info <- detail$groups_detail[[g]]
+      cat(sprintf("  %s: %d samples, %d proteins pass threshold within group\n", g, info$n_samples, info$proteins_kept_in_group))
+    }
+  }
+  cat(sprintf("\nOverall predicted removal: %d proteins\n", detail$removed))
+  cat(sprintf("Overall predicted retained: %d proteins\n", detail$retained))
+  cat("\nNote: This prediction only considers missing rate, without prior Inf filter.\n")
 })
 
-# 导出缺失值过滤结果 Excel（添加进度条）
+# 导出缺失值过滤结果 Excel（分组模式）
 output$download_missing_filter_excel <- downloadHandler(
   filename = function() {
     paste0("Missing_Filter_Result_", Sys.Date(), ".xlsx")
@@ -258,9 +166,7 @@ output$download_missing_filter_excel <- downloadHandler(
       
       data <- expression_data()
       threshold <- input$max_missing_fraction
-      mode <- input$missing_filter_mode
-      
-      message("[DEBUG] download_missing_filter_excel: mode = ", mode, ", threshold = ", threshold)
+      mode <- "group"   # 强制分组
       
       detail <- missing_filter_prediction_detail()
       if (is.null(detail$keep)) {
@@ -272,7 +178,6 @@ output$download_missing_filter_excel <- downloadHandler(
       row_names <- rownames(data)
       all_numeric <- suppressWarnings(all(!is.na(as.numeric(row_names))))
       if (all_numeric) {
-        message("[DEBUG] download_missing_filter_excel: rownames are numeric indices, fetching from clean_data")
         if (!is.null(rv$clean_data) && "Master protein IDs" %in% colnames(rv$clean_data)) {
           clean_ids <- rv$clean_data$`Master protein IDs`
           if (length(clean_ids) == nrow(data)) {
@@ -286,24 +191,20 @@ output$download_missing_filter_excel <- downloadHandler(
       } else {
         protein_ids <- row_names
       }
-      message("[DEBUG] download_missing_filter_excel: first 5 protein IDs: ", paste(head(protein_ids, 5), collapse = ", "))
       
       retained_ids <- protein_ids[keep]
       filtered_ids <- protein_ids[!keep]
-      message("[DEBUG] download_missing_filter_excel: retained = ", length(retained_ids), ", filtered = ", length(filtered_ids))
       
       group_extra_ids <- character(0)
       if (mode == "group") {
         missing_global <- rowMeans(is.na(data))
         global_keep <- missing_global <= threshold
         group_extra_ids <- protein_ids[keep & !global_keep]
-        message("[DEBUG] download_missing_filter_excel: Group mode extra proteins count = ", length(group_extra_ids))
       }
       
       incProgress(0.3, detail = "Creating workbook...")
       wb <- openxlsx::createWorkbook()
       
-      # Sheet 1: Retained
       retained_df <- data[which(keep), , drop = FALSE]
       retained_df <- cbind(ProteinID = retained_ids, retained_df, stringsAsFactors = FALSE)
       if (length(group_extra_ids) > 0) {
@@ -312,7 +213,6 @@ output$download_missing_filter_excel <- downloadHandler(
       openxlsx::addWorksheet(wb, "Retained")
       openxlsx::writeData(wb, "Retained", retained_df)
       
-      # Sheet 2: Filtered_Out
       filtered_df <- data[which(!keep), , drop = FALSE]
       filtered_df <- cbind(ProteinID = filtered_ids, filtered_df, stringsAsFactors = FALSE)
       openxlsx::addWorksheet(wb, "Filtered_Out")
@@ -326,50 +226,22 @@ output$download_missing_filter_excel <- downloadHandler(
         rownames(pass_matrix) <- protein_ids
         
         retained_pass <- pass_matrix[retained_ids, , drop = FALSE]
-        
         group_assign <- apply(retained_pass, 1, function(x) {
           g <- group_names[x]
           if (length(g) == 0) return("None")
           paste(g, collapse = ";")
         })
         
-        group_detail_df <- data.frame(
-          ProteinID = retained_ids,
-          GroupPass = group_assign,
-          stringsAsFactors = FALSE
-        )
-        
-        sets <- lapply(group_names, function(g) retained_ids[retained_pass[, g]])
-        names(sets) <- group_names
-        
-        if (length(group_names) == 2) {
-          only_g1 <- setdiff(sets[[1]], sets[[2]])
-          only_g2 <- setdiff(sets[[2]], sets[[1]])
-          both <- intersect(sets[[1]], sets[[2]])
-          
-          group_detail_df$SpecificGroup <- ""
-          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g1] <- paste0("Only ", group_names[1])
-          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% only_g2] <- paste0("Only ", group_names[2])
-          group_detail_df$SpecificGroup[group_detail_df$ProteinID %in% both] <- "Both"
-        }
-        
+        group_detail_df <- data.frame(ProteinID = retained_ids, GroupPass = group_assign, stringsAsFactors = FALSE)
         openxlsx::addWorksheet(wb, "Group_Details")
         openxlsx::writeData(wb, "Group_Details", group_detail_df)
         
         openxlsx::addWorksheet(wb, "Legend")
         legend_text <- c(
           "Retained sheet: 'GroupExtra' column indicates proteins retained by Group mode but would be filtered out by Global mode.",
-          "Group_Details sheet: 'SpecificGroup' column indicates if a protein passes only in one group or both.",
-          if (length(group_names) == 2) c(paste("Only", group_names[1]), paste("Only", group_names[2]), "Both") else "Multiple groups"
+          "Group_Details sheet: 'GroupPass' column shows which group(s) the protein passes the threshold in."
         )
         openxlsx::writeData(wb, "Legend", data.frame(Info = legend_text))
-      } else if (mode == "global") {
-        openxlsx::addWorksheet(wb, "Legend")
-        openxlsx::writeData(wb, "Legend", data.frame(
-          Info = c("Global filter mode: proteins filtered based on missing rate across all samples.",
-                   "Retained sheet: proteins with missing rate <= threshold.",
-                   "Filtered_Out sheet: proteins with missing rate > threshold.")
-        ))
       }
       
       incProgress(0.2, detail = "Saving workbook...")

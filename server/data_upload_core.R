@@ -58,14 +58,17 @@ get_group_colors <- function(groups) {
 output$download_sample_template <- downloadHandler(
   filename = function() { "sample_info_template.xlsx" },
   content = function(file) {
+    message("[DEBUG] download_sample_template: generating template with SubGroup column")
     prefix <- get_raw_prefix()
     template <- data.frame(
       SampleName = paste0(prefix, c("L2.1.1", "L2.1.2", "L2.1.3", "L2.2.1", "L2.2.2", "L2.2.3")),
       Group = c("Control", "Control", "Control", "Treatment", "Treatment", "Treatment"),
+      SubGroup = c("L2.1", "L2.1", "L2.1", "L2.2", "L2.2", "L2.2"),
       Batch = c("Batch1", "Batch1", "Batch2", "Batch1", "Batch2", "Batch2"),
       Note = c("", "", "", "", "", "")
     )
     writexl::write_xlsx(template, file)
+    message("[DEBUG] download_sample_template: template written")
   }
 )
 
@@ -80,6 +83,7 @@ read_sample_info <- function(file_path) {
   }
   rownames(df) <- as.character(df[[1]])
   df <- df[, -1, drop = FALSE]
+  message("[DEBUG] read_sample_info: columns = ", paste(colnames(df), collapse = ", "))
   return(df)
 }
 
@@ -192,6 +196,7 @@ observeEvent(input$sample_info_file, {
     if (input$intensity_type == "LFQ") cached_sample_info$LFQ <- df
     else cached_sample_info$Intensity <- df
     showNotification("Sample info uploaded successfully!", type = "message", duration = 3)
+    message("[DEBUG] sample_info_file uploaded, columns: ", paste(colnames(df), collapse = ", "))
   }, error = function(e) {
     showNotification(paste("Error reading sample info:", e$message), type = "error", duration = 5)
   })
@@ -321,7 +326,6 @@ observeEvent(input$reset_all, {
   for (sid in sub_ids) updateTextInput(session, sid, value = "")
   updateRadioButtons(session, "heatmap_data_source", selected = "LFQ")
   heatmap_raw_groups(NULL)
-  # 重置填补方法为 quantile
   updateSelectInput(session, "imputation_method", selected = "quantile")
   rv$raw_data <- raw; rv$clean_data <- clean; rv$lfq_cols <- lfq; rv$sample_names <- sn; rv$sample_info <- si
   if (!is.null(sn) && length(sn) > 0) {
@@ -363,7 +367,6 @@ get_analysis_matrix <- reactive({
   if (is.null(preprocessing_params$intensity_type_used) || 
       preprocessing_params$intensity_type_used != input$intensity_type) {
     message("[DEBUG] get_analysis_matrix: processed data unavailable or intensity type mismatch")
-    # 不再显示右下角通知，避免在 Data Quality 页面弹出警告
     return(NULL)
   }
   
@@ -409,8 +412,7 @@ norm_data_before_batch <- reactive({
   norm_prefix <- get_norm_prefix()
   colnames(norm_mat) <- paste0(norm_prefix, sample_short)
   
-  # 获取原始强度列
-  orig_prefix <- paste0("Original_", get_raw_prefix())   # e.g. "Original_LFQ intensity "
+  orig_prefix <- paste0("Original_", get_raw_prefix())
   orig_mat <- mat
   colnames(orig_mat) <- paste0(orig_prefix, sample_short)
   

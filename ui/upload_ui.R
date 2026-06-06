@@ -1,5 +1,5 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - removed baseline_sample selector (moved to Normalization)")
+message("[DEBUG] upload_ui.R loaded - added Sample Correlation heatmap in Data Quality")
 
 upload_ui <- function() {
   tabPanel(
@@ -102,150 +102,30 @@ upload_ui <- function() {
                             checkboxInput("heatmap_cluster_rows", "Cluster rows", value = FALSE)
                         )
                     ),
-                    plotOutput("dq_missing_heatmap", height = "400px")
+                    plotOutput("dq_missing_heatmap", height = "600px"),
+                    h5("Valid Values per Sample"),
+                    plotOutput("sample_nonmiss_hist", height = "300px")
                 )
             ),
-            # ========== 蛋白缺失率分布 + 样本缺失率 ==========
-            fluidRow(
-              column(6,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("chart-bar"), " Protein Missing Rate Distribution", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_protein_missing_hist", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download image")
-                             ),
-                             plotOutput("dq_protein_missing_hist", height = "400px")
-                         )
-                     )
-              ),
-              column(6,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("bar-chart"), " Sample Missing Rate", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_sample_missing_bar", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download image")
-                             ),
-                             plotOutput("dq_sample_missing_bar", height = "400px")
-                         )
-                     )
-              )
+            # ========== PCA 分析 ==========
+            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
+                h3(icon("project-diagram"), " PCA Analysis (Raw Data by Group)", style = "margin: 0 0 15px 0; font-size: 18px;"),
+                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
+                    p("PCA is performed on the raw expression data after log2 transformation. Missing values are imputed by 1% quantile method. Samples are colored by their SubGroup from the uploaded sample info."),
+                    plotOutput("dq_pca_plot", height = "500px")
+                )
             ),
-            # ========== 缺失值相关性热图 ==========
-            fluidRow(
-              column(12,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("th"), " Missing Value Correlation", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_missing_cor", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
-                                 downloadButton("download_missing_cor_matrix", "CSV", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download missing pattern correlation matrix CSV"),
-                                 actionButton("help_missing_cor", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
-                             ),
-                             div(style = "margin-top: 10px; display: flex; align-items: center; gap: 10px;",
-                                 selectizeInput("missing_cor_sample_select", "子热图样本选择",
-                                                choices = character(0),
-                                                multiple = TRUE,
-                                                width = "60%",
-                                                options = list(plugins = list('remove_button'),
-                                                               placeholder = '按住 Ctrl/Shift 多选样本...')
-                                 ),
-                                 actionButton("missing_cor_subset_go", "生成子热图", class = "btn-sm btn-primary", icon = icon("play")),
-                                 actionButton("missing_cor_reset", "重置为全局热图", class = "btn-sm btn-secondary", icon = icon("refresh"))
-                             ),
-                             plotOutput("dq_missing_cor_plot", height = "600px")
-                         )
-                     )
-              )
-            ),
-            # ========== 缺失值定量统计 ==========
-            fluidRow(
-              column(12,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("calculator"), " Missing Value Quantitative Analysis", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
-                             fluidRow(
-                               column(6,
-                                      h4("Missing Rate by Group"),
-                                      plotOutput("dq_group_missing_boxplot", height = "300px")
-                               ),
-                               column(6,
-                                      h4("Group Statistics"),
-                                      tableOutput("dq_group_missing_table"),
-                                      h4("Statistical Test"),
-                                      verbatimTextOutput("dq_group_missing_test")
-                               )
-                             )
-                         )
-                     )
-              )
-            ),
-            # ========== 缺失值类型诊断 ==========
-            fluidRow(
-              column(12,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("diagnoses"), " Missing Value Type Diagnosis (MNAR vs MAR)", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_missing_type", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download image"),
-                                 actionButton("help_missing_type", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View interpretation")
-                             ),
-                             plotOutput("dq_missing_type_plot", height = "400px"),
-                             br(),
-                             h5("诊断结果"),
-                             textOutput("missing_type_summary")
-                         )
-                     )
-              )
-            ),
-            # ========== 蛋白强度分布 ==========
-            fluidRow(
-              column(12,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("chart-bar"), " Protein Intensity Distribution", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_intensity", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
-                                 downloadButton("download_intensity_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download intensity data (multi-sheet Excel)"),
-                                 actionButton("help_intensity", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
-                             ),
-                             plotOutput("dq_intensity_dist_plot", height = "400px")
-                         )
-                     )
-              )
-            ),
-            # ========== PCA 分析（含数据源提示） ==========
-            h4(icon("project-diagram"), " PCA Analysis (Dual-view)"),
-            uiOutput("pca_data_source_note"),
-            fluidRow(
-              column(6,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("users"), " PCA by Group", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_pca_group", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
-                                 downloadButton("download_pca_group_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download PCA Group data (multi-sheet Excel)"),
-                                 actionButton("help_pca_group", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
-                             ),
-                             plotOutput("dq_pca_group_plot", height = "400px")
-                         )
-                     )
-              ),
-              column(6,
-                     div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                         h3(icon("layer-group"), " PCA by Batch", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                         div(style = "background: white; color: #333; padding: 15px; border-radius: 8px; position: relative;",
-                             div(style = "position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;",
-                                 downloadButton("download_pca_batch", "", icon = icon("download"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download high-quality image"),
-                                 downloadButton("download_pca_batch_data", "Excel", class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "Download PCA Batch data (multi-sheet Excel)"),
-                                 actionButton("help_pca_batch", "", icon = icon("question-circle"), class = "btn-sm btn-outline-secondary") %>% tagAppendAttributes(title = "View chart interpretation")
-                             ),
-                             plotOutput("dq_pca_batch_plot", height = "400px")
-                         )
-                     )
-              )
+            # ========== 样本相关性热图（新增） ==========
+            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
+                h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
+                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
+                    p("Pearson correlation between selected samples based on raw expression data (1% quantile imputation + log2 transformation). Top 500 most variable proteins are used. Samples are colored by Group and Batch if available."),
+                    plotOutput("dq_sample_cor_heatmap", height = "600px")
+                )
             )
         )
       )
     )
   )
 }
+message("[DEBUG] upload_ui.R fully defined - Sample Correlation added")

@@ -3,15 +3,11 @@
 library(shiny)
 
 source("global.R", local = TRUE)
-source("ui/upload_ui.R", local = TRUE)
-source("ui/cleaning_ui.R", local = TRUE)
-source("ui/normalization_ui.R", local = TRUE)   # 归一化 UI
-source("ui/preprocessing_ui.R", local = TRUE)
-source("ui/grouping_ui.R", local = TRUE)         # 分组页面
-source("ui/comparisons_ui.R", local = TRUE)      # 比较页面
-source("ui/parameters_ui.R", local = TRUE)       # 参数页面
-source("ui/plots_ui.R", local = TRUE)
-source("ui/export_ui.R", local = TRUE)
+source("ui/upload_ui.R", local = TRUE)               # <-- 必须包含这一行
+source("ui/data_processing_ui.R", local = TRUE)      # 合并了 Cleaning, Preprocessing, Normalization
+source("ui/grouping_ui.R", local = TRUE)             # Define Groups
+source("ui/comparisons_ui.R", local = TRUE)          # Set Comparisons
+source("ui/plots_ui.R", local = TRUE)                # Plots（包含 Parameters 和 Export）
 
 build_ui <- function() {
   fluidPage(
@@ -140,14 +136,10 @@ build_ui <- function() {
       title = div(icon("dna", style = "margin-right: 8px;"), "Universal Proteomics Platform"),
       id = "main_navbar", collapsible = TRUE, windowTitle = "Proteomics Analysis",
       upload_ui(),
-      cleaning_ui(),
-      preprocessing_ui(),
-      normalization_ui(),
+      data_processing_ui(),
       grouping_ui(),
       comparisons_ui(),
-      parameters_ui(),
-      plots_ui(),
-      export_ui()
+      plots_ui()    # Plots 页面已包含 Parameters 和 Export
     )
   )
 }
@@ -175,7 +167,7 @@ server <- function(input, output, session) {
   source("server/export_server.R", local = TRUE)
   source("server/plots_venn_upset.R", local = TRUE)
   source("server/pca_plot.R", local = TRUE)
-  source("server/sample_correlation_plot.R", local = TRUE)   # 样本相关性热图
+  source("server/sample_correlation_plot.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)

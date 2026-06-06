@@ -1,38 +1,15 @@
 # server/data_quality_plots.R
-message("[DEBUG] data_quality_plots.R loaded - optimized user-friendly messages")
+message("[DEBUG] data_quality_plots.R loaded - heatmap + histogram + PCA without ellipses (no labels, single legend)")
 
-# 辅助：安全的 validate
 `%then%` <- function(a, b) { if (a) b else TRUE }
 validate_condition <- function(condition, message) {
-  if (!condition) {
-    validate(message)
-  }
+  if (!condition) { validate(message) }
 }
 
-# ==================== 辅助函数 ====================
-get_outlier_samples <- function(pca_result, z_threshold = 3) {
-  if (is.null(pca_result)) return(character(0))
-  scores <- pca_result$pca_df[, c("PC1", "PC2")]
-  z1 <- abs((scores$PC1 - mean(scores$PC1)) / sd(scores$PC1))
-  z2 <- abs((scores$PC2 - mean(scores$PC2)) / sd(scores$PC2))
-  outlier_mask <- z1 > z_threshold | z2 > z_threshold
-  pca_result$pca_df$Sample[outlier_mask]
-}
-
-# ==================== 样本选择（缺失值热图） ====================
+# ==================== 样本选择 ====================
 observeEvent(rv$sample_names, {
-  message("[DEBUG] updating heatmap_sample_select choices")
-  all_samples <- rv$sample_names
-  if (length(all_samples) > 0) {
-    updateSelectizeInput(session, "heatmap_sample_select",
-                         choices = all_samples,
-                         selected = all_samples,
-                         server = TRUE)
-    updateSelectizeInput(session, "missing_cor_sample_select",
-                         choices = all_samples,
-                         selected = all_samples,
-                         server = TRUE)
-  }
+  message("[DEBUG] Updating heatmap_sample_select choices")
+  updateSelectizeInput(session, "heatmap_sample_select", choices = rv$sample_names, selected = rv$sample_names, server = TRUE)
 }, ignoreNULL = TRUE, once = FALSE)
 
 output$heatmap_group_buttons_ui <- renderUI({
@@ -40,17 +17,17 @@ output$heatmap_group_buttons_ui <- renderUI({
   if (!"Group" %in% colnames(rv$sample_info)) return(NULL)
   groups <- unique(rv$sample_info$Group)
   lapply(groups, function(g) {
-    actionButton(inputId = paste0("heatmap_group_", g), label = g,
-                 class = "btn-sm btn-outline-info", icon = icon("filter"))
+    actionButton(inputId = paste0("heatmap_group_", g), label = g, class = "btn-sm btn-outline-info", icon = icon("filter"))
   })
 })
 
 observeEvent(input$heatmap_select_all, {
-  req(rv$sample_names)
   updateSelectizeInput(session, "heatmap_sample_select", selected = rv$sample_names)
+  message("[DEBUG] heatmap_select_all")
 })
 observeEvent(input$heatmap_clear_all, {
   updateSelectizeInput(session, "heatmap_sample_select", selected = character(0))
+  message("[DEBUG] heatmap_clear_all")
 })
 
 observe({
@@ -65,46 +42,82 @@ observe({
         si$SampleName <- rownames(si)
         si$ShortName <- extract_sample_names(si$SampleName)
         samples_in_group <- si$ShortName[si$Group == group]
-        current_sel <- input$heatmap_sample_select
-        new_sel <- union(current_sel, samples_in_group)
+        new_sel <- union(input$heatmap_sample_select, samples_in_group)
         updateSelectizeInput(session, "heatmap_sample_select", selected = new_sel)
+        message("[DEBUG] heatmap_group button added group ", group)
       }, ignoreInit = TRUE)
     })
   }
 })
 
-selected_samples <- reactive({
+# ---------- 可靠的多级自然排序 ----------
+natural_order <- function(x) {
+  if (length(x) == 0) return(integer(0))
+  parts <- strsplit(as.character(x), "\\.")
+  max_len <- max(sapply(parts, length))
+  num_mat <- t(sapply(parts, function(p) {
+    nums <- suppressWarnings(as.numeric(p))
+    nums[is.na(nums)] <- 0
+    if (length(nums) < max_len) c(nums, rep(0, max_len - length(nums)))
+    else nums
+  }))
+  num_df <- as.data.frame(num_mat)
+  do.call(order, num_df)
+}
+
+# 样本排序：对照组最前，其余按组名，组内自然排序
+ordered_samples <- reactive({
   sel <- input$heatmap_sample_select
-  if (is.null(sel) || length(sel) == 0) return(rv$sample_names)
-  return(sel)
+  if (is.null(sel) || length(sel) == 0) sel <- rv$sample_names
+  message("[DEBUG] ordered_samples: raw selection length = ", length(sel))
+  if (length(sel) == 0) return(character(0))
+  
+  grp <- NULL
+  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
+    si <- rv$sample_info
+    si$ShortName <- extract_sample_names(rownames(si))
+    idx <- match(sel, si$ShortName)
+    grp <- ifelse(is.na(idx), "Unassigned", si$Group[idx])
+  } else {
+    grp <- rep("All", length(sel))
+  }
+  
+  is_ctrl <- grepl("control|wt|ck", grp, ignore.case = TRUE)
+  ctrl_groups <- sort(unique(grp[is_ctrl]))
+  other_groups <- sort(setdiff(unique(grp), ctrl_groups))
+  group_order <- c(ctrl_groups, other_groups)
+  
+  ord <- integer(0)
+  for (g in group_order) {
+    idx_g <- which(grp == g)
+    if (length(idx_g) > 0) {
+      local_order <- natural_order(sel[idx_g])
+      ord <- c(ord, idx_g[local_order])
+    }
+  }
+  result <- sel[ord]
+  message("[DEBUG] ordered_samples: first 10 = ", paste(head(result, 10), collapse = ", "), 
+          " ... total ", length(result))
+  result
 })
+
+selected_samples <- reactive({ ordered_samples() })
 
 # ==================== 缺失值热图 ====================
 dq_missing_heatmap_plot_obj <- reactive({
   req(dq_expr_matrix())
   mat <- dq_expr_matrix()
-  sel_samples <- selected_samples()
-  common_s <- intersect(sel_samples, colnames(mat))
+  common_s <- selected_samples()
+  common_s <- intersect(common_s, colnames(mat))
   if (length(common_s) == 0) return(NULL)
   
   annot_df <- NULL
   if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
     si <- rv$sample_info
-    si$SampleName <- rownames(si)
-    si$ShortName <- extract_sample_names(si$SampleName)
+    si$ShortName <- extract_sample_names(rownames(si))
     idx <- match(common_s, si$ShortName)
-    if (any(!is.na(idx))) {
-      groups <- si$Group[idx]
-      groups[is.na(idx)] <- "Unknown"
-      annot_df <- data.frame(Group = factor(groups), row.names = common_s)
-    }
-  }
-  
-  if (!is.null(annot_df)) {
-    common_s <- rownames(annot_df)[order(annot_df$Group, rownames(annot_df))]
-    annot_df <- annot_df[common_s, , drop = FALSE]
-  } else {
-    common_s <- sort(common_s)
+    groups <- ifelse(is.na(idx), "Unknown", si$Group[idx])
+    annot_df <- data.frame(Group = factor(groups), row.names = common_s)
   }
   
   mat_sub <- mat[, common_s, drop = FALSE]
@@ -112,8 +125,7 @@ dq_missing_heatmap_plot_obj <- reactive({
   n_prot <- nrow(missing_mat)
   n_samp <- ncol(missing_mat)
   
-  cluster_rows <- if (is.null(input$heatmap_cluster_rows)) FALSE else input$heatmap_cluster_rows
-  
+  cluster_rows <- isTRUE(input$heatmap_cluster_rows)
   if (cluster_rows && n_prot >= 2) {
     dist_row <- dist(missing_mat, method = "binary")
     hc <- hclust(dist_row, method = "ward.D2")
@@ -134,7 +146,7 @@ dq_missing_heatmap_plot_obj <- reactive({
   p <- ggplot(plot_df, aes(x = Sample, y = Protein, fill = factor(Value))) +
     geom_tile() +
     scale_fill_manual(
-      values = c("0" = "#3498db", "1" = "#e74c3c"),
+      values = c("0" = "#3498db", "1" = "white"),
       labels = c("0" = "Detected", "1" = "Missing"),
       name = "Status"
     ) +
@@ -147,648 +159,218 @@ dq_missing_heatmap_plot_obj <- reactive({
       panel.grid = element_blank(),
       plot.title = element_text(hjust = 0.5, face = "bold")
     )
+  message("[DEBUG] dq_missing_heatmap_plot_obj: ", n_prot, " proteins, ", n_samp, " samples")
   return(p)
 })
 
 output$dq_missing_heatmap <- renderPlot({
   validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
   p <- dq_missing_heatmap_plot_obj()
-  if (is.null(p)) {
-    plot.new(); text(0.5, 0.5, "Please select at least one sample")
-  } else {
-    print(p)
-  }
+  if (is.null(p)) { plot.new(); text(0.5,0.5,"Please select at least one sample") }
+  else print(p)
 })
 
-# ==================== 蛋白缺失率分布直方图 ====================
-dq_protein_missing_hist <- reactive({
-  req(dq_expr_matrix())
-  mat <- dq_expr_matrix()
-  sel_s <- selected_samples()
-  common_s <- intersect(sel_s, colnames(mat))
-  if (length(common_s) == 0) return(NULL)
-  mat_sub <- mat[, common_s, drop = FALSE]
-  rates <- rowMeans(is.na(mat_sub))
-  df <- data.frame(MissingRate = rates)
-  ggplot(df, aes(x = MissingRate)) +
-    geom_histogram(fill = "#3498db", bins = 30, alpha = 0.8, boundary = 0) +
-    labs(title = paste0("Protein Missing Rate Distribution (", length(common_s), " samples)"),
-         x = "Missing Rate", y = "Number of Proteins") +
-    theme_bw()
-})
-
-output$dq_protein_missing_hist <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  req(dq_protein_missing_hist())
-  dq_protein_missing_hist()
-})
-output$download_protein_missing_hist <- downloadHandler(
-  filename = function() "protein_missing_hist.png",
-  content = function(file) ggsave(file, plot = dq_protein_missing_hist(), width = 6, height = 4, dpi = 150)
-)
-
-# ==================== 样本缺失率条形图 ====================
-dq_sample_missing_bar <- reactive({
-  req(dq_expr_matrix())
-  mat <- dq_expr_matrix()
-  sel_s <- selected_samples()
-  common_s <- intersect(sel_s, colnames(mat))
-  if (length(common_s) == 0) return(NULL)
-  mat_sub <- mat[, common_s, drop = FALSE]
-  missing_pct <- colMeans(is.na(mat_sub)) * 100
-  df <- data.frame(Sample = factor(common_s, levels = common_s),
-                   MissingPct = missing_pct)
-  ggplot(df, aes(x = Sample, y = MissingPct, fill = MissingPct)) +
-    geom_col() +
-    scale_fill_gradient(low = "#fcbba1", high = "#cb181d", guide = "none") +
-    scale_y_continuous(limits = c(0, 100), expand = c(0, 0)) +
-    labs(title = paste0("Sample Missing Rate (", length(common_s), " samples)"),
-         y = "Missing Percentage (%)") +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
-          axis.title.x = element_blank())
-})
-
-output$dq_sample_missing_bar <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  req(dq_sample_missing_bar())
-  dq_sample_missing_bar()
-}, height = 400)
-output$download_sample_missing_bar <- downloadHandler(
-  filename = function() "sample_missing_rate.png",
+# 下载
+output$download_missing_heatmap <- downloadHandler(
+  filename = function() "missing_heatmap.png",
   content = function(file) {
-    p <- dq_sample_missing_bar()
-    if (!is.null(p)) ggsave(file, plot = p, width = 12, height = 6, dpi = 150)
+    p <- dq_missing_heatmap_plot_obj()
+    if (!is.null(p)) ggsave(file, plot = p, width = 10, height = 8, dpi = 150)
+    else showNotification("No data to download", type = "error")
+    message("[DEBUG] download_missing_heatmap")
   }
 )
-
-# ==================== 缺失值相关性热图 ====================
-missing_cor_subset <- reactiveVal(NULL)
-
-observeEvent(rv$sample_names, {
-  updateSelectizeInput(session, "missing_cor_sample_select",
-                       choices = rv$sample_names,
-                       selected = rv$sample_names,
-                       server = TRUE)
-})
-
-observeEvent(input$missing_cor_subset_go, {
-  sel <- input$missing_cor_sample_select
-  if (is.null(sel) || length(sel) < 2) {
-    showNotification("请至少选择两个样本以生成子热图", type = "warning")
-    return()
-  }
-  missing_cor_subset(sel)
-  showNotification(paste0("已切换至选中样本（", length(sel), " 个）的子热图"), type = "message")
-})
-
-observeEvent(input$missing_cor_reset, {
-  missing_cor_subset(NULL)
-  updateSelectizeInput(session, "missing_cor_sample_select", selected = rv$sample_names)
-  showNotification("已恢复为全局热图", type = "message")
-})
-
-dq_missing_cor_plot_obj <- reactive({
-  req(dq_expr_matrix())
-  mat <- dq_expr_matrix()
-  missing_mat <- is.na(mat) * 1
-  
-  subset_samples <- missing_cor_subset()
-  if (is.null(subset_samples) || length(subset_samples) == 0) {
-    common_s <- intersect(rv$sample_names, colnames(missing_mat))
-  } else {
-    common_s <- intersect(subset_samples, colnames(missing_mat))
-  }
-  if (length(common_s) < 2) return(NULL)
-  
-  missing_sub <- missing_mat[, common_s, drop = FALSE]
-  cor_mat <- cor(missing_sub, use = "pairwise.complete.obs")
-  cor_mat[is.na(cor_mat)] <- 0
-  
-  min_cor <- min(cor_mat, na.rm = TRUE)
-  max_cor <- max(cor_mat, na.rm = TRUE)
-  if (abs(max_cor - min_cor) < 1e-6) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
-  
-  legend_breaks <- pretty(c(min_cor, max_cor), n = 5)
-  legend_breaks <- legend_breaks[legend_breaks >= min_cor & legend_breaks <= max_cor]
-  legend_labels <- sprintf("%.2f", legend_breaks)
-  
-  cor_dist <- as.dist(1 - cor_mat)
-  
-  annotation_col <- NULL
-  annotation_colors <- NULL
-  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
-    si <- rv$sample_info
-    si$ShortName <- extract_sample_names(rownames(si))
-    common <- intersect(colnames(cor_mat), si$ShortName)
-    if (length(common) > 0) {
-      group_vec <- si$Group[match(common, si$ShortName)]
-      annotation_col <- data.frame(Group = factor(group_vec), row.names = common)
-      groups <- unique(group_vec)
-      annotation_colors <- list(Group = get_group_colors(groups))
-    }
-  }
-  
-  main_title <- "缺失值相关性热图（Pearson 相关系数）"
-  if (!is.null(subset_samples)) main_title <- paste0(main_title, " 子集")
-  
-  pheatmap::pheatmap(cor_mat,
-                     main = main_title,
-                     color = colorRampPalette(c("blue", "white", "red"))(100),
-                     breaks = seq(min_cor, max_cor, length.out = 101),
-                     legend_breaks = legend_breaks,
-                     legend_labels = legend_labels,
-                     clustering_distance_rows = cor_dist,
-                     clustering_distance_cols = cor_dist,
-                     clustering_method = "ward.D2",
-                     show_rownames = TRUE,
-                     show_colnames = TRUE,
-                     fontsize_row = 10,
-                     fontsize_col = 8,
-                     angle_col = 45,
-                     treeheight_row = 70,
-                     treeheight_col = 70,
-                     margins = c(12, 8),
-                     annotation_col = annotation_col,
-                     annotation_colors = annotation_colors,
-                     legend = TRUE,
-                     silent = TRUE)
-})
-
-output$dq_missing_cor_plot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  obj <- dq_missing_cor_plot_obj()
-  if (!is.null(obj)) {
-    grid::grid.newpage()
-    grid::grid.draw(obj$gtable)
-  } else {
-    plot.new(); text(0.5, 0.5, "样本数不足")
-  }
-})
-
-output$download_missing_cor <- downloadHandler(
-  filename = function() "missing_correlation.png",
+output$download_missing_matrix <- downloadHandler(
+  filename = function() paste0("missing_matrix_", Sys.Date(), ".csv"),
   content = function(file) {
-    png(file, width = 1600, height = 1400, res = 150)
-    obj <- dq_missing_cor_plot_obj()
-    if (!is.null(obj)) grid::grid.draw(obj$gtable)
-    dev.off()
-  }
-)
-
-output$download_missing_cor_matrix <- downloadHandler(
-  filename = function() { paste0("missing_correlation_matrix_", Sys.Date(), ".csv") },
-  content = function(file) {
-    req(dq_expr_matrix())
     mat <- dq_expr_matrix()
-    missing_mat <- is.na(mat) * 1
-    subset_samples <- missing_cor_subset()
-    if (is.null(subset_samples)) common_s <- intersect(rv$sample_names, colnames(missing_mat))
-    else common_s <- intersect(subset_samples, colnames(missing_mat))
-    if (length(common_s) < 2) { showNotification("Not enough samples", type = "error"); return() }
-    missing_sub <- missing_mat[, common_s, drop = FALSE]
-    cor_mat <- cor(missing_sub, use = "pairwise.complete.obs")
-    cor_mat[is.na(cor_mat)] <- 0
-    write.csv(cor_mat, file, row.names = TRUE)
+    if (is.null(mat)) { showNotification("No data", type="error"); return() }
+    common_s <- selected_samples()
+    common_s <- intersect(common_s, colnames(mat))
+    if (length(common_s)==0) { showNotification("No samples", type="error"); return() }
+    miss_mat <- is.na(mat[, common_s, drop=FALSE]) * 1
+    write.csv(as.data.frame(miss_mat), file, row.names = TRUE)
+    message("[DEBUG] download_missing_matrix")
   }
 )
-
-observeEvent(input$help_missing_cor, {
-  showModal(modalDialog(
-    title = "缺失值相关性",
-    "基于样本缺失 0/1 矩阵的 Pearson 相关系数。聚类使用 (1 - 相关性) 作为距离。",
-    easyClose = TRUE, footer = modalButton("关闭")
-  ))
+observeEvent(input$help_missing_heatmap, {
+  showModal(modalDialog(title="Missing Value Heatmap","Blue=Detected, White=Missing.",easyClose=TRUE,footer=modalButton("Close")))
+  message("[DEBUG] help_missing_heatmap")
 })
 
-# ==================== 强度分布箱线图 ====================
-dq_intensity_plot <- reactive({
+# ==================== 非缺失值直方图 ====================
+output$sample_nonmiss_hist <- renderPlot({
   req(dq_expr_matrix())
   mat <- dq_expr_matrix()
-  log_mat <- log2(mat + 1)
+  common_s <- selected_samples()
+  common_s <- intersect(common_s, colnames(mat))
+  if (length(common_s) == 0) return(NULL)
   
-  df <- reshape2::melt(as.matrix(log_mat))
-  colnames(df) <- c("Protein", "Sample", "Log2Intensity")
+  nonmiss <- colSums(!is.na(mat[, common_s, drop = FALSE]))
   
-  group_vec <- NULL
-  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
-    si <- rv$sample_info
-    si$ShortName <- extract_sample_names(rownames(si))
-    idx <- match(df$Sample, si$ShortName)
-    if (any(!is.na(idx))) {
-      group_vec <- si$Group[idx]
-      group_vec[is.na(idx)] <- "Unknown"
-    }
+  extract_prefix <- function(sample_name) {
+    pref <- sub("\\.[0-9]+(\\.[0-9]+)*$", "", sample_name)
+    if (nchar(pref) == 0) sample_name else pref
   }
+  prefixes <- sapply(common_s, extract_prefix)
+  unique_prefixes <- unique(prefixes)
   
-  if (!is.null(group_vec)) {
-    df$Group <- group_vec
-    p <- ggplot(df, aes(x = Sample, y = Log2Intensity, fill = Group)) +
-      geom_boxplot(outlier.size = 1, alpha = 0.7) +
-      labs(title = "Protein Intensity Distribution (log2-transformed)", y = "log2(Intensity)") +
-      theme_bw() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), legend.position = "right")
-  } else {
-    p <- ggplot(df, aes(x = Sample, y = Log2Intensity)) +
-      geom_boxplot(fill = "#3498db", alpha = 0.7, outlier.size = 1) +
-      labs(title = "Protein Intensity Distribution (log2-transformed)", y = "log2(Intensity)") +
-      theme_bw() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
-  }
-  return(p)
-})
-
-output$dq_intensity_dist_plot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  dq_intensity_plot()
-})
-output$download_intensity <- downloadHandler(
-  filename = function() "intensity_distribution.png",
-  content = function(file) ggsave(file, plot = dq_intensity_plot(), width = 10, height = 6, dpi = 150)
-)
-output$download_intensity_data <- downloadHandler(
-  filename = function() { paste0("Intensity_Data_", Sys.Date(), ".xlsx") },
-  content = function(file) {
-    req(dq_expr_matrix())
-    mat <- dq_expr_matrix()
-    log_mat <- log2(mat + 1)
-    log_df <- as.data.frame(log_mat)
-    sample_ids <- colnames(mat)
-    pca_full <- dq_pca_full()
-    if (!is.null(pca_full)) outlier_samples <- pca_full$scores$Sample[pca_full$scores$Outlier == "Outlier"]
-    else outlier_samples <- character(0)
-    IsOutlier <- ifelse(sample_ids %in% outlier_samples, "Yes", "No")
-    stats_df <- data.frame(
-      SampleID = sample_ids,
-      MinIntensity = round(apply(log_mat, 2, min, na.rm = TRUE), 3),
-      Q25Intensity = round(apply(log_mat, 2, quantile, 0.25, na.rm = TRUE), 3),
-      MedianIntensity = round(apply(log_mat, 2, median, na.rm = TRUE), 3),
-      Q75Intensity = round(apply(log_mat, 2, quantile, 0.75, na.rm = TRUE), 3),
-      MaxIntensity = round(apply(log_mat, 2, max, na.rm = TRUE), 3),
-      MeanIntensity = round(colMeans(log_mat, na.rm = TRUE), 3),
-      StdDevIntensity = round(apply(log_mat, 2, sd, na.rm = TRUE), 3),
-      IsOutlier = IsOutlier
-    )
-    wb <- openxlsx::createWorkbook()
-    readme <- data.frame(Description = c(
-      "Sheet 'log2_intensity_matrix': log2(Intensity+1) transformed intensity matrix.",
-      "Sheet 'sample_intensity_stats': summary statistics per sample."
-    ))
-    openxlsx::addWorksheet(wb, "README")
-    openxlsx::writeData(wb, "README", readme)
-    openxlsx::addWorksheet(wb, "log2_intensity_matrix")
-    openxlsx::writeData(wb, "log2_intensity_matrix", log_df)
-    openxlsx::addWorksheet(wb, "sample_intensity_stats")
-    openxlsx::writeData(wb, "sample_intensity_stats", stats_df)
-    openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
-  }
-)
-observeEvent(input$help_intensity, {
-  showModal(modalDialog(
-    title = "Protein Intensity Distribution",
-    "箱线图展示每个样本中蛋白强度的分布（log2 转换）。",
-    easyClose = TRUE, footer = modalButton("关闭")
-  ))
-})
-
-# ==================== 缺失值类型诊断 ====================
-dq_missing_type_data <- reactive({
-  req(dq_expr_matrix())
-  mat <- dq_expr_matrix()
-  missing_ratio <- rowMeans(is.na(mat))
-  mean_intensity <- rowMeans(mat, na.rm = TRUE)
-  log2_mean <- log2(mean_intensity + 1)
-  
-  group <- ifelse(missing_ratio == 0, "Complete (0%)",
-                  ifelse(missing_ratio <= 0.5, "Partial (0-50%)", "High (>50%)"))
-  df <- data.frame(
-    Protein = rownames(mat),
-    MissingRatio = missing_ratio,
-    Log2MeanIntensity = log2_mean,
-    Group = factor(group, levels = c("Complete (0%)", "Partial (0-50%)", "High (>50%)")),
-    stringsAsFactors = FALSE
+  color_map <- c(
+    "WT" = "#FFB3B3",
+    "100" = "#B3FFB3",
+    "200" = "#B3D9FF"
   )
-  df
-})
-
-dq_missing_type_plot_obj <- reactive({
-  df <- dq_missing_type_data()
-  req(df)
-  ggplot(df, aes(x = Log2MeanIntensity, fill = Group, color = Group)) +
-    geom_density(alpha = 0.4, linewidth = 1) +
-    scale_fill_manual(values = c("Complete (0%)" = "#2ecc71", "Partial (0-50%)" = "#f1c40f", "High (>50%)" = "#e74c3c")) +
-    scale_color_manual(values = c("Complete (0%)" = "#27ae60", "Partial (0-50%)" = "#f39c12", "High (>50%)" = "#c0392b")) +
-    labs(title = "Missing Value Type Diagnosis: Intensity Distribution by Missing Rate",
-         subtitle = "左移的红色曲线提示 MNAR（非随机缺失，与低表达相关）",
-         x = "log2(Mean Intensity + 1)", y = "Density") +
-    theme_bw() + theme(legend.position = "right")
-})
-
-output$dq_missing_type_plot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  dq_missing_type_plot_obj()
-})
-
-output$download_missing_type <- downloadHandler(
-  filename = function() "missing_type_diagnosis.png",
-  content = function(file) ggsave(file, plot = dq_missing_type_plot_obj(), width = 8, height = 5, dpi = 150)
-)
-
-output$missing_type_summary <- renderText({
-  df <- dq_missing_type_data()
-  req(df)
-  high_missing <- df[df$Group == "High (>50%)", ]
-  complete <- df[df$Group == "Complete (0%)", ]
-  if (nrow(high_missing) < 5 || nrow(complete) < 5) return("Insufficient data for diagnosis.")
-  
-  median_high <- median(high_missing$Log2MeanIntensity, na.rm = TRUE)
-  median_complete <- median(complete$Log2MeanIntensity, na.rm = TRUE)
-  shift <- median_complete - median_high
-  if (shift > 1.5) {
-    "诊断结果：**高度提示 MNAR（非随机缺失）**。建议使用最小值或分位数填补。"
-  } else if (shift > 0.5) {
-    "诊断结果：**中等提示 MNAR**。建议结合领域知识选择填补方法。"
-  } else {
-    "诊断结果：**提示 MAR（随机缺失）为主**。推荐使用 KNN 或 PPCA 填补。"
+  extra_colors <- setNames(
+    RColorBrewer::brewer.pal(min(length(unique_prefixes), 8), "Pastel1")[1:length(unique_prefixes)],
+    unique_prefixes
+  )
+  fill_colors <- color_map[unique_prefixes]
+  missing_pref <- unique_prefixes[!unique_prefixes %in% names(color_map)]
+  if (length(missing_pref) > 0) {
+    fill_colors[missing_pref] <- extra_colors[missing_pref]
   }
-})
-
-observeEvent(input$help_missing_type, {
-  showModal(modalDialog(
-    title = "缺失值类型诊断（MNAR vs MAR）",
-    "通过比较不同缺失率蛋白的强度分布，判断缺失值的主要类型。",
-    easyClose = TRUE, footer = modalButton("关闭")
-  ))
-})
-
-# ==================== 缺失值定量统计 ====================
-dq_group_missing_data <- reactive({
-  req(dq_expr_matrix())
-  mat <- dq_expr_matrix()
-  sample_missing_rate <- colMeans(is.na(mat)) * 100
-  sample_names_short <- colnames(mat)
-  group <- rep("Unassigned", length(sample_names_short))
+  fill_colors <- fill_colors[!is.na(fill_colors)]
   
-  if (!is.null(rv$sample_info) && "Group" %in% colnames(rv$sample_info)) {
-    si <- rv$sample_info
-    si$ShortName <- extract_sample_names(rownames(si))
-    idx <- match(sample_names_short, si$ShortName)
-    if (any(!is.na(idx))) {
-      group[!is.na(idx)] <- si$Group[idx[!is.na(idx)]]
+  message("[DEBUG] sample_nonmiss_hist: prefixes found: ", paste(unique_prefixes, collapse = ", "),
+          " colors: ", paste(fill_colors, collapse = ", "))
+  
+  df <- data.frame(Sample = factor(common_s, levels = common_s),
+                   NonMissing = nonmiss,
+                   Prefix = factor(prefixes, levels = unique_prefixes))
+  
+  ggplot(df, aes(x = Sample, y = NonMissing, fill = Prefix)) +
+    geom_col() +
+    geom_text(aes(label = NonMissing), vjust = -0.5, size = 3.5, color = "#333333") +
+    scale_fill_manual(values = fill_colors, name = "Treatment Group") +
+    labs(title = "Number of Quantified Proteins per Sample",
+         y = "Non-Missing Count", x = NULL) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+          legend.position = "right")
+})
+
+# ==================== 原始数据 PCA（无椭圆，无标签，单图例） ====================
+dq_pca_data <- reactive({
+  tryCatch({
+    raw <- expression_data()
+    message("[DEBUG] dq_pca_data: raw data dim = ", nrow(raw), " x ", ncol(raw))
+    if (nrow(raw) < 2 || ncol(raw) < 2) return(NULL)
+    
+    message("[DEBUG] dq_pca_data: imputing missing values with 1% quantile method")
+    filled <- suppressMessages(impute_missing_values(raw, method = "quantile", quantile_prob = 0.01))
+    log_expr <- log2(as.matrix(filled) + 1)
+    
+    row_vars <- apply(log_expr, 1, var)
+    log_expr <- log_expr[row_vars > 1e-6, , drop = FALSE]
+    if (nrow(log_expr) < 2) {
+      message("[DEBUG] dq_pca_data: too few variable proteins")
+      return(NULL)
     }
+    
+    pca <- prcomp(t(log_expr), scale. = TRUE)
+    var_explained <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 1)
+    scores <- as.data.frame(pca$x[, 1:2])
+    scores$Sample <- rownames(scores)
+    
+    if (!is.null(rv$sample_info)) {
+      si <- rv$sample_info
+      scores_std <- standardize_sample_name(scores$Sample)
+      info_std <- standardize_sample_name(rownames(si))
+      idx <- match(scores_std, info_std)
+      matched_count <- sum(!is.na(idx))
+      message("[DEBUG] dq_pca_data: matched ", matched_count, " out of ", nrow(scores), " PCA samples to sample info")
+      
+      color_col <- NULL
+      if ("SubGroup" %in% colnames(si)) {
+        color_col <- "SubGroup"
+        message("[DEBUG] dq_pca_data: using SubGroup column for coloring")
+      } else if ("Group" %in% colnames(si)) {
+        color_col <- "Group"
+        message("[DEBUG] dq_pca_data: SubGroup not found, using Group column instead")
+      }
+      
+      if (!is.null(color_col)) {
+        raw_group <- ifelse(is.na(idx), "Unassigned", si[[color_col]][idx])
+      } else {
+        raw_group <- "All"
+      }
+    } else {
+      raw_group <- "All"
+      message("[DEBUG] dq_pca_data: no sample info uploaded")
+    }
+    
+    # 自定义排序：WT 最前，其余按浓度和时间数值排序
+    custom_order <- function(groups) {
+      uniq <- unique(groups)
+      wt <- grep("^WT$", uniq, ignore.case = TRUE, value = TRUE)
+      others <- setdiff(uniq, wt)
+      if (length(others) > 0) {
+        parsed <- strsplit(others, "-")
+        valid <- sapply(parsed, function(x) length(x) == 2 && !any(is.na(suppressWarnings(as.numeric(x)))))
+        if (any(valid)) {
+          nums <- t(sapply(parsed[valid], as.numeric))
+          ord_others <- others[valid][order(nums[,1], nums[,2])]
+          invalid_others <- others[!valid]
+          if (length(invalid_others) > 0) ord_others <- c(ord_others, sort(invalid_others))
+        } else {
+          ord_others <- sort(others)
+        }
+      } else {
+        ord_others <- character(0)
+      }
+      c(wt, ord_others)
+    }
+    
+    group_levels <- custom_order(raw_group)
+    if ("Unassigned" %in% group_levels) {
+      group_levels <- c(setdiff(group_levels, "Unassigned"), "Unassigned")
+    }
+    scores$Group <- factor(raw_group, levels = group_levels)
+    message("[DEBUG] dq_pca_data: Group factor levels: ", paste(levels(scores$Group), collapse=", "))
+    message("[DEBUG] dq_pca_data: PCA completed, PC1 = ", var_explained[1], "%, PC2 = ", var_explained[2], "%")
+    list(scores = scores, var = var_explained)
+  }, error = function(e) {
+    message("[ERROR] dq_pca_data: ", e$message)
+    NULL
+  })
+})
+
+output$dq_pca_plot <- renderPlot({
+  data <- dq_pca_data()
+  if (is.null(data)) {
+    plot.new()
+    text(0.5, 0.5, "PCA not available (upload expression data first)")
+    return()
   }
   
-  data.frame(Sample = sample_names_short, MissingRate = sample_missing_rate, Group = factor(group), stringsAsFactors = FALSE)
-})
-
-output$dq_group_missing_boxplot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  df <- dq_group_missing_data()
-  req(df)
-  if (all(df$Group == "Unassigned")) {
-    ggplot(df, aes(x = Group, y = MissingRate)) +
-      geom_boxplot(fill = "#3498db", alpha = 0.7) +
-      labs(title = "Sample Missing Rate (No group information)", y = "Missing Rate (%)") +
-      theme_bw()
-  } else {
-    ggplot(df, aes(x = Group, y = MissingRate, fill = Group)) +
-      geom_boxplot(alpha = 0.7) +
-      labs(title = "Missing Rate Distribution by Group", y = "Missing Rate (%)") +
-      theme_bw() + theme(legend.position = "none")
-  }
-})
-
-output$dq_group_missing_table <- renderTable({
-  req(dq_group_missing_data())
-  df <- dq_group_missing_data()
-  stats <- df %>%
-    group_by(Group) %>%
-    summarise(
-      N = n(),
-      Mean = round(mean(MissingRate), 2),
-      SD = round(sd(MissingRate), 2),
-      Median = round(median(MissingRate), 2),
-      Min = round(min(MissingRate), 2),
-      Max = round(max(MissingRate), 2),
-      .groups = "drop"
+  scores <- data$scores
+  var <- data$var
+  groups <- levels(scores$Group)
+  
+  n_groups <- length(groups)
+  if (n_groups <= 8) {
+    group_colors <- setNames(
+      RColorBrewer::brewer.pal(max(3, n_groups), "Dark2")[1:n_groups],
+      groups
     )
-  stats
-}, striped = TRUE, bordered = TRUE, width = "100%")
-
-output$dq_group_missing_test <- renderPrint({
-  df <- dq_group_missing_data()
-  req(df)
-  groups_valid <- unique(df$Group[df$Group != "Unassigned"])
-  if (length(groups_valid) < 2) {
-    cat("Not enough groups for statistical comparison.")
-    return()
-  }
-  df_valid <- df[df$Group %in% groups_valid, ]
-  df_valid$Group <- factor(df_valid$Group)
-  test_result <- tryCatch(kruskal.test(MissingRate ~ Group, data = df_valid), error = function(e) NULL)
-  if (is.null(test_result)) {
-    cat("Statistical test failed.")
-    return()
-  }
-  pval <- test_result$p.value
-  cat("Kruskal-Wallis test p-value =", format.pval(pval, digits = 3), "\n")
-  if (pval < 0.05) cat("Significant difference among groups.") else cat("No significant difference.")
-})
-
-# ==================== PCA 分析 ====================
-dq_pca_full <- reactive({
-  message("[DEBUG] dq_pca_full: starting PCA computation")
-  
-  expr <- tryCatch({
-    mat <- expression_data()
-    message("[DEBUG] dq_pca_full: expression_data() returned dim=", nrow(mat), "x", ncol(mat))
-    mat
-  }, error = function(e) {
-    message("[DEBUG] dq_pca_full: expression_data() error - ", e$message)
-    NULL
-  })
-  
-  if (is.null(expr)) {
-    message("[DEBUG] dq_pca_full: expression_data() is NULL, abort")
-    return(NULL)
-  }
-  
-  proc_mat <- tryCatch(get_analysis_matrix(), error = function(e) NULL)
-  if (!is.null(proc_mat)) {
-    message("[DEBUG] dq_pca_full: using preprocessed data (dim=", nrow(proc_mat), "x", ncol(proc_mat), ")")
-    expr <- proc_mat
-    data_source <- "Preprocessed"
   } else {
-    message("[DEBUG] dq_pca_full: using raw expression_data")
-    data_source <- "Raw"
+    group_colors <- setNames(
+      colorRampPalette(RColorBrewer::brewer.pal(8, "Dark2"))(n_groups),
+      groups
+    )
   }
+  message("[DEBUG] dq_pca_plot: using colors: ", paste(group_colors, collapse=", "))
   
-  sample_short <- extract_sample_names(colnames(expr))
-  colnames(expr) <- sample_short
-  message("[DEBUG] dq_pca_full: columns standardized, first 3: ", paste(head(sample_short, 3), collapse = ", "))
+  p <- ggplot(scores, aes(x = PC1, y = PC2, color = Group)) +
+    geom_point(size = 4, alpha = 0.9) +
+    scale_color_manual(values = group_colors, drop = FALSE) +
+    labs(title = "PCA (Raw Data, 1% quantile imputation) by SubGroup",
+         x = paste0("PC1 (", var[1], "%)"),
+         y = paste0("PC2 (", var[2], "%)")) +
+    theme_bw() +
+    theme(legend.position = "right")
   
-  filled <- tryCatch({
-    if (requireNamespace("impute", quietly = TRUE)) {
-      message("[DEBUG] dq_pca_full: running KNN imputation")
-      impute_missing_values(expr, method = "knn")
-    } else {
-      expr[is.na(expr)] <- 1e-4
-      expr
-    }
-  }, error = function(e) {
-    message("[DEBUG] dq_pca_full: KNN failed, min fill - ", e$message)
-    expr[is.na(expr)] <- 1e-4
-    expr
-  })
-  
-  log_expr <- log2(filled + 1)
-  row_vars <- apply(log_expr, 1, var)
-  log_expr <- log_expr[row_vars > 1e-12, , drop = FALSE]
-  row_unique <- apply(log_expr, 1, function(x) length(unique(x)))
-  log_expr <- log_expr[row_unique > 1, , drop = FALSE]
-  
-  message("[DEBUG] dq_pca_full: rows after filtering: ", nrow(log_expr))
-  
-  if (nrow(log_expr) < 2) {
-    message("[DEBUG] dq_pca_full: too few variable rows")
-    return(NULL)
-  }
-  
-  pca <- tryCatch(prcomp(t(log_expr), scale. = TRUE), error = function(e) {
-    message("[DEBUG] dq_pca_full: prcomp error - ", e$message)
-    NULL
-  })
-  if (is.null(pca)) return(NULL)
-  
-  variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
-  cum_variance <- cumsum(variance)
-  message(sprintf("[DEBUG] dq_pca_full: PC1=%.1f%%, PC2=%.1f%%, cumulative=%.1f%%", 
-                  variance[1], variance[2], cum_variance[2]))
-  
-  scores <- as.data.frame(pca$x[, 1:2])
-  scores$Sample <- rownames(scores)
-  
-  if (!is.null(rv$sample_info)) {
-    si_short <- rv$sample_info
-    rownames(si_short) <- extract_sample_names(rownames(si_short))
-    common <- intersect(scores$Sample, rownames(si_short))
-    if (length(common) > 0) {
-      scores$Group <- si_short[common, "Group"]
-      scores$Batch <- if ("Batch" %in% colnames(si_short)) si_short[common, "Batch"] else NA
-    } else {
-      scores$Group <- "All"; scores$Batch <- NA
-    }
-  } else {
-    scores$Group <- "All"; scores$Batch <- NA
-  }
-  
-  outliers <- get_outlier_samples(list(pca_df = scores, pc1_var = variance[1], pc2_var = variance[2]))
-  scores$Outlier <- ifelse(scores$Sample %in% outliers, "Outlier", "Normal")
-  
-  message("[DEBUG] dq_pca_full: PCA completed, data_source = ", data_source)
-  list(pca = pca, scores = scores, variance = variance, cum_variance = cum_variance, loadings = pca$rotation, data_source = data_source)
+  p
 })
 
-output$pca_data_source_note <- renderUI({
-  pca_full <- dq_pca_full()
-  if (is.null(pca_full)) {
-    return(div(style = "margin-bottom: 10px; color: #e74c3c;", "PCA calculation failed. Please check your data or run preprocessing."))
-  }
-  if (pca_full$data_source == "Preprocessed") {
-    div(style = "margin-bottom: 10px; color: #27ae60; font-weight: bold;",
-        icon("check-circle"), " PCA data source: Preprocessed data")
-  } else {
-    div(style = "margin-bottom: 10px; color: #e67e22; font-weight: bold;",
-        icon("exclamation-triangle"), " PCA data source: Raw data (KNN imputed). Running preprocessing will automatically switch to preprocessed data.")
-  }
-})
-
-pca_group_plot_obj <- reactive({
-  pca_full <- dq_pca_full()
-  if (is.null(pca_full)) return(NULL)
-  scores <- pca_full$scores
-  scores <- scores[!is.na(scores$Group), ]
-  if (nrow(scores) == 0) return(NULL)
-  
-  group_colors <- c("Control" = "#FF69B4", "Treatment" = "#00CED1")
-  all_groups <- unique(scores$Group)
-  missing_colors <- setdiff(all_groups, names(group_colors))
-  if (length(missing_colors) > 0) {
-    extra_colors <- rainbow(length(missing_colors))
-    names(extra_colors) <- missing_colors
-    group_colors <- c(group_colors, extra_colors)
-  }
-  pc1_label <- sprintf("PC1 (%.1f%%, cum. %.1f%%)", pca_full$variance[1], pca_full$cum_variance[1])
-  pc2_label <- sprintf("PC2 (%.1f%%, cum. %.1f%%)", pca_full$variance[2], pca_full$cum_variance[2])
-  
-  ggplot(scores, aes(x = PC1, y = PC2, color = Group)) +
-    geom_point(size = 3, alpha = 0.8) +
-    scale_color_manual(values = group_colors) +
-    labs(title = "PCA by Group",
-         x = pc1_label,
-         y = pc2_label) +
-    theme_bw() + theme(legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
-})
-
-output$dq_pca_group_plot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  p <- pca_group_plot_obj()
-  if (is.null(p)) {
-    plot.new(); text(0.5, 0.5, "PCA not available")
-  } else {
-    print(p)
-  }
-})
-output$download_pca_group <- downloadHandler(
-  filename = function() "pca_group.png",
-  content = function(file) {
-    p <- pca_group_plot_obj()
-    if (!is.null(p)) ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
-    else showNotification("PCA not available", type = "error")
-  }
-)
-
-pca_batch_plot_obj <- reactive({
-  pca_full <- dq_pca_full()
-  if (is.null(pca_full)) return(NULL)
-  scores <- pca_full$scores
-  if (all(is.na(scores$Batch))) return(NULL)
-  scores <- scores[!is.na(scores$Batch), ]
-  if (nrow(scores) == 0) return(NULL)
-  batch_colors <- c("Batch1" = "#E41A1C", "Batch2" = "#00CED1")
-  all_batches <- unique(scores$Batch)
-  if (length(all_batches) > 2) batch_colors <- setNames(rainbow(length(all_batches)), all_batches)
-  
-  pc1_label <- sprintf("PC1 (%.1f%%, cum. %.1f%%)", pca_full$variance[1], pca_full$cum_variance[1])
-  pc2_label <- sprintf("PC2 (%.1f%%, cum. %.1f%%)", pca_full$variance[2], pca_full$cum_variance[2])
-  
-  ggplot(scores, aes(x = PC1, y = PC2, color = Batch)) +
-    geom_point(size = 3, alpha = 0.8) +
-    scale_color_manual(values = batch_colors) +
-    labs(title = "PCA by Batch",
-         x = pc1_label,
-         y = pc2_label) +
-    theme_bw() + theme(legend.position = "right", axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
-})
-
-output$dq_pca_batch_plot <- renderPlot({
-  validate_condition(!is.null(dq_expr_matrix()), "Please upload expression data first.")
-  p <- pca_batch_plot_obj()
-  if (is.null(p)) { plot.new(); text(0.5, 0.5, "Batch info not available") }
-  else { print(p) }
-})
-output$download_pca_batch <- downloadHandler(
-  filename = function() "pca_batch.png",
-  content = function(file) {
-    p <- pca_batch_plot_obj()
-    if (!is.null(p)) ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
-    else showNotification("PCA batch not available", type = "error")
-  }
-)
-
-observeEvent(input$help_pca_group, {
-  showModal(modalDialog(title = "PCA by Group", "按实验分组着色，轴标签包含方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
-})
-observeEvent(input$help_pca_batch, {
-  showModal(modalDialog(title = "PCA by Batch", "按实验批次着色，轴标签包含方差解释率和累计解释率。", easyClose = TRUE, footer = modalButton("关闭")))
-})
+message("[DEBUG] data_quality_plots.R: all outputs defined (no ellipses, no labels, single legend)")

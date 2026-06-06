@@ -1,5 +1,5 @@
 # server/preprocessing_helpers.R
-message("[DEBUG] preprocessing_helpers.R loaded")
+message("[DEBUG] preprocessing_helpers.R loaded (safe mode)")
 
 combat_correction <- function(data, batch) {
   if (!requireNamespace("sva", quietly = TRUE))
@@ -41,10 +41,14 @@ combat_correction <- function(data, batch) {
   return(result)
 }
 
-apply_missing_filter <- function(data, threshold, mode, sample_info = NULL, sample_names_short = NULL) {
+apply_missing_filter <- function(data, threshold, mode = "group", sample_info = NULL, sample_names_short = NULL) {
+  # 安全处理：mode 为空时强制使用 "group"
+  if (is.null(mode) || length(mode) == 0 || is.na(mode) || mode == "") {
+    message("[DEBUG] apply_missing_filter: mode is empty, defaulting to 'group'")
+    mode <- "group"
+  }
   if (threshold >= 1) return(data)
-  fallback_triggered <- FALSE
-  unmatched_count <- 0
+  
   message("[DEBUG] apply_missing_filter: mode = ", mode, ", threshold = ", threshold)
   if (mode == "group" && !is.null(sample_info) && "Group" %in% colnames(sample_info) && !is.null(sample_names_short)) {
     si <- sample_info
@@ -54,9 +58,13 @@ apply_missing_filter <- function(data, threshold, mode, sample_info = NULL, samp
     if (any(na_mask)) {
       unmatched_count <- sum(na_mask)
       message(sprintf("[DEBUG] apply_missing_filter: %d samples not matched to any group, falling back to global mode", unmatched_count))
+      # 回退到全局模式
       missing_frac <- rowMeans(is.na(data))
       keep <- missing_frac <= threshold
-      fallback_triggered <- TRUE
+      result <- data[keep, , drop = FALSE]
+      attr(result, "fallback_triggered") <- TRUE
+      attr(result, "unmatched_count") <- unmatched_count
+      return(result)
     } else {
       groups <- unique(group_vec)
       keep <- rep(FALSE, nrow(data))
@@ -70,13 +78,14 @@ apply_missing_filter <- function(data, threshold, mode, sample_info = NULL, samp
       message("[DEBUG] apply_missing_filter (group): kept ", sum(keep), " out of ", nrow(data))
     }
   } else {
+    # 全局模式（当无样本信息或 mode 为 global 时）
     missing_frac <- rowMeans(is.na(data))
     keep <- missing_frac <= threshold
     message("[DEBUG] apply_missing_filter (global): kept ", sum(keep), " out of ", nrow(data))
   }
   result <- data[keep, , drop = FALSE]
-  attr(result, "fallback_triggered") <- fallback_triggered
-  attr(result, "unmatched_count") <- unmatched_count
+  attr(result, "fallback_triggered") <- FALSE
+  attr(result, "unmatched_count") <- 0
   return(result)
 }
 

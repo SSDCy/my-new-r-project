@@ -1,5 +1,5 @@
 # ui/preprocessing_ui.R
-message("[DEBUG] preprocessing_ui.R loaded - removed Missing Value Distribution from Post-Processed Overview")
+message("[DEBUG] preprocessing_ui.R loaded - restored imputation tab (group missing filter + imputation)")
 
 make_collapsible_comparison <- function(id, title, content_ui) {
   tags$details(
@@ -64,9 +64,7 @@ preprocessing_ui <- function() {
         tags$hr(),
         tags$div(
           actionLink("nav_missing_filter", "Missing Value Filter", class = "sidebar-menu-item"),
-          actionLink("nav_intensity_filter", "Minimum Intensity Filter", class = "sidebar-menu-item"),
           actionLink("nav_imputation", "Missing Value Imputation", class = "sidebar-menu-item"),
-          actionLink("nav_batch", "Batch Correction", class = "sidebar-menu-item"),
           actionLink("nav_processed_overview", "Post-Processed Overview", class = "sidebar-menu-item"),
           actionLink("nav_data_table", "Processed Data Table", class = "sidebar-menu-item")
         ),
@@ -74,7 +72,7 @@ preprocessing_ui <- function() {
         div(
           style = "position: absolute; bottom: 20px; left: 15px; right: 15px;",
           actionButton("run_preprocessing", "Run Preprocessing", class = "btn-primary btn-block", style = "width: 100%;"),
-          helpText("Click to execute all configured steps in order.")
+          helpText("Click to execute missing value filter and imputation.")
         )
       ),
       div(
@@ -86,22 +84,8 @@ preprocessing_ui <- function() {
           tabPanel(
             title = "missing_filter", value = "missing_filter",
             div(class = "data-source-note",
-                icon("info-circle"), " Data source: Original expression matrix (raw data)."
+                icon("info-circle"), " Data source: Original expression matrix (raw data). Filtering is performed within each sample group."
             ),
-            h5("Filter Mode", style = "color: #2c3e50;"),
-            selectInput("missing_filter_mode", NULL,
-                        choices = c("Global (all samples)" = "global",
-                                    "Within Groups" = "group"),
-                        selected = "global"),
-            tags$details(
-              tags$summary("Mode Help", style = "cursor: pointer; pointer-events: auto;", tabindex = "0"),
-              div(style = "background: #f8f9fa; padding: 10px; border-radius: 5px; margin-top: 5px;",
-                  p(strong("Global:"), " Calculate missing rate across all samples."),
-                  p(strong("Within Groups:"), " Calculate missing rate within each group."),
-                  uiOutput("filter_mode_group_match_ui")
-              )
-            ),
-            div(style = "margin-top: 10px;", verbatimTextOutput("missing_filter_comparison", placeholder = TRUE)),
             sliderInput("max_missing_fraction", "Max allowed missing fraction (0-1)",
                         min = 0, max = 1, value = 0.5, step = 0.05, ticks = TRUE),
             div(style = "margin-bottom: 10px;",
@@ -117,62 +101,11 @@ preprocessing_ui <- function() {
             h5("Data Summary (missing‑related)", style = "color: #2c3e50;"),
             verbatimTextOutput("missing_data_info")
           ),
-          # 2. Minimum Intensity Filter
-          tabPanel(
-            title = "intensity_filter", value = "intensity_filter",
-            div(class = "data-source-note",
-                icon("info-circle"), " Data source: After Missing Value Filter (using current threshold)."
-            ),
-            tags$details(
-              tags$summary("Intensity Distribution & Threshold Calculator",
-                           style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px; pointer-events: auto;",
-                           tabindex = "0"),
-              div(style = "margin-top: 10px; pointer-events: auto;",
-                  verbatimTextOutput("intensity_info"),
-                  hr(),
-                  h5("Interactive Threshold Calculator"),
-                  fluidRow(
-                    column(6, numericInput("calc_threshold", "Enter threshold:", value = 1e5, step = 1e4)),
-                    column(6, verbatimTextOutput("calc_result"))
-                  )
-              )
-            ),
-            hr(),
-            numericInput("min_intensity", "Minimum intensity threshold", value = 1e5, step = 1e4, min = 0),
-            numericInput("min_samples_above_intensity", "At least N samples above threshold", value = 1, min = 1, max = 100, step = 1),
-            helpText("A protein is retained if at least this many samples have intensity above the threshold."),
-            plotOutput("intensity_dist_plot", height = "250px"),
-            verbatimTextOutput("intensity_filter_effect", placeholder = TRUE),
-            div(style = "margin-top: 15px;",
-                downloadButton("download_intensity_filter_excel", "Export Intensity Filter Results (Excel)", class = "btn-success btn-block")
-            ),
-            hr(),
-            make_collapsible_comparison(
-              "filter_comparison", "Filter Comparison (Before/After)",
-              tagList(
-                conditionalPanel(
-                  condition = "output.preprocessing_done == false",
-                  div(style = "margin-top: 20px; color: #999; text-align: center;",
-                      icon("exclamation-triangle", "fa-3x"),
-                      h4("Please run preprocessing first to see filter comparison.")
-                  )
-                ),
-                conditionalPanel(
-                  condition = "output.preprocessing_done == true",
-                  fluidRow(column(12, h4("Boxplot: Before vs After Filtering"), shinycssloaders::withSpinner(plotOutput("filter_boxplot", height = "500px"), type = 4, color = "#3498db"))),
-                  hr(),
-                  fluidRow(column(12, h4("PCA: Before vs After Filtering"), shinycssloaders::withSpinner(plotOutput("filter_pca_plot", height = "500px"), type = 4, color = "#3498db"))),
-                  hr(),
-                  fluidRow(column(12, h4("Summary Statistics"), DT::dataTableOutput("filter_summary_table"), br(), downloadButton("download_filter_table", "Download Comparison Table", class = "btn btn-sm btn-outline-success")))
-                )
-              )
-            )
-          ),
-          # 3. Missing Value Imputation
+          # 2. Missing Value Imputation (恢复)
           tabPanel(
             title = "imputation", value = "imputation",
             div(class = "data-source-note",
-                icon("info-circle"), " Data source: After Missing Value Filter & Intensity Filter.",
+                icon("info-circle"), " Data source: After Missing Value Filter & Inf Filter.",
                 br(),
                 span("Imputation is applied to the filtered matrix. Download of imputation results requires preprocessing to be run.")
             ),
@@ -180,7 +113,7 @@ preprocessing_ui <- function() {
                         choices = c("k-Nearest Neighbors (KNN)" = "knn", "Probabilistic PCA (PPCA)" = "ppca",
                                     "Minimum Value (Fixed)" = "minvalue", "Quantile (e.g. 1% quantile)" = "quantile",
                                     "None (skip imputation)" = "none"),
-                        selected = "quantile"),   # 默认改为 quantile
+                        selected = "quantile"),
             conditionalPanel(condition = "input.imputation_method == 'knn'", numericInput("knn_k", "KNN: number of neighbors (k)", value = 10, min = 1, max = 50, step = 1)),
             conditionalPanel(condition = "input.imputation_method == 'minvalue'", numericInput("minvalue_fixed", "Fixed minimum value", value = 1e-4, min = 0, step = 1e-5)),
             conditionalPanel(condition = "input.imputation_method == 'quantile'", numericInput("quantile_prob", "Quantile (e.g. 0.01 for 1%)", value = 0.01, min = 0.001, max = 0.5, step = 0.01)),
@@ -233,60 +166,13 @@ preprocessing_ui <- function() {
               )
             )
           ),
-          # 4. Batch Correction
-          tabPanel(
-            title = "batch", value = "batch",
-            div(class = "data-source-note",
-                icon("info-circle"), " Data source: After Imputation (or after filtering if imputation skipped).",
-                br(),
-                span("Batch correction is applied on top of the imputed matrix. Requires preprocessing to be run.")
-            ),
-            checkboxInput("perform_batch_correction", "Enable ComBat Batch Correction", value = FALSE),
-            verbatimTextOutput("batch_diagnostic_message", placeholder = TRUE),
-            uiOutput("batch_help_text"),
-            conditionalPanel(
-              condition = "output.batch_diagnostic_ready == true",
-              hr(), h5("Batch Effect Verification"), p("Select two batches to perform an independent t‑test on PC1."),
-              fluidRow(column(6, selectInput("batch_verification_batch1", "Batch 1", choices = NULL)), column(6, selectInput("batch_verification_batch2", "Batch 2", choices = NULL))),
-              h6(icon("table"), " PC1 Values per Sample"), tableOutput("batch_verification_table"),
-              h6(icon("chart-bar"), " Distribution of PC1 by Batch"), plotOutput("batch_verification_plot", height = "300px"),
-              tags$details(
-                tags$summary("Calculation Details", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px; pointer-events: auto;", tabindex = "0"),
-                div(style = "margin-top: 10px; pointer-events: auto;", verbatimTextOutput("batch_verification_details"))
-              ),
-              hr(), h5("Step‑by‑Step Visualization"),
-              fluidRow(column(6, h6("Raw Intensity"), plotOutput("batch_viz_raw_hist", height = "200px")), column(6, h6("log2 Transformed"), plotOutput("batch_viz_log_hist", height = "200px"))),
-              fluidRow(column(6, h6("PCA Score Plot"), plotOutput("batch_viz_pca", height = "300px")), column(6, h6("PC1 Boxplot"), plotOutput("batch_viz_pc1_box", height = "300px")))
-            ),
-            hr(),
-            make_collapsible_comparison(
-              "batch_correction", "Batch Correction (Before/After PCA)",
-              tagList(
-                conditionalPanel(
-                  condition = "output.preprocessing_done == false",
-                  div(style = "margin-top: 20px; color: #999; text-align: center;", icon("exclamation-triangle", "fa-3x"), h4("Please run preprocessing first to see batch correction results."))
-                ),
-                conditionalPanel(
-                  condition = "output.preprocessing_done == true",
-                  conditionalPanel(
-                    condition = "output.batch_correction_performed == false",
-                    div(style = "background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px;", h4(icon("info-circle"), " Batch Correction Not Performed"), p("Batch correction was not applied in the last preprocessing run."))
-                  ),
-                  conditionalPanel(
-                    condition = "output.batch_correction_performed == true",
-                    fluidRow(column(12, h4("PCA: Before vs After Batch Correction"), shinycssloaders::withSpinner(plotOutput("batch_pca_plot", height = "600px"), type = 4, color = "#3498db"), uiOutput("batch_pca_interpretation"), downloadButton("download_batch_pca", "Download PCA Comparison", class = "btn btn-sm btn-outline-success")))
-                  )
-                )
-              )
-            )
-          ),
-          # 5. Post-Processed Overview
+          # 3. Post-Processed Overview
           tabPanel(
             title = "processed_overview", value = "processed_overview",
             h4("Data Basic Information"),
             verbatimTextOutput("pre_processed_summary")
           ),
-          # 6. Processed Data Table
+          # 4. Processed Data Table
           tabPanel(
             title = "data_table", value = "data_table",
             h4("Preprocessing Steps Summary"),
@@ -300,4 +186,4 @@ preprocessing_ui <- function() {
     )
   )
 }
-message("[DEBUG] preprocessing_ui.R fully defined – Missing Value Distribution removed from Post-Processed Overview")
+message("[DEBUG] preprocessing_ui.R fully defined – imputation tab restored")

@@ -1,7 +1,5 @@
 # server/heatmap_plot.R
-# ============================================================
-# 热图数据准备与绘制模块（支持归一化选项，并解释 Z-score 的影响）
-# ============================================================
+message("[DEBUG] heatmap_plot.R loading... (Intensity SubGroup matching fixed for all cases)")
 
 # ---------- 辅助函数 ----------
 prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL, top_n = NULL, id_map = NULL) {
@@ -15,10 +13,8 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
   }
   expr_matrix <- data.matrix(data_src[, all_cols, drop = FALSE])
   original_rownames <- rownames(data_src)
-  message("[DEBUG] prepare_expr_matrix: original rownames first 5 = ", paste(head(original_rownames, 5), collapse = ", "))
   
   if (suppressWarnings(all(!is.na(as.numeric(original_rownames))))) {
-    message("[DEBUG] prepare_expr_matrix: rownames are numeric, attempting ID remapping")
     if (!is.null(id_map)) {
       idx <- as.integer(original_rownames)
       if (max(idx) <= length(id_map)) {
@@ -26,7 +22,6 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
         rownames(expr_matrix) <- new_ids
         message("[DEBUG] prepare_expr_matrix: remapped to IDs, first 5 = ", paste(head(new_ids, 5), collapse = ", "))
       } else {
-        message("[DEBUG] prepare_expr_matrix: numeric indices out of range, using original rownames")
         rownames(expr_matrix) <- original_rownames
       }
     } else {
@@ -62,10 +57,10 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
     na_rows <- rowSums(is.na(expr_matrix)) > 0
     expr_matrix <- expr_matrix[!na_rows, , drop = FALSE]
     na_rows_removed <- sum(na_rows)
+    message("[DEBUG] prepare_expr_matrix: removed ", na_rows_removed, " rows with NA")
     if (nrow(expr_matrix) == 0) {
       return(list(error = "After removing rows with NA values, no proteins remain."))
     }
-    message("[DEBUG] prepare_expr_matrix: removed ", na_rows_removed, " rows with NA")
   }
   
   log_expr <- log2(expr_matrix + 1)
@@ -99,12 +94,8 @@ prepare_expr_matrix <- function(data_src, samples, all_cols, protein_ids = NULL,
 heatmap_raw_sample_names <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
-  if (length(int_cols) == 0) {
-    message("[DEBUG] heatmap_raw_sample_names: no Intensity columns found")
-    return(character(0))
-  }
+  if (length(int_cols) == 0) return(character(0))
   samples <- gsub("^Intensity ", "", int_cols)
-  message("[DEBUG] heatmap_raw_sample_names: found ", length(samples), " Intensity samples, first 3: ", paste(head(samples, 3), collapse = ", "))
   samples
 })
 
@@ -112,10 +103,7 @@ heatmap_raw_sample_names <- reactive({
 heatmap_raw_data <- reactive({
   req(rv$raw_data)
   int_cols <- grep("^Intensity ", colnames(rv$raw_data), value = TRUE)
-  if (length(int_cols) == 0) {
-    message("[DEBUG] heatmap_raw_data: no Intensity columns, returning NULL")
-    return(NULL)
-  }
+  if (length(int_cols) == 0) return(NULL)
   mat <- rv$raw_data
   
   if ("Master protein IDs" %in% colnames(mat)) {
@@ -133,6 +121,7 @@ heatmap_raw_data <- reactive({
   mat
 })
 
+# ---------- 分组逻辑：根据数据源类型匹配 SubGroup ----------
 observe({
   req(input$heatmap_data_source == "Intensity")
   samples <- heatmap_raw_sample_names()
@@ -151,8 +140,8 @@ observe({
   })
   return_values <- names(levels)
   choices <- setNames(return_values, display_texts)
-  choices <- c(choices, "Default (prefix)" = "default")
-  updateSelectInput(session, "heatmap_group_level", choices = choices, selected = "default")
+  choices <- c(choices, "Use SubGroup from Sample Info" = "subgroup")
+  updateSelectInput(session, "heatmap_group_level", choices = choices, selected = "subgroup")
 })
 
 heatmap_raw_groups <- reactiveVal(NULL)
@@ -164,6 +153,39 @@ observeEvent(input$heatmap_apply_grouping, {
     showNotification("No Intensity columns found.", type = "error")
     return()
   }
+  
+  # 优先使用样本信息表的 SubGroup
+  if (!is.null(rv$sample_info) && "SubGroup" %in% colnames(rv$sample_info)) {
+    message("[DEBUG] heatmap_apply_grouping: using SubGroup from sample info")
+    si <- rv$sample_info
+    # 关键修改：将样本信息表的行名转换为短名（去掉 LFQ intensity / Intensity 前缀），再标准化
+    info_raw <- rownames(si)
+    # 提取短名
+    info_short <- extract_sample_names(info_raw)
+    # 标准化短名
+    info_std <- standardize_sample_name(info_short)
+    
+    # 标准化当前 Intensity 样本名
+    samples_std <- standardize_sample_name(samples)
+    
+    # 匹配
+    idx <- match(samples_std, info_std)
+    group_assign <- rep("Unassigned", length(samples))
+    matched <- !is.na(idx)
+    if (any(matched)) {
+      group_assign[matched] <- si$SubGroup[idx[matched]]
+      message("[DEBUG] heatmap_apply_grouping: matched ", sum(matched), " samples to SubGroup")
+    } else {
+      message("[DEBUG] heatmap_apply_grouping: no samples matched to SubGroup")
+    }
+    groups <- split(samples, group_assign)
+    heatmap_raw_groups(groups)
+    showNotification("Groups created based on SubGroup.", type = "message")
+    message("[DEBUG] heatmap_apply_grouping: groups = ", paste(names(groups), collapse = ", "))
+    return()
+  }
+  
+  # 回退到原有的按层级分组
   level <- input$heatmap_group_level
   if (is.null(level) || level == "") {
     showNotification("Please select a grouping level.", type = "warning")
@@ -180,6 +202,7 @@ observeEvent(input$heatmap_apply_grouping, {
   groups <- split(samples, group_assign)
   heatmap_raw_groups(groups)
   showNotification("Grouping applied!", type = "message")
+  message("[DEBUG] heatmap_apply_grouping: groups = ", paste(names(groups), collapse = ", "))
 })
 
 output$heatmap_group_selection_ui <- renderUI({
@@ -208,12 +231,10 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     global_id_map <- as.character(rv$clean_data$`Master protein IDs`)
   }
   
-  # 数据源选择逻辑
   data_source_type <- input$heatmap_data_source
   use_normalized <- FALSE
   if (data_source_type == "LFQ" && !is.null(input$heatmap_normalization)) {
     use_normalized <- (input$heatmap_normalization == "total")
-    message("[DEBUG] heatmap_data: use_normalized = ", use_normalized)
   }
   
   if (data_source_type == "LFQ") {
@@ -231,7 +252,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       data_src <- nd
       src_colnames <- norm_cols
       src_short <- gsub("^Norm_LFQ intensity ", "", norm_cols)
-      message("[DEBUG] heatmap_data: using normalized data, columns: ", paste(head(src_short, 3), collapse = ", "))
     } else {
       data_src <- get_analysis_matrix()
       if (is.null(data_src)) {
@@ -240,7 +260,6 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
       }
       src_colnames <- colnames(data_src)
       src_short <- extract_sample_names(src_colnames)
-      message("[DEBUG] heatmap_data: using preprocessed raw data")
     }
     
     if (is.null(input$heatmap_groups) || length(input$heatmap_groups) == 0) {
@@ -324,7 +343,7 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
     protein_ids <- ids
   } else {
     top_n <- input$heatmap_top_n
-    if (is.null(top_n) || is.na(top_n)) top_n <- 20
+    if (is.null(top_n) || is.na(top_n)) top_n <- 50
   }
   
   res_mat <- prepare_expr_matrix(data_src, samples, all_cols, 
@@ -353,11 +372,9 @@ heatmap_data <- eventReactive(input$generate_heatmap, {
 })
 
 heatmap_display_data <- reactive({
-  current_trigger <- data_changed_trigger()
   dat <- heatmap_data()
   if (is.null(dat)) return(list(error = "Click 'Generate Heatmap' to start"))
-  if (current_trigger != heatmap_generated_version()) return(list(error = "Data has changed. Please click 'Generate Heatmap' to update."))
-  dat
+  return(dat)
 })
 
 make_heatmap_breaks <- function(mat, n_colors = 100) {
@@ -367,35 +384,56 @@ make_heatmap_breaks <- function(mat, n_colors = 100) {
 }
 
 output$heatmap_plot <- renderPlot({
+  message("[DEBUG] heatmap_plot renderPlot called")
   dat <- heatmap_display_data()
   if (!is.null(dat$error)) {
+    message("[DEBUG] heatmap_plot error: ", dat$error)
     plot.new(); text(0.5, 0.5, dat$error, cex = 1.2); return()
   }
   if (is.null(dat$mat) || nrow(dat$mat) == 0 || ncol(dat$mat) == 0) {
+    message("[DEBUG] heatmap_plot: empty matrix")
     plot.new(); text(0.5, 0.5, "No data to display"); return()
   }
   if (isTRUE(dat$has_na)) {
     showNotification(
-      paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap. Consider using imputation in preprocessing for a more complete view."),
+      paste0("Note: ", dat$na_rows_removed, " proteins with missing values were excluded from the heatmap."),
       type = "message", duration = 10, id = "heatmap_na_note"
     )
   }
+  
   brks <- make_heatmap_breaks(dat$mat)
   ann <- dat$annotation_col
   if (!is.null(ann) && nrow(ann) == 0) ann <- NULL
-  pheatmap(dat$mat,
-           color = colorRampPalette(c("blue", "white", "red"))(100),
-           breaks = brks,
-           scale = "none",
-           cluster_rows = TRUE,
-           cluster_cols = TRUE,
-           show_rownames = TRUE,
-           show_colnames = dat$show_sample_names,
-           annotation_col = ann,
-           annotation_colors = dat$annotation_colors,
-           main = "Expression Heatmap",
-           fontsize_row = 8,
-           fontsize_col = 8)
+  
+  tryCatch({
+    p <- pheatmap::pheatmap(dat$mat,
+                            color = colorRampPalette(c("blue", "white", "red"))(100),
+                            breaks = brks,
+                            scale = "none",
+                            cluster_rows = TRUE,
+                            cluster_cols = TRUE,
+                            show_rownames = TRUE,
+                            show_colnames = dat$show_sample_names,
+                            annotation_col = ann,
+                            annotation_colors = dat$annotation_colors,
+                            main = "Expression Heatmap",
+                            fontsize_row = 8,
+                            fontsize_col = 8,
+                            silent = FALSE)
+    if (!is.null(p$tree_row)) {
+      row_order <- p$tree_row$order
+      message("[DEBUG] heatmap_plot: row clusters (protein order): ", paste(rownames(dat$mat)[row_order], collapse = ", "))
+    }
+    if (!is.null(p$tree_col)) {
+      col_order <- p$tree_col$order
+      message("[DEBUG] heatmap_plot: col clusters (sample order): ", paste(colnames(dat$mat)[col_order], collapse = ", "))
+    }
+    message("[DEBUG] heatmap_plot: pheatmap rendered successfully")
+  }, error = function(e) {
+    message("[ERROR] heatmap_plot: ", e$message)
+    plot.new()
+    text(0.5, 0.5, paste("Heatmap error:", e$message), cex = 1.2)
+  })
 }, height = 700)
 
 output$download_heatmap_png <- downloadHandler(
@@ -416,18 +454,22 @@ output$download_heatmap_png <- downloadHandler(
     brks <- make_heatmap_breaks(dat$mat)
     ann <- dat$annotation_col
     if (!is.null(ann) && nrow(ann) == 0) ann <- NULL
-    pheatmap::pheatmap(dat$mat,
-                       color = colorRampPalette(c("blue", "white", "red"))(100),
-                       breaks = brks,
-                       scale = "none",
-                       cluster_rows = TRUE,
-                       cluster_cols = TRUE,
-                       show_rownames = TRUE,
-                       show_colnames = dat$show_sample_names,
-                       annotation_col = ann,
-                       annotation_colors = dat$annotation_colors,
-                       main = "Expression Heatmap")
-    dev.off()
+    tryCatch({
+      pheatmap::pheatmap(dat$mat,
+                         color = colorRampPalette(c("blue", "white", "red"))(100),
+                         breaks = brks,
+                         scale = "none",
+                         cluster_rows = TRUE,
+                         cluster_cols = TRUE,
+                         show_rownames = TRUE,
+                         show_colnames = dat$show_sample_names,
+                         annotation_col = ann,
+                         annotation_colors = dat$annotation_colors,
+                         main = "Expression Heatmap")
+      dev.off()
+    }, error = function(e) {
+      message("[ERROR] download_heatmap_png: ", e$message)
+    })
   }
 )
 
@@ -442,7 +484,6 @@ output$heatmap_data_source_info <- renderPrint({
     } else {
       cat("Normalization: None (preprocessed raw intensity)\n")
     }
-    cat("Derived from: ", if (norm == "total") "Normalized data (Norm_LFQ intensity)" else "Preprocessed data (LFQ columns)", "\n")
     if (is.null(processed_data())) {
       cat("Status: Preprocessing has NOT been run.\n")
     } else {
@@ -454,13 +495,17 @@ output$heatmap_data_source_info <- renderPrint({
   }
 })
 
-# 热图预处理步骤指示器（解释 Z-score 消除缩放差异）
 output$heatmap_preprocess_steps <- renderUI({
   steps <- list()
   steps <- c(steps, paste0("Missing Value Filter: threshold = ", input$max_missing_fraction %||% 0.5,
                            ", mode = ", preprocessing_params$missing_filter_mode %||% "global"))
-  steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", input$min_intensity,
-                           ", min samples = ", input$min_samples_above_intensity %||% 1))
+  min_int <- input$min_intensity
+  if (!is.null(min_int) && !is.na(min_int) && min_int > 0) {
+    steps <- c(steps, paste0("Minimum Intensity Filter: threshold = ", min_int,
+                             ", min samples = ", input$min_samples_above_intensity %||% 1))
+  } else {
+    steps <- c(steps, "Minimum Intensity Filter: disabled")
+  }
   imp <- preprocessing_params$imputation_method %||% "none"
   if (imp == "none") {
     steps <- c(steps, "Missing Value Imputation: none (rows with missing values will be removed)")
@@ -483,7 +528,6 @@ output$heatmap_preprocess_steps <- renderUI({
   }
   steps <- c(steps, "log2(Intensity + 1) transformation applied")
   steps <- c(steps, "Per-row Z-score normalization (scale)")
-  steps <- c(steps, "Note: Z-score removes sample-wise scaling, so total intensity normalization does not affect the heatmap pattern.")
   
   step_tags <- lapply(seq_along(steps), function(i) {
     tagList(
@@ -497,4 +541,4 @@ output$heatmap_preprocess_steps <- renderUI({
   )
 })
 
-message("[DEBUG] heatmap_plot.R fully loaded")
+message("[DEBUG] heatmap_plot.R fully loaded (Intensity SubGroup matching robust)")
