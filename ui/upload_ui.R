@@ -1,9 +1,9 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - added download buttons for histogram and correlation heatmap, complete Upload & Preview")
+message("[DEBUG] upload_ui.R loaded - Added peptide length histogram UI")
 
 upload_ui <- function() {
   tabPanel(
-    title = div(icon("upload"), "Data Upload"), 
+    title = div(icon("upload"), "Data Upload"),
     value = "upload",
     br(),
     tabsetPanel(
@@ -12,19 +12,19 @@ upload_ui <- function() {
       tabPanel(
         title = "Upload & Preview",
         div(class = "card-modern",
-            div(class = "card-header-modern", 
+            div(class = "card-header-modern",
                 style = "display: flex; justify-content: space-between; align-items: center;",
                 div(icon("database"), " Data Import & Preview"),
                 actionButton("reset_all", "Reset All", icon = icon("power-off"), class = "btn-sm btn-light")
             ),
             div(style = "padding: 20px;",
                 fluidRow(
-                  column(6, 
+                  column(6,
                          div(style = "background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 15px;",
                              h4(icon("file-upload"), " Upload Expression Matrix"),
                              fileInput("expression_file", "Choose MaxQuant proteinGroups.txt",
-                                       accept = c(".txt"), 
-                                       buttonLabel = "Browse", 
+                                       accept = c(".txt"),
+                                       buttonLabel = "Browse",
                                        placeholder = "No file selected"),
                              radioButtons("intensity_type", "Intensity Type",
                                           choices = c("LFQ intensity" = "LFQ", "Intensity" = "Intensity"),
@@ -36,19 +36,19 @@ upload_ui <- function() {
                          ),
                          div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px;",
                              h4(icon("tags"), " Upload Sample Information"),
-                             downloadButton("download_sample_template", "Download Sample Template", 
+                             downloadButton("download_sample_template", "Download Sample Template",
                                             class = "btn-success btn-block", style = "margin-bottom: 10px;"),
                              fileInput("sample_info_file", "Choose Sample Info File (CSV/TXT/Excel)",
-                                       accept = c(".csv", ".txt", ".xlsx", ".xls"), 
-                                       buttonLabel = "Browse", 
+                                       accept = c(".csv", ".txt", ".xlsx", ".xls"),
+                                       buttonLabel = "Browse",
                                        placeholder = "No file selected"),
                              p(style = "color: #666; font-size: 12px;",
                                icon("exclamation-triangle"), " First column must be sample names, matching the sample names derived from intensity column headers (without the 'LFQ intensity ' or 'Intensity ' prefix).")
                          )
                   ),
-                  column(6, 
+                  column(6,
                          div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 15px;",
-                             h4(icon("chart-line"), " Data Summary"), 
+                             h4(icon("chart-line"), " Data Summary"),
                              uiOutput("data_summary_ui"),
                              br(),
                              uiOutput("detected_samples_ui"),
@@ -58,13 +58,13 @@ upload_ui <- function() {
                 ),
                 hr(),
                 tags$details(
-                  tags$summary(icon("table"), " Expression Matrix Preview (Sample Columns Only)", 
+                  tags$summary(icon("table"), " Expression Matrix Preview (Sample Columns Only)",
                                style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                   DT::dataTableOutput("upload_preview")
                 ),
                 hr(),
                 tags$details(
-                  tags$summary(icon("table"), " Sample Information Preview", 
+                  tags$summary(icon("table"), " Sample Information Preview",
                                style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                   DT::dataTableOutput("sample_info_preview")
                 )
@@ -120,10 +120,53 @@ upload_ui <- function() {
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
-                    p("Pearson correlation between selected samples based on raw expression data (1% quantile imputation + log2 transformation). Top 500 most variable proteins are used. Samples are colored by Group and SubGroup if available."),
+                    p("Pearson correlation between selected samples based on raw expression data (1% quantile imputation + log2 transformation). Top 500 most variable proteins are used. Samples are colored by SubGroup if available."),
                     downloadButton("download_dq_sample_cor_png", "Download Heatmap PNG", class = "btn-sm btn-outline-success", style = "margin-right: 5px;"),
                     downloadButton("download_dq_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn-sm btn-outline-secondary"),
                     plotOutput("dq_sample_cor_heatmap", height = "600px")
+                )
+            ),
+            # ========== 共有/独有蛋白与肽段（表格形式，样本范围2-15） ==========
+            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
+                h3(icon("venus-mars"), " Shared & Unique Proteins (Table View)", style = "margin: 0 0 15px 0; font-size: 18px;"),
+                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
+                    p("Select 2–15 samples from the Missing Heatmap to view the presence/absence of each protein, the shared and unique counts, and peptide sequences (if available)."),
+                    selectizeInput("intersection_samples", "Samples for Comparison (2–15)",
+                                   choices = NULL, multiple = TRUE,
+                                   options = list(plugins = list('remove_button'),
+                                                  placeholder = 'Select 2–15 samples...',
+                                                  maxItems = 15)),
+                    actionButton("generate_intersection", "Generate Table", class = "btn btn-primary", style = "margin-bottom: 10px;"),
+                    
+                    # 统计摘要
+                    h4("Summary Statistics"),
+                    verbatimTextOutput("intersection_summary"),
+                    
+                    # 蛋白存在矩阵表格
+                    h4("Protein Presence Matrix"),
+                    p("Shows 1 if protein was detected (non-missing) in the sample, 0 otherwise. 'Sum' column = number of samples where detected."),
+                    div(style = "margin-bottom: 10px;",
+                        downloadButton("download_intersection_proteins", "Download Protein Table CSV", class = "btn-sm btn-outline-success")
+                    ),
+                    DT::dataTableOutput("intersection_protein_table"),
+                    
+                    hr(),
+                    # 肽段表格
+                    h4("Peptide Sequences (for all proteins above)"),
+                    p("If 'Peptide sequences' column is present in the original data, the peptide sequences associated with each Master protein ID are displayed."),
+                    radioButtons("peptide_display_mode", "Display mode:",
+                                 choices = c("Merged (one protein per row)" = "merged",
+                                             "Expanded (one peptide per row)" = "expanded"),
+                                 selected = "merged", inline = TRUE),
+                    downloadButton("download_intersection_peptides", "Download Peptide Sequences CSV", class = "btn-sm btn-outline-secondary"),
+                    DT::dataTableOutput("intersection_peptide_table"),
+                    
+                    hr(),
+                    # 新增：肽段长度分布直方图
+                    h4("Peptide Length Distribution"),
+                    p("Histogram of the lengths (number of characters) of all peptide sequences from the selected proteins. This helps assess the size distribution of peptides."),
+                    downloadButton("download_peptide_length_hist", "Download Histogram PNG", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
+                    plotOutput("intersection_peptide_length_hist", height = "400px")
                 )
             )
         )
@@ -131,4 +174,4 @@ upload_ui <- function() {
     )
   )
 }
-message("[DEBUG] upload_ui.R fully defined")
+message("[DEBUG] upload_ui.R fully defined (with peptide length histogram)")

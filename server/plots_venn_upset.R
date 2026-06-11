@@ -118,9 +118,10 @@ output$venn_plot <- renderPlot({
   } else {
     plot_venn_diagram(sets, fill_colors = colors)
   }
+  message("[DEBUG] venn_plot: rendered Venn diagram")
 })
 
-# ---------- UpSet图 ----------
+# ---------- UpSet图（使用 ComplexHeatmap::UpSet）----------
 output$upset_plot <- renderPlot({
   req(venn_data())
   sets <- venn_data()$sets
@@ -129,29 +130,30 @@ output$upset_plot <- renderPlot({
     text(0.5, 0.5, "No data to display")
     return()
   }
-  colors <- venn_colors_for_plot()
   
-  upset_list <- UpSetR::fromList(sets)
-  colnames(upset_list) <- names(sets)
-  message("[DEBUG] UpSet columns: ", paste(colnames(upset_list), collapse = ", "))
+  message("[DEBUG] upset_plot: using ComplexHeatmap::UpSet")
   
   tryCatch({
-    UpSetR::upset(
-      upset_list,
-      nsets = length(sets),
-      order.by = "freq",
-      decreasing = TRUE,
-      main.bar.color = "#3498db",
-      sets.bar.color = colors,
-      matrix.color = "#34495e",
-      mainbar.y.label = "Intersection Size",
-      sets.x.label = "Set Size",
-      text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2)
+    comb_mat <- ComplexHeatmap::make_comb_mat(sets)
+    message("[DEBUG] upset_plot: comb_mat created, mode = ", mode(comb_mat))
+    
+    ht <- ComplexHeatmap::UpSet(comb_mat,
+                                top_annotation = ComplexHeatmap::upset_top_annotation(
+                                  comb_mat,
+                                  axis_param = list(gp = gpar(fontsize = 10))
+                                ),
+                                right_annotation = ComplexHeatmap::upset_right_annotation(
+                                  comb_mat,
+                                  axis_param = list(gp = gpar(fontsize = 10))
+                                ),
+                                row_names_gp = gpar(fontsize = 9)
     )
+    ComplexHeatmap::draw(ht, newpage = FALSE)
+    message("[DEBUG] upset_plot: ComplexHeatmap::UpSet drawn successfully")
   }, error = function(e) {
-    message("[ERROR] UpSet plot: ", e$message)
+    message("[ERROR] upset_plot: ComplexHeatmap::UpSet failed - ", e$message)
     plot.new()
-    text(0.5, 0.5, paste("Error generating UpSet plot:\n", e$message), cex = 1.2)
+    text(0.5, 0.5, paste("Error:", e$message))
   })
 })
 
@@ -172,6 +174,7 @@ output$download_venn_png <- downloadHandler(
       plot_venn_diagram(sets, fill_colors = colors)
     }
     dev.off()
+    message("[DEBUG] download_venn_png: saved")
   }
 )
 
@@ -184,15 +187,16 @@ output$download_upset_png <- downloadHandler(
       png(file, 800, 600); plot.new(); text(0.5,0.5,"No data"); dev.off()
       return()
     }
-    colors <- venn_colors_for_plot()
-    upset_list <- UpSetR::fromList(sets)
-    colnames(upset_list) <- names(sets)
     png(file, width = 1200, height = 800, res = 120)
     tryCatch({
-      UpSetR::upset(upset_list, nsets = length(sets), order.by = "freq", decreasing = TRUE,
-                    main.bar.color = "#3498db", sets.bar.color = colors, matrix.color = "#34495e",
-                    text.scale = c(1.5, 1.5, 1.2, 1.2, 1.5, 1.2))
+      comb_mat <- ComplexHeatmap::make_comb_mat(sets)
+      ht <- ComplexHeatmap::UpSet(comb_mat,
+                                  top_annotation = ComplexHeatmap::upset_top_annotation(comb_mat),
+                                  right_annotation = ComplexHeatmap::upset_right_annotation(comb_mat))
+      ComplexHeatmap::draw(ht, newpage = FALSE)
+      message("[DEBUG] download_upset_png: saved")
     }, error = function(e) {
+      message("[ERROR] download_upset_png: ", e$message)
       plot.new(); text(0.5,0.5, paste("Error:", e$message))
     })
     dev.off()

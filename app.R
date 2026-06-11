@@ -174,6 +174,7 @@ server <- function(input, output, session) {
   source("server/sample_correlation_plot.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
+  source("server/data_quality_intersection.R", local = TRUE)   # 新增
   source("server/preprocessing_nav.R", local = TRUE)
 }
 
