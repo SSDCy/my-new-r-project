@@ -38,6 +38,7 @@ library(ggVennDiagram)
 library(UpSetR)
 library(pheatmap)
 library(ComplexHeatmap)
+library(ComplexUpset)          # 新增：用于绘制彩色 UpSet 图
 library(scales)
 library(limma)
 library(sva)

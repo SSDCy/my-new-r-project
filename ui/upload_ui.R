@@ -1,5 +1,5 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - Added peptide length histogram UI")
+message("[DEBUG] upload_ui.R loaded - Shared & Unique Proteins auto-updates, with timing")
 
 upload_ui <- function() {
   tabPanel(
@@ -8,7 +8,7 @@ upload_ui <- function() {
     br(),
     tabsetPanel(
       id = "upload_tabs",
-      # ---- 上传与预览 ----
+      # ---- 上传与预览（完整保留） ----
       tabPanel(
         title = "Upload & Preview",
         div(class = "card-modern",
@@ -108,6 +108,55 @@ upload_ui <- function() {
                     plotOutput("sample_nonmiss_hist", height = "500px")
                 )
             ),
+            # ========== 共有/独有蛋白与肽段（自动更新） ==========
+            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
+                h3(icon("venus-mars"), " Shared & Unique Proteins (Table View)", style = "margin: 0 0 15px 0; font-size: 18px;"),
+                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
+                    p("Select samples in the Missing Heatmap above (minimum 2). The table and plots will update automatically."),
+                    
+                    h4("Summary Statistics"),
+                    verbatimTextOutput("intersection_summary"),
+                    
+                    # UpSet 图
+                    h4("UpSet Plot – Protein Overlap Between Samples"),
+                    p("This UpSet plot visualizes the intersections of detected proteins across the selected samples."),
+                    div(style = "margin-bottom: 10px;",
+                        downloadButton("download_intersection_upset", "Download UpSet PNG", class = "btn-sm btn-outline-success")
+                    ),
+                    # 固定高度 800px，并增加下边距 60px 防止与下方文字重叠
+                    div(style = "margin-bottom: 60px;",
+                        plotOutput("intersection_upset_plot", height = "800px")
+                    ),
+                    # 耗时显示
+                    div(style = "margin-top: 10px; font-size: 14px; color: #2c3e50;",
+                        strong("绘制 UpSet 图用时: "),
+                        textOutput("intersection_upset_time", inline = TRUE)
+                    ),
+                    
+                    h4("Protein Presence Matrix"),
+                    p("Shows 1 if protein was detected (non-missing) in the sample, 0 otherwise. 'Sum' column = number of samples where detected."),
+                    div(style = "margin-bottom: 10px;",
+                        downloadButton("download_intersection_proteins", "Download Protein Table CSV", class = "btn-sm btn-outline-success")
+                    ),
+                    DT::dataTableOutput("intersection_protein_table"),
+                    
+                    hr(),
+                    h4("Peptide Sequences (for all proteins above)"),
+                    p("If 'Peptide sequences' column is present in the original data, the peptide sequences associated with each Master protein ID are displayed."),
+                    radioButtons("peptide_display_mode", "Display mode:",
+                                 choices = c("Merged (one protein per row)" = "merged",
+                                             "Expanded (one peptide per row)" = "expanded"),
+                                 selected = "merged", inline = TRUE),
+                    downloadButton("download_intersection_peptides", "Download Peptide Sequences CSV", class = "btn-sm btn-outline-secondary"),
+                    DT::dataTableOutput("intersection_peptide_table"),
+                    
+                    hr(),
+                    h4("Peptide Length Distribution"),
+                    p("Bar plot of the lengths (number of characters) of all peptide sequences from the selected proteins."),
+                    downloadButton("download_peptide_length_hist", "Download Histogram PNG", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
+                    plotOutput("intersection_peptide_length_hist", height = "500px")
+                )
+            ),
             # ========== PCA 分析 ==========
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("project-diagram"), " PCA Analysis (Raw Data by Group)", style = "margin: 0 0 15px 0; font-size: 18px;"),
@@ -125,53 +174,10 @@ upload_ui <- function() {
                     downloadButton("download_dq_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn-sm btn-outline-secondary"),
                     plotOutput("dq_sample_cor_heatmap", height = "600px")
                 )
-            ),
-            # ========== 共有/独有蛋白与肽段（表格形式，样本范围2-15） ==========
-            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                h3(icon("venus-mars"), " Shared & Unique Proteins (Table View)", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
-                    p("Select 2–15 samples from the Missing Heatmap to view the presence/absence of each protein, the shared and unique counts, and peptide sequences (if available)."),
-                    selectizeInput("intersection_samples", "Samples for Comparison (2–15)",
-                                   choices = NULL, multiple = TRUE,
-                                   options = list(plugins = list('remove_button'),
-                                                  placeholder = 'Select 2–15 samples...',
-                                                  maxItems = 15)),
-                    actionButton("generate_intersection", "Generate Table", class = "btn btn-primary", style = "margin-bottom: 10px;"),
-                    
-                    # 统计摘要
-                    h4("Summary Statistics"),
-                    verbatimTextOutput("intersection_summary"),
-                    
-                    # 蛋白存在矩阵表格
-                    h4("Protein Presence Matrix"),
-                    p("Shows 1 if protein was detected (non-missing) in the sample, 0 otherwise. 'Sum' column = number of samples where detected."),
-                    div(style = "margin-bottom: 10px;",
-                        downloadButton("download_intersection_proteins", "Download Protein Table CSV", class = "btn-sm btn-outline-success")
-                    ),
-                    DT::dataTableOutput("intersection_protein_table"),
-                    
-                    hr(),
-                    # 肽段表格
-                    h4("Peptide Sequences (for all proteins above)"),
-                    p("If 'Peptide sequences' column is present in the original data, the peptide sequences associated with each Master protein ID are displayed."),
-                    radioButtons("peptide_display_mode", "Display mode:",
-                                 choices = c("Merged (one protein per row)" = "merged",
-                                             "Expanded (one peptide per row)" = "expanded"),
-                                 selected = "merged", inline = TRUE),
-                    downloadButton("download_intersection_peptides", "Download Peptide Sequences CSV", class = "btn-sm btn-outline-secondary"),
-                    DT::dataTableOutput("intersection_peptide_table"),
-                    
-                    hr(),
-                    # 新增：肽段长度分布直方图
-                    h4("Peptide Length Distribution"),
-                    p("Histogram of the lengths (number of characters) of all peptide sequences from the selected proteins. This helps assess the size distribution of peptides."),
-                    downloadButton("download_peptide_length_hist", "Download Histogram PNG", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
-                    plotOutput("intersection_peptide_length_hist", height = "400px")
-                )
             )
         )
       )
     )
   )
 }
-message("[DEBUG] upload_ui.R fully defined (with peptide length histogram)")
+message("[DEBUG] upload_ui.R fully defined (UpSet plot height 800px, margin-bottom 60px)")

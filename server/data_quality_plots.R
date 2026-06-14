@@ -1,5 +1,5 @@
 # server/data_quality_plots.R
-message("[DEBUG] data_quality_plots.R loaded - added histogram download and grid removal")
+message("[DEBUG] data_quality_plots.R loaded - init empty selection, unified Arial font, larger sizes")
 
 `%then%` <- function(a, b) { if (a) b else TRUE }
 validate_condition <- function(condition, message) {
@@ -9,7 +9,11 @@ validate_condition <- function(condition, message) {
 # ==================== 样本选择 ====================
 observeEvent(rv$sample_names, {
   message("[DEBUG] Updating heatmap_sample_select choices, n=", length(rv$sample_names))
-  updateSelectizeInput(session, "heatmap_sample_select", choices = rv$sample_names, selected = rv$sample_names, server = TRUE)
+  # 关键修改：初始不选择任何样本，避免大型计算
+  updateSelectizeInput(session, "heatmap_sample_select", 
+                       choices = rv$sample_names, 
+                       selected = character(0),  # 原为 rv$sample_names
+                       server = TRUE)
 }, ignoreNULL = TRUE, once = FALSE)
 
 output$heatmap_group_buttons_ui <- renderUI({
@@ -50,7 +54,7 @@ observe({
   }
 })
 
-# ---------- 可靠的自然排序（下划线兼容） ----------
+# ---------- 自然排序 ----------
 natural_order <- function(x) {
   if (length(x) == 0) return(integer(0))
   parts <- strsplit(as.character(x), "_")
@@ -65,10 +69,9 @@ natural_order <- function(x) {
   do.call(order, num_df)
 }
 
-# 样本排序：对照组最前，其余按组名，组内自然排序
 ordered_samples <- reactive({
   sel <- input$heatmap_sample_select
-  if (is.null(sel) || length(sel) == 0) sel <- rv$sample_names
+  if (is.null(sel) || length(sel) == 0) sel <- rv$sample_names   # 展示所有样本，但热图选择为空时显示全部
   message("[DEBUG] ordered_samples: raw selection length = ", length(sel))
   if (length(sel) == 0) return(character(0))
   
@@ -80,7 +83,6 @@ ordered_samples <- reactive({
     sel_std <- standardize_sample_name(sel)
     idx <- match(sel_std, info_std)
     grp <- ifelse(is.na(idx), "Unassigned", si$Group[idx])
-    message("[DEBUG] ordered_samples: matched ", sum(!is.na(idx)), " groups, ", sum(is.na(idx)), " unmatched")
   } else {
     grp <- rep("All", length(sel))
   }
@@ -98,10 +100,7 @@ ordered_samples <- reactive({
       ord <- c(ord, idx_g[local_order])
     }
   }
-  result <- sel[ord]
-  message("[DEBUG] ordered_samples: first 10 = ", paste(head(result, 10), collapse = ", "),
-          " ... total ", length(result))
-  result
+  sel[ord]
 })
 
 selected_samples <- reactive({ ordered_samples() })
@@ -156,15 +155,17 @@ dq_missing_heatmap_plot_obj <- reactive({
       name = "Status"
     ) +
     labs(title = paste0("Missing Heatmap (", n_prot, " proteins)"), x = NULL, y = NULL) +
-    theme_minimal(base_size = 10) +
+    theme_bw(base_family = "Arial") +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
       axis.text.y = element_blank(),
       axis.ticks.y = element_blank(),
       panel.grid = element_blank(),
-      plot.title = element_text(hjust = 0.5, face = "bold")
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12)
     )
-  message("[DEBUG] dq_missing_heatmap_plot_obj: ", n_prot, " proteins, ", n_samp, " samples")
+  message("[DEBUG] dq_missing_heatmap_plot_obj: ", n_prot, " proteins, ", n_samp, " samples (Arial large)")
   return(p)
 })
 
@@ -175,7 +176,6 @@ output$dq_missing_heatmap <- renderPlot({
   else print(p)
 })
 
-# 下载
 output$download_missing_heatmap <- downloadHandler(
   filename = function() "missing_heatmap.png",
   content = function(file) {
@@ -203,7 +203,7 @@ observeEvent(input$help_missing_heatmap, {
   message("[DEBUG] help_missing_heatmap")
 })
 
-# ==================== 非缺失值直方图（去除网格线、高度调整、增加下载） ====================
+# ==================== 非缺失值直方图（已更新字体） ====================
 output$sample_nonmiss_hist <- renderPlot({
   req(dq_expr_matrix())
   mat <- dq_expr_matrix()
@@ -245,14 +245,21 @@ output$sample_nonmiss_hist <- renderPlot({
   
   ggplot(df, aes(x = Sample, y = NonMissing, fill = Prefix)) +
     geom_col() +
-    geom_text(aes(label = NonMissing), vjust = -0.5, size = 3.5, color = "#333333") +
+    geom_text(aes(label = NonMissing), vjust = -0.5, size = 4, color = "#333333", family = "Arial") +
     scale_fill_manual(values = fill_colors, name = "Treatment Group") +
     labs(title = "Number of Quantified Proteins per Sample",
          y = "Non-Missing Count", x = NULL) +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
-          legend.position = "right",
-          panel.grid = element_blank())  # 去除网格线
+    theme_bw(base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+      axis.title = element_text(size = 16),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+      axis.text.y = element_text(size = 14),
+      legend.position = "right",
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12),
+      panel.grid = element_blank()
+    )
 })
 
 output$download_sample_nonmiss_hist <- downloadHandler(
@@ -282,13 +289,22 @@ output$download_sample_nonmiss_hist <- downloadHandler(
     df <- data.frame(Sample = factor(common_s, levels=common_s), NonMissing=nonmiss, Prefix=factor(prefixes, levels=unique_prefixes))
     p <- ggplot(df, aes(x=Sample, y=NonMissing, fill=Prefix)) +
       geom_col() +
-      geom_text(aes(label=NonMissing), vjust=-0.5, size=3.5, color="#333333") +
+      geom_text(aes(label=NonMissing), vjust=-0.5, size=4, color="#333333", family="Arial") +
       scale_fill_manual(values=fill_colors, name="Treatment Group") +
       labs(title="Number of Quantified Proteins per Sample", y="Non-Missing Count", x=NULL) +
-      theme_bw() +
-      theme(axis.text.x=element_text(angle=45, hjust=1, size=8), legend.position="right", panel.grid=element_blank())
+      theme_bw(base_family="Arial") +
+      theme(
+        plot.title = element_text(hjust=0.5, face="bold", size=18),
+        axis.title = element_text(size=16),
+        axis.text.x = element_text(angle=45, hjust=1, size=14),
+        axis.text.y = element_text(size=14),
+        legend.position = "right",
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        panel.grid = element_blank()
+      )
     ggsave(file, plot=p, width=12, height=6, dpi=150)
-    message("[DEBUG] download_sample_nonmiss_hist: saved")
+    message("[DEBUG] download_sample_nonmiss_hist: saved with Arial large")
   }
 )
 
@@ -315,7 +331,6 @@ dq_pca_data <- reactive({
     scores <- as.data.frame(pca$x[, 1:2])
     scores$Sample <- rownames(scores)
     
-    # 匹配样本信息表
     if (!is.null(rv$sample_info)) {
       si <- rv$sample_info
       short_names <- extract_sample_names(scores$Sample)
@@ -329,10 +344,8 @@ dq_pca_data <- reactive({
       color_col <- NULL
       if ("SubGroup" %in% colnames(si)) {
         color_col <- "SubGroup"
-        message("[DEBUG] dq_pca_data: using SubGroup column for coloring")
       } else if ("Group" %in% colnames(si)) {
         color_col <- "Group"
-        message("[DEBUG] dq_pca_data: SubGroup not found, using Group column instead")
       }
       
       if (!is.null(color_col)) {
@@ -342,7 +355,6 @@ dq_pca_data <- reactive({
       }
     } else {
       raw_group <- "All"
-      message("[DEBUG] dq_pca_data: no sample info uploaded")
     }
     
     custom_order <- function(groups) {
@@ -405,6 +417,7 @@ output$dq_pca_plot <- renderPlot({
     )
   }
   message("[DEBUG] dq_pca_plot: using colors: ", paste(group_colors, collapse=", "))
+  message("[DEBUG] dq_pca_plot: applying Arial large theme")
   
   ggplot(scores, aes(x = PC1, y = PC2, color = Group)) +
     geom_point(size = 4, alpha = 0.9) +
@@ -412,8 +425,159 @@ output$dq_pca_plot <- renderPlot({
     labs(title = "PCA (Raw Data, 1% quantile imputation) by SubGroup",
          x = paste0("PC1 (", var[1], "%)"),
          y = paste0("PC2 (", var[2], "%)")) +
-    theme_bw() +
-    theme(legend.position = "right")
+    theme_bw(base_family = "Arial") +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12)
+    )
 })
 
-message("[DEBUG] data_quality_plots.R: all outputs defined (complete with download and grid removal)")
+# ==================== 样本相关性热图（增大行列标签） ====================
+dq_sample_cor_data <- reactive({
+  req(dq_expr_matrix())
+  mat <- dq_expr_matrix()
+  samples <- selected_samples()
+  samples <- intersect(samples, colnames(mat))
+  if (length(samples) < 2) {
+    message("[DEBUG] dq_sample_cor_data: need at least 2 samples, currently ", length(samples))
+    return(NULL)
+  }
+  mat <- mat[, samples, drop = FALSE]
+  mat <- mat[rowSums(!is.na(mat)) > 1, , drop = FALSE]
+  message("[DEBUG] dq_sample_cor_data: after removing all-NA rows: ", nrow(mat), " x ", ncol(mat))
+  if (any(is.na(mat))) {
+    message("[DEBUG] dq_sample_cor_data: imputing missing values with Quantile (1%)")
+    mat <- as.matrix(impute_missing_values(as.data.frame(mat), method = "quantile", quantile_prob = 0.01))
+  }
+  log_expr <- log2(mat + 1)
+  z_expr <- t(scale(t(log_expr)))
+  z_expr[!is.finite(z_expr)] <- 0
+  row_vars <- apply(z_expr, 1, var, na.rm = TRUE)
+  n_keep <- min(500, nrow(z_expr))
+  top_idx <- order(row_vars, decreasing = TRUE)[1:n_keep]
+  z_expr <- z_expr[top_idx, , drop = FALSE]
+  message("[DEBUG] dq_sample_cor_data: selected top ", n_keep, " variable proteins (Z-score)")
+  cor_mat <- cor(z_expr, use = "complete.obs")
+  cor_mat[is.na(cor_mat)] <- 0
+  cor_vals <- cor_mat[upper.tri(cor_mat)]
+  message(sprintf("[DEBUG] dq_sample_cor_data: cor matrix distribution - min=%.3f, max=%.3f, median=%.3f, mean=%.3f",
+                  min(cor_vals), max(cor_vals), median(cor_vals), mean(cor_vals)))
+  sample_names <- colnames(cor_mat)
+  ann_col <- data.frame(row.names = sample_names)
+  ann_colors <- list()
+  if (!is.null(rv$sample_info)) {
+    si <- rv$sample_info
+    si$ShortName <- extract_sample_names(rownames(si))
+    idx <- match(sample_names, si$ShortName)
+    if ("SubGroup" %in% colnames(si)) {
+      groups <- si$SubGroup[idx]
+      groups[is.na(groups)] <- "Unassigned"
+      ann_col$SubGroup <- factor(groups)
+      groups_uniq <- levels(ann_col$SubGroup)
+      ann_colors$SubGroup <- get_group_colors(groups_uniq)
+    } else if ("Group" %in% colnames(si)) {
+      groups <- si$Group[idx]
+      groups[is.na(groups)] <- "Unassigned"
+      ann_col$Group <- factor(groups)
+      groups_uniq <- levels(ann_col$Group)
+      ann_colors$Group <- get_group_colors(groups_uniq)
+    }
+  }
+  if (ncol(ann_col) == 0) ann_col <- NULL
+  if (length(ann_colors) == 0) ann_colors <- NULL
+  message("[DEBUG] dq_sample_cor_data: correlation matrix generated, dim = ", nrow(cor_mat), "x", ncol(cor_mat))
+  list(cor_mat = cor_mat, ann_col = ann_col, ann_colors = ann_colors, samples = sample_names)
+})
+
+output$dq_sample_cor_heatmap <- renderPlot({
+  dat <- dq_sample_cor_data()
+  if (is.null(dat)) {
+    plot.new()
+    text(0.5, 0.5, "Not enough samples selected")
+    return()
+  }
+  cor_vals <- dat$cor_mat[upper.tri(dat$cor_mat)]
+  min_cor <- min(cor_vals, na.rm = TRUE)
+  max_cor <- max(cor_vals, na.rm = TRUE)
+  if (min_cor == max_cor) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
+  palette <- colorRampPalette(c("blue", "white", "red"))(255)
+  breaks <- seq(min_cor, max_cor, length.out = 256)
+  
+  message("[DEBUG] dq_sample_cor_heatmap: rendering with Arial, fontsize 14")
+  pheatmap::pheatmap(dat$cor_mat,
+                     color = palette,
+                     breaks = breaks,
+                     legend_breaks = round(c(min_cor, (min_cor+max_cor)/2, max_cor), 2),
+                     legend_labels = c(format(min_cor, digits=2), format((min_cor+max_cor)/2, digits=2), format(max_cor, digits=2)),
+                     clustering_distance_rows = as.dist(1 - dat$cor_mat),
+                     clustering_distance_cols = as.dist(1 - dat$cor_mat),
+                     clustering_method = "ward.D2",
+                     show_rownames = TRUE,
+                     show_colnames = TRUE,
+                     fontsize = 14,
+                     fontsize_row = 12,
+                     fontsize_col = 12,
+                     angle_col = 45,
+                     annotation_col = dat$ann_col,
+                     annotation_colors = dat$ann_colors,
+                     annotation_legend = TRUE,
+                     legend = TRUE,
+                     main = "Sample Correlation (Z-score per protein, log2, Top500)",
+                     fontfamily = "Arial")
+  message("[DEBUG] dq_sample_cor_heatmap: rendered")
+})
+
+output$download_dq_sample_cor_png <- downloadHandler(
+  filename = function() "sample_correlation_heatmap.png",
+  content = function(file) {
+    dat <- dq_sample_cor_data()
+    if (!is.null(dat)) {
+      png(file, width = 1600, height = 1400, res = 150, family = "Arial")
+      cor_vals <- dat$cor_mat[upper.tri(dat$cor_mat)]
+      min_cor <- min(cor_vals, na.rm = TRUE)
+      max_cor <- max(cor_vals, na.rm = TRUE)
+      if (min_cor == max_cor) { min_cor <- min_cor - 0.01; max_cor <- max_cor + 0.01 }
+      palette <- colorRampPalette(c("blue", "white", "red"))(255)
+      breaks <- seq(min_cor, max_cor, length.out = 256)
+      pheatmap::pheatmap(dat$cor_mat,
+                         color = palette,
+                         breaks = breaks,
+                         legend_breaks = round(c(min_cor, (min_cor+max_cor)/2, max_cor), 2),
+                         legend_labels = c(format(min_cor, digits=2), format((min_cor+max_cor)/2, digits=2), format(max_cor, digits=2)),
+                         clustering_distance_rows = as.dist(1 - dat$cor_mat),
+                         clustering_distance_cols = as.dist(1 - dat$cor_mat),
+                         clustering_method = "ward.D2",
+                         show_rownames = TRUE,
+                         show_colnames = TRUE,
+                         fontsize = 14,
+                         fontsize_row = 12,
+                         fontsize_col = 12,
+                         angle_col = 45,
+                         annotation_col = dat$ann_col,
+                         annotation_colors = dat$ann_colors,
+                         annotation_legend = TRUE,
+                         legend = TRUE,
+                         main = "Sample Correlation (Z-score per protein, log2, Top500)",
+                         fontfamily = "Arial")
+      dev.off()
+      message("[DEBUG] download_dq_sample_cor_png: saved with Arial large")
+    }
+  }
+)
+
+output$download_dq_sample_cor_matrix <- downloadHandler(
+  filename = function() "sample_correlation_matrix.csv",
+  content = function(file) {
+    dat <- dq_sample_cor_data()
+    if (!is.null(dat)) {
+      write.csv(dat$cor_mat, file, row.names = TRUE)
+    } else {
+      showNotification("No data to download", type = "error")
+    }
+  }
+)
+
+message("[DEBUG] data_quality_plots.R: all outputs defined (Arial large, empty init)")
