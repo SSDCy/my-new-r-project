@@ -1,5 +1,5 @@
 # server/data_quality_intersection.R
-message("[DEBUG] data_quality_intersection.R loading... (UpSetR, order by list, height 800)")
+message("[DEBUG] data_quality_intersection.R loading... (UpSetR, nintersects=30, height 450/550, protein selector)")
 
 # ---------- 监控热图选中的样本 ----------
 observe({
@@ -72,23 +72,17 @@ intersection_data <- reactive({
   sample_cols <- setdiff(colnames(presence_matrix), c("Protein", "Sum"))
   n_total <- nrow(presence_matrix)
   
-  # 计算各样本蛋白检测数目（未排序）
   per_sample_counts_unsorted <- colSums(presence_matrix[, sample_cols, drop = FALSE])
   
-  # 构建蛋白集合列表
   protein_sets <- lapply(sample_cols, function(s) {
     presence_matrix$Protein[presence_matrix[[s]] == 1]
   })
   names(protein_sets) <- sample_cols
   
-  # 自然排序：WT_1, WT_2, ..., 100_6_1, 100_6_2, ...
   ordered_names <- names(protein_sets)[natural_order(names(protein_sets))]
-  protein_sets <- protein_sets[ordered_names]          # 列表顺序固定
+  protein_sets <- protein_sets[ordered_names]
   
-  # per_sample_counts 也按相同顺序
   per_sample_counts <- per_sample_counts_unsorted[ordered_names]
-  
-  # 最终样本列表
   sorted_sample_cols <- ordered_names
   
   message("[DEBUG] intersection_data: protein_sets reordered to: ", paste(names(protein_sets), collapse = ", "))
@@ -117,12 +111,12 @@ intersection_data <- reactive({
   
   list(
     presence_matrix = presence_matrix,
-    samples = sorted_sample_cols,          # 排序后的样本列表
+    samples = sorted_sample_cols,
     total_proteins = n_total,
     shared_all = shared_all,
     unique_counts = unique_counts,
     unique_total = unique_total,
-    per_sample_counts = per_sample_counts,  # 已排序
+    per_sample_counts = per_sample_counts,
     detected_proteins = detected_proteins,
     protein_sets = protein_sets,
     upset_df = upset_df
@@ -208,7 +202,7 @@ output$download_intersection_proteins <- downloadHandler(
   }
 )
 
-# ========== UpSet 图（使用已排序列表，不传 sets，高度800） ==========
+# ========== UpSet 图（nintersects=30，动态高度：<=10时450，>10时550） ==========
 output$intersection_upset_plot <- renderPlot({
   start_time <- Sys.time()
   data <- intersection_data()
@@ -221,17 +215,22 @@ output$intersection_upset_plot <- renderPlot({
   
   sets <- data$protein_sets
   n_sets <- length(sets)
-  set_order <- names(sets)   # 已按自然顺序
-  message("[DEBUG] drawing UpSetR plot for ", n_sets, " samples, list order: ", paste(set_order, collapse = ", "))
+  set_order <- names(sets)
   
-  # 选择颜色
+  # 动态高度：样本少时更矮
+  if (n_sets <= 10) {
+    plot_height <- 450
+  } else {
+    plot_height <- 550
+  }
+  message("[DEBUG] drawing UpSetR plot for ", n_sets, " samples, height = ", plot_height, ", nintersects = 30, list order: ", paste(set_order, collapse = ", "))
+  
   if (n_sets <= 8) {
     set_colors <- RColorBrewer::brewer.pal(max(3, n_sets), "Set2")[1:n_sets]
   } else {
     set_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_sets)
   }
   
-  # 动态调整文字大小
   if (n_sets > 10) {
     text_scale <- c(1.8, 1.6, 1.6, 1.4, 1.0, 1.4)
     message("[DEBUG] n_sets > 10: text_scale[5] set to 1.0")
@@ -240,18 +239,17 @@ output$intersection_upset_plot <- renderPlot({
     message("[DEBUG] n_sets <= 10: default text_scale")
   }
   
-  # Arial 字体
   old_par <- par(family = "Arial", cex.main = 1.8, cex.lab = 1.6, cex.axis = 1.4)
   on.exit(par(old_par), add = TRUE)
   
   tryCatch({
-    # 注意：这里不传 sets 参数，完全依赖 fromList(sets) 中列表的顺序
     print(
       UpSetR::upset(
         UpSetR::fromList(sets),
         nsets = n_sets,
         order.by = "freq",
         decreasing = TRUE,
+        nintersects = 30,                # 限制显示的交集组合数，减少柱子
         main.bar.color = "#3498db",
         sets.bar.color = set_colors,
         matrix.color = "#34495e",
@@ -261,7 +259,7 @@ output$intersection_upset_plot <- renderPlot({
         text.scale = text_scale
       )
     )
-    message("[DEBUG] intersection_upset_plot: UpSetR plot printed, order from list")
+    message("[DEBUG] intersection_upset_plot: UpSetR plot printed, nintersects=30, height = ", plot_height)
     elapsed <- Sys.time() - start_time
     output$intersection_upset_time <- renderText({
       sprintf("%.1f 秒", as.numeric(elapsed))
@@ -272,7 +270,11 @@ output$intersection_upset_plot <- renderPlot({
     plot.new()
     text(0.5, 0.5, paste("UpSet error:", e$message))
   })
-}, height = 800)
+}, height = function() {
+  n <- length(selected_samples())
+  if (length(n) == 0) return(450)
+  if (n > 10) 550 else 450
+})
 
 # ---------- 显示耗时 ----------
 output$intersection_upset_time <- renderText({
@@ -295,10 +297,10 @@ output$download_intersection_upset <- downloadHandler(
     
     if (n_sets > 10) {
       text_scale <- c(1.8, 1.6, 1.6, 1.4, 1.0, 1.4)
-      png_height <- 1000
+      png_height <- 800
     } else {
       text_scale <- c(1.8, 1.6, 1.6, 1.4, 2.0, 1.4)
-      png_height <- 800
+      png_height <- 700
     }
     
     png(file, width = 1200, height = png_height, res = 150)
@@ -312,6 +314,7 @@ output$download_intersection_upset <- downloadHandler(
           nsets = n_sets,
           order.by = "freq",
           decreasing = TRUE,
+          nintersects = 30,
           main.bar.color = "#3498db",
           sets.bar.color = set_colors,
           matrix.color = "#34495e",
@@ -325,9 +328,33 @@ output$download_intersection_upset <- downloadHandler(
       message("[ERROR] download UpSetR: ", e$message)
     })
     dev.off()
-    message("[DEBUG] download_intersection_upset: saved (order from list)")
+    message("[DEBUG] download_intersection_upset: saved (nintersects=30, height ", png_height, ")")
   }
 )
+
+# ---------- 更新 Master Protein 下拉框 ----------
+observe({
+  data <- intersection_data()
+  if (!is.null(data)) {
+    choices <- data$detected_proteins
+    updateSelectizeInput(session, "selected_master_protein", choices = choices, server = TRUE)
+    message("[DEBUG] selected_master_protein choices updated, n = ", length(choices))
+  } else {
+    updateSelectizeInput(session, "selected_master_protein", choices = character(0))
+    message("[DEBUG] selected_master_protein choices cleared")
+  }
+})
+
+# ---------- 选中蛋白（基于下拉框） ----------
+selected_protein_for_hist <- reactive({
+  pid <- input$selected_master_protein
+  if (is.null(pid) || pid == "") {
+    message("[DEBUG] selected_protein_for_hist: no protein selected, showing all")
+    return(NULL)
+  }
+  message("[DEBUG] selected_protein_for_hist: protein selected = ", pid)
+  pid
+})
 
 # ---------- 肽段表格 ----------
 output$intersection_peptide_table <- DT::renderDataTable({
@@ -400,8 +427,7 @@ output$intersection_peptide_table <- DT::renderDataTable({
     message("[DEBUG] intersection_peptide_table: merged mode, nrow = ", nrow(df_merged))
     dt <- DT::datatable(df_merged, 
                         options = list(pageLength = 25, scrollX = TRUE),
-                        rownames = FALSE,
-                        selection = 'single')
+                        rownames = FALSE)
     return(dt)
   } else {
     seq_list <- lapply(seq_along(peptide_seq), function(i) {
@@ -487,39 +513,7 @@ output$download_intersection_peptides <- downloadHandler(
   }
 )
 
-# ========== 选中蛋白驱动条形图 ==========
-selected_protein_for_hist <- reactive({
-  if (input$peptide_display_mode != "merged") return(NULL)
-  sel <- input$intersection_peptide_table_rows_selected
-  if (is.null(sel) || length(sel) == 0) return(NULL)
-  
-  data <- intersection_data()
-  if (is.null(data)) return(NULL)
-  clean <- rv$clean_data
-  if (is.null(clean) || !"Master protein IDs" %in% colnames(clean)) return(NULL)
-  
-  target_proteins <- data$detected_proteins
-  idx <- match(target_proteins, clean$`Master protein IDs`)
-  if (all(is.na(idx))) return(NULL)
-  peptide_seq <- clean$`Peptide sequences`[idx]
-  names(peptide_seq) <- clean$`Master protein IDs`[idx]
-  
-  merged_list <- lapply(names(peptide_seq), function(pid) {
-    seqs <- trimws(unlist(strsplit(peptide_seq[pid], ";")))
-    seqs <- seqs[seqs != ""]
-    if (length(seqs) == 0) return(NULL)
-    data.frame(ID = pid, stringsAsFactors = FALSE)
-  })
-  df_merged <- do.call(rbind, merged_list)
-  if (is.null(df_merged) || nrow(df_merged) == 0) return(NULL)
-  
-  selected_row <- sel[1]
-  if (selected_row < 1 || selected_row > nrow(df_merged)) return(NULL)
-  pid <- df_merged[selected_row, 1]
-  return(as.character(pid))
-})
-
-# ========== 肽段长度数据 ==========
+# ========== 肽段长度数据（基于下拉框选择） ==========
 peptide_lengths <- reactive({
   data <- intersection_data()
   if (is.null(data)) return(NULL)
@@ -529,15 +523,22 @@ peptide_lengths <- reactive({
   target_proteins <- data$detected_proteins
   selected <- selected_protein_for_hist()
   
-  if (!is.null(selected) && !selected %in% target_proteins) selected <- NULL
+  if (!is.null(selected) && !selected %in% target_proteins) {
+    message("[DEBUG] peptide_lengths: selected protein not in detected list, resetting to NULL")
+    selected <- NULL
+  }
   
   if (!is.null(selected)) {
     idx <- match(selected, clean$`Master protein IDs`)
-    if (is.na(idx)) return(numeric(0))
+    if (is.na(idx)) {
+      message("[DEBUG] peptide_lengths: protein ID not found in clean data")
+      return(numeric(0))
+    }
     pep_seq <- clean$`Peptide sequences`[idx]
     seqs <- trimws(unlist(strsplit(pep_seq, ";")))
     seqs <- seqs[seqs != ""]
     lengths <- nchar(seqs)
+    message("[DEBUG] peptide_lengths: selected protein ", selected, ", n peptide = ", length(lengths))
   } else {
     idx <- match(target_proteins, clean$`Master protein IDs`)
     peptide_seq <- clean$`Peptide sequences`[idx]
@@ -548,6 +549,7 @@ peptide_lengths <- reactive({
       seqs <- seqs[seqs != ""]
       lengths <- c(lengths, nchar(seqs))
     }
+    message("[DEBUG] peptide_lengths: all proteins, total peptides = ", length(lengths))
   }
   lengths
 })
@@ -599,6 +601,7 @@ output$intersection_peptide_length_hist <- renderPlot({
     p <- p + geom_text(aes(label = Freq), vjust = -0.5, size = 6, color = "black", family = "Arial")
   }
   
+  message("[DEBUG] intersection_peptide_length_hist: rendered")
   print(p)
 }, height = 500)
 
@@ -657,4 +660,4 @@ output$download_peptide_length_hist <- downloadHandler(
   }
 )
 
-message("[DEBUG] data_quality_intersection.R loaded successfully (order from list, height 800)")
+message("[DEBUG] data_quality_intersection.R loaded successfully (nintersects=30, dynamic height 450/550)")

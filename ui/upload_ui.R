@@ -1,5 +1,5 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - Shared & Unique Proteins auto-updates, with timing")
+message("[DEBUG] upload_ui.R loaded - Shared & Unique Proteins auto-updates, with timing, collapsible sections, protein selector (UpSet height 500), correlation before PCA")
 
 upload_ui <- function() {
   tabPanel(
@@ -114,8 +114,11 @@ upload_ui <- function() {
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
                     p("Select samples in the Missing Heatmap above (minimum 2). The table and plots will update automatically."),
                     
-                    h4("Summary Statistics"),
-                    verbatimTextOutput("intersection_summary"),
+                    # Summary Statistics 折叠
+                    tags$details(
+                      tags$summary("Summary Statistics", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+                      verbatimTextOutput("intersection_summary")
+                    ),
                     
                     # UpSet 图
                     h4("UpSet Plot – Protein Overlap Between Samples"),
@@ -123,9 +126,9 @@ upload_ui <- function() {
                     div(style = "margin-bottom: 10px;",
                         downloadButton("download_intersection_upset", "Download UpSet PNG", class = "btn-sm btn-outline-success")
                     ),
-                    # 固定高度 800px，并增加下边距 60px 防止与下方文字重叠
-                    div(style = "margin-bottom: 60px;",
-                        plotOutput("intersection_upset_plot", height = "800px")
+                    # 高度 500px，底部边距 80px
+                    div(style = "margin-bottom: 80px;",
+                        plotOutput("intersection_upset_plot", height = "500px")
                     ),
                     # 耗时显示
                     div(style = "margin-top: 10px; font-size: 14px; color: #2c3e50;",
@@ -141,31 +144,32 @@ upload_ui <- function() {
                     DT::dataTableOutput("intersection_protein_table"),
                     
                     hr(),
-                    h4("Peptide Sequences (for all proteins above)"),
-                    p("If 'Peptide sequences' column is present in the original data, the peptide sequences associated with each Master protein ID are displayed."),
-                    radioButtons("peptide_display_mode", "Display mode:",
-                                 choices = c("Merged (one protein per row)" = "merged",
-                                             "Expanded (one peptide per row)" = "expanded"),
-                                 selected = "merged", inline = TRUE),
-                    downloadButton("download_intersection_peptides", "Download Peptide Sequences CSV", class = "btn-sm btn-outline-secondary"),
-                    DT::dataTableOutput("intersection_peptide_table"),
+                    # Peptide Sequences 表格折叠区域
+                    tags$details(
+                      tags$summary("Peptide Sequences (for all proteins above)", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
+                      div(style = "margin-top: 10px;",
+                          p("If 'Peptide sequences' column is present in the original data, the peptide sequences associated with each Master protein ID are displayed."),
+                          radioButtons("peptide_display_mode", "Display mode:",
+                                       choices = c("Merged (one protein per row)" = "merged",
+                                                   "Expanded (one peptide per row)" = "expanded"),
+                                       selected = "merged", inline = TRUE),
+                          downloadButton("download_intersection_peptides", "Download Peptide Sequences CSV", class = "btn-sm btn-outline-secondary"),
+                          DT::dataTableOutput("intersection_peptide_table")
+                      )
+                    ),
                     
+                    # Peptide Length Distribution（始终可见）
                     hr(),
                     h4("Peptide Length Distribution"),
-                    p("Bar plot of the lengths (number of characters) of all peptide sequences from the selected proteins."),
+                    p("Select a Master Protein ID below to view its peptide length distribution. Leave empty to show all proteins."),
+                    selectizeInput("selected_master_protein", "Select Master Protein ID",
+                                   choices = NULL,
+                                   options = list(placeholder = 'All proteins (default)')),
                     downloadButton("download_peptide_length_hist", "Download Histogram PNG", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
                     plotOutput("intersection_peptide_length_hist", height = "500px")
                 )
             ),
-            # ========== PCA 分析 ==========
-            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
-                h3(icon("project-diagram"), " PCA Analysis (Raw Data by Group)", style = "margin: 0 0 15px 0; font-size: 18px;"),
-                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
-                    p("PCA is performed on the raw expression data after log2 transformation. Missing values are imputed by 1% quantile method. Samples are colored by their SubGroup from the uploaded sample info."),
-                    plotOutput("dq_pca_plot", height = "500px")
-                )
-            ),
-            # ========== 样本相关性热图 ==========
+            # ========== 样本相关性热图（移至 PCA 之前） ==========
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
@@ -174,10 +178,18 @@ upload_ui <- function() {
                     downloadButton("download_dq_sample_cor_matrix", "Download Correlation Matrix CSV", class = "btn-sm btn-outline-secondary"),
                     plotOutput("dq_sample_cor_heatmap", height = "600px")
                 )
+            ),
+            # ========== PCA 分析（移到了后面） ==========
+            div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
+                h3(icon("project-diagram"), " PCA Analysis (Raw Data by Group)", style = "margin: 0 0 15px 0; font-size: 18px;"),
+                div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
+                    p("PCA is performed on the raw expression data after log2 transformation. Missing values are imputed by 1% quantile method. Samples are colored by their SubGroup from the uploaded sample info."),
+                    plotOutput("dq_pca_plot", height = "500px")
+                )
             )
         )
       )
     )
   )
 }
-message("[DEBUG] upload_ui.R fully defined (UpSet plot height 800px, margin-bottom 60px)")
+message("[DEBUG] upload_ui.R fully defined (Sample Correlation Heatmap before PCA)")
