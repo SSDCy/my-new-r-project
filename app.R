@@ -3,6 +3,7 @@
 library(shiny)
 
 source("global.R", local = TRUE)
+source("ui/home_ui.R", local = TRUE)              # 新增：首页
 source("ui/upload_ui.R", local = TRUE)
 source("ui/data_processing_ui.R", local = TRUE)      # 合并了 Cleaning, Preprocessing, Normalization
 source("ui/grouping_ui.R", local = TRUE)             # Define Groups
@@ -138,6 +139,8 @@ build_ui <- function() {
     navbarPage(
       title = div(icon("dna", style = "margin-right: 8px;"), "Universal Proteomics Platform"),
       id = "main_navbar", collapsible = TRUE, windowTitle = "Proteomics Analysis",
+      # 首页放在导航栏第一位
+      home_ui(),
       upload_ui(),
       data_processing_ui(),
       navbarMenu(
@@ -181,6 +184,7 @@ server <- function(input, output, session) {
   source("server/cd_search.R", local = TRUE)   # Batch CD-Search
   source("server/data_quality_intersection.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)
+  source("server/home_server.R", local = TRUE)  # 首页跳转逻辑
 }
 
 shinyApp(ui = ui, server = server)

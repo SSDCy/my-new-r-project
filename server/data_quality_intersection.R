@@ -1,5 +1,5 @@
 # server/data_quality_intersection.R
-message("[DEBUG] data_quality_intersection.R loading... (eggNOG removed, CD annotation retained, fixed extract_group_prefix conflict)")
+message("[DEBUG] data_quality_intersection.R loading... (eggNOG removed, CD annotation retained, fixed extract_group_prefix conflict, added FASTA sequence to table and download)")
 
 # ---------- 监控热图选中的样本 ----------
 observe({
@@ -153,7 +153,7 @@ grouped_sample_sets <- reactive({
   group_list
 })
 
-# ---------- 蛋白存在矩阵表格（添加 CD 注释，移除 eggNOG） ----------
+# ---------- 蛋白存在矩阵表格（添加 CD 注释，移除 eggNOG，尝试加入 FASTA 序列） ----------
 output$intersection_protein_table <- DT::renderDataTable({
   data <- intersection_data()
   if (is.null(data)) {
@@ -176,6 +176,34 @@ output$intersection_protein_table <- DT::renderDataTable({
       message("[ERROR] add_cd_to_table failed: ", conditionMessage(e))
     })
   }
+  
+  # ---------- 尝试添加 FASTA 序列到表格显示 ----------
+  message("[DEBUG] intersection_protein_table: checking for FASTA sequence data for display")
+  fasta_df <- NULL
+  tryCatch({
+    fasta_df <- cd_fasta()   # 调用 cd_search.R 中的反应式
+  }, error = function(e) {
+    message("[DEBUG] intersection_protein_table: cd_fasta() call failed - ", conditionMessage(e))
+  })
+  
+  if (!is.null(fasta_df) && nrow(fasta_df) > 0) {
+    message("[DEBUG] intersection_protein_table: FASTA data found with ", nrow(fasta_df), " sequences")
+    if ("ID" %in% colnames(fasta_df) && "Sequence" %in% colnames(fasta_df)) {
+      fasta_df$Protein <- fasta_df$ID
+      fasta_sub <- fasta_df[, c("Protein", "Sequence"), drop = FALSE]
+      df <- merge(df, fasta_sub, by = "Protein", all.x = TRUE, sort = FALSE)
+      message("[DEBUG] intersection_protein_table: after adding FASTA sequence for display, dims = ", nrow(df), " x ", ncol(df))
+      n_matched <- sum(!is.na(df$Sequence))
+      message("[DEBUG] intersection_protein_table: sequences matched for ", n_matched, " proteins")
+    } else {
+      message("[DEBUG] intersection_protein_table: FASTA data format unexpected, columns: ", paste(colnames(fasta_df), collapse = ", "))
+    }
+  } else {
+    message("[DEBUG] intersection_protein_table: no FASTA data available, adding placeholder")
+    df$Sequence <- "Sequence not available (upload FASTA for CD-Search)"
+    message("[DEBUG] intersection_protein_table: added placeholder Sequence column")
+  }
+  
   dt <- DT::datatable(df, options = list(pageLength = 10, server = FALSE, scrollX = TRUE), rownames = FALSE)
   if ("Sum" %in% colnames(df)) {
     dt <- DT::formatStyle(dt, columns = "Sum", fontWeight = "bold", color = "#2c3e50")
@@ -189,7 +217,7 @@ output$intersection_protein_table <- DT::renderDataTable({
   dt
 }, server = FALSE)
 
-# ---------- 下载蛋白表 CSV（合并注释，移除 eggNOG） ----------
+# ---------- 下载蛋白表 CSV（合并注释，移除 eggNOG，尝试加入 FASTA 序列） ----------
 output$download_intersection_proteins <- downloadHandler(
   filename = function() paste0("protein_presence_matrix_", Sys.Date(), ".csv"),
   content = function(file) {
@@ -199,11 +227,49 @@ output$download_intersection_proteins <- downloadHandler(
       return()
     }
     df <- data$presence_matrix
+    message("[DEBUG] download_intersection_proteins: original dims = ", nrow(df), " x ", ncol(df))
+    
+    # 合并 CD 注释
     if (exists("add_cd_to_table", mode = "function")) {
       df <- tryCatch(add_cd_to_table(df, id_col_name = "Protein"), error = function(e) df)
+      message("[DEBUG] download_intersection_proteins: after CD merge, dims = ", nrow(df), " x ", ncol(df))
     }
+    
+    # ---------- 尝试添加 FASTA 序列 ----------
+    message("[DEBUG] download_intersection_proteins: checking for FASTA sequence data")
+    fasta_df <- NULL
+    tryCatch({
+      fasta_df <- cd_fasta()   # 尝试调用 cd_search.R 中的反应式
+    }, error = function(e) {
+      message("[DEBUG] download_intersection_proteins: cd_fasta() call failed - ", conditionMessage(e))
+    })
+    
+    if (!is.null(fasta_df) && nrow(fasta_df) > 0) {
+      message("[DEBUG] download_intersection_proteins: FASTA data found with ", nrow(fasta_df), " sequences")
+      # 确保有 Protein 列用于匹配（cd_fasta 返回 ID 和 Sequence）
+      if ("ID" %in% colnames(fasta_df) && "Sequence" %in% colnames(fasta_df)) {
+        fasta_df$Protein <- fasta_df$ID
+        # 只保留 Protein 和 Sequence 列，避免重复
+        fasta_sub <- fasta_df[, c("Protein", "Sequence"), drop = FALSE]
+        # 左连接，保留所有蛋白，匹配不到则 Sequence 为 NA
+        df <- merge(df, fasta_sub, by = "Protein", all.x = TRUE, sort = FALSE)
+        message("[DEBUG] download_intersection_proteins: after adding FASTA sequence, dims = ", nrow(df), " x ", ncol(df))
+        # 检查匹配情况
+        n_matched <- sum(!is.na(df$Sequence))
+        message("[DEBUG] download_intersection_proteins: sequences matched for ", n_matched, " proteins")
+      } else {
+        message("[DEBUG] download_intersection_proteins: FASTA data format unexpected, columns: ", paste(colnames(fasta_df), collapse = ", "))
+      }
+    } else {
+      message("[DEBUG] download_intersection_proteins: no FASTA data available (did you upload a FASTA for CD-Search?)")
+      # 如果用户没有上传 FASTA，添加一个提示列
+      df$Sequence <- "Sequence not available (upload FASTA for CD-Search)"
+      message("[DEBUG] download_intersection_proteins: added placeholder Sequence column")
+    }
+    
+    # 写入 CSV
     write.csv(df, file, row.names = FALSE)
-    message("[DEBUG] download_intersection_proteins: saved with CD annotation (no eggNOG)")
+    message("[DEBUG] download_intersection_proteins: saved CSV with ", nrow(df), " rows and ", ncol(df), " columns")
   }
 )
 
@@ -556,4 +622,4 @@ output$download_peptide_length_hist <- downloadHandler(
   }
 )
 
-message("[DEBUG] data_quality_intersection.R loaded successfully (extract_group_prefix conflict resolved)")
+message("[DEBUG] data_quality_intersection.R loaded successfully (extract_group_prefix conflict resolved, table and download both support FASTA sequence)")

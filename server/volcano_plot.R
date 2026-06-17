@@ -48,12 +48,25 @@ safe_get_analysis_matrix <- function() {
 
 selected_volcano_comparison <- reactive({
   comp_name <- input$selected_comparison
-  if (is.null(comp_name) || comp_name == "") return(NULL)
+  if (is.null(comp_name) || comp_name == "") {
+    message("[DEBUG] volcano: no comparison selected (input$selected_comparison is empty)")
+    return(NULL)
+  }
   comps <- rv$comparisons
-  if (length(comps) == 0) return(NULL)
-  comp <- Find(function(c) c$name == comp_name, comps)
-  if (is.null(comp)) { message("[DEBUG] volcano: comparison not found: ", comp_name); return(NULL) }
-  message("[DEBUG] volcano: selected comparison = ", comp_name, ", treat = ", comp$treat, ", ctrl = ", comp$ctrl)
+  if (length(comps) == 0) {
+    message("[DEBUG] volcano: rv$comparisons is empty, no comparisons defined")
+    return(NULL)
+  }
+  message("[DEBUG] volcano: searching for comparison '", comp_name, "' among ", length(comps), " comparisons")
+  # 修复：使用 Filter 代替 Find，R 基础包中没有 Find 函数
+  comp <- Filter(function(c) c$name == comp_name, comps)
+  if (length(comp) == 0) {
+    message("[DEBUG] volcano: comparison '", comp_name, "' not found in rv$comparisons")
+    return(NULL)
+  } else {
+    comp <- comp[[1]]
+    message("[DEBUG] volcano: successfully found comparison, treat = ", comp$treat, ", ctrl = ", comp$ctrl)
+  }
   comp
 })
 
@@ -288,4 +301,4 @@ output$download_volcano_png <- downloadHandler(
   }
 )
 
-message("[DEBUG] volcano_plot.R loaded successfully (safe).")
+message("[DEBUG] volcano_plot.R loaded successfully (Find replaced by Filter, with debug info).")
