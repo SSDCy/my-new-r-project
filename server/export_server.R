@@ -1,5 +1,5 @@
 # server/export_server.R
-message("[DEBUG] export_server.R loading...")
+message("[DEBUG] export_server.R loading... (eggNOG annotation removed)")
 
 # ---------- 辅助函数：组合图绘制 ----------
 get_optimal_layout <- function(n_plots) {
@@ -419,7 +419,7 @@ output$download_combined_plot <- downloadHandler(
   }
 )
 
-# ---------- Excel 导出（直接统计计数，不再依赖 attr） ----------
+# ---------- Excel 导出（eggNOG 注释已移除） ----------
 output$download_excel <- downloadHandler(
   filename = function() paste0("Proteomics_Report_", Sys.Date(), ".xlsx"),
   content = function(f) {
@@ -441,6 +441,13 @@ output$download_excel <- downloadHandler(
     wb <- createWorkbook()
     sanitize_sheet <- function(name) sanitize_name(name, max_len = 31)
     
+    # 不再合并 eggNOG 注释
+    norm_data <- all_res$norm
+    filtered_data <- all_res$filtered
+    raw_data <- all_res$raw
+    clean_data <- all_res$clean
+    message("[DEBUG] export_excel: eggNOG annotation merge skipped.")
+    
     addWorksheet(wb, "Raw Data")
     addWorksheet(wb, "Clean Data")
     addWorksheet(wb, "Normalized")
@@ -448,16 +455,15 @@ output$download_excel <- downloadHandler(
     addWorksheet(wb, "DE Summary")
     
     progress$set(detail = "Writing main data...", value = 0.1)
-    writeData(wb, "Raw Data", all_res$raw)
-    writeData(wb, "Clean Data", all_res$clean)
-    writeData(wb, "Normalized", all_res$norm)
-    writeData(wb, "Unique Filtered", all_res$filtered)
+    writeData(wb, "Raw Data", raw_data)
+    writeData(wb, "Clean Data", clean_data)
+    writeData(wb, "Normalized", norm_data)
+    writeData(wb, "Unique Filtered", filtered_data)
     
-    results_list <- all_res$results
+    results_list <- all_res$results[selected_comps]
     stats_list <- lapply(selected_comps, function(nm) {
       res <- results_list[[nm]]
       if (is.null(res) || !is.data.frame(res$data)) {
-        message("[DEBUG] export_excel: missing data for ", nm)
         return(data.frame(Comparison = nm, Up = 0, Down = 0, Increase = 0, Decrease = 0, NS = 0, Total = 0))
       }
       df <- res$data
@@ -479,7 +485,7 @@ output$download_excel <- downloadHandler(
     stats_df <- do.call(rbind, stats_list)
     writeData(wb, "DE Summary", stats_df)
     
-    # 构建 Norm_ 列到组名的映射
+    # 构建列到组名的映射
     norm_colnames <- grep("^Norm_LFQ intensity ", colnames(all_res$norm), value = TRUE)
     sample_short <- gsub("^Norm_LFQ intensity ", "", norm_colnames)
     group_of_sample <- function(short_name) {
@@ -492,13 +498,11 @@ output$download_excel <- downloadHandler(
     
     all_groups <- unique(col_to_group)
     group_colors <- get_group_colors(all_groups)
-    message("[DEBUG] export_excel: groups for coloring: ", paste(all_groups, collapse = ", "))
     
     style_red <- createStyle(fontColour = "#C00000")
     style_bold <- createStyle(textDecoration = "bold")
     style_note <- createStyle(fontColour = "#2c3e50", wrapText = TRUE)
     
-    # 应用组颜色
     for (sheet_name in c("Normalized", "Unique Filtered")) {
       df_sheet <- if (sheet_name == "Normalized") all_res$norm else all_res$filtered
       if (is.null(df_sheet) || nrow(df_sheet) == 0) next
@@ -511,11 +515,6 @@ output$download_excel <- downloadHandler(
                    rows = 2:(nrow(df_sheet)+1), cols = col_idx, gridExpand = TRUE, stack = TRUE)
         }
       }
-    }
-    
-    for (sheet_name in c("Normalized", "Unique Filtered")) {
-      df_sheet <- if (sheet_name == "Normalized") all_res$norm else all_res$filtered
-      if (is.null(df_sheet) || nrow(df_sheet) == 0) next
       if ("Master protein IDs" %in% colnames(df_sheet)) {
         addStyle(wb, sheet_name, style_red, rows = 2:(nrow(df_sheet)+1),
                  cols = which(colnames(df_sheet) == "Master protein IDs"), gridExpand = TRUE)
@@ -526,7 +525,6 @@ output$download_excel <- downloadHandler(
       }
       freezePane(wb, sheet_name, firstRow = TRUE)
     }
-    
     for (sn in c("Raw Data", "Clean Data")) {
       df_sn <- switch(sn, "Raw Data" = all_res$raw, "Clean Data" = all_res$clean)
       if (!is.null(df_sn) && "Master protein IDs" %in% colnames(df_sn)) {
@@ -554,6 +552,8 @@ output$download_excel <- downloadHandler(
         next
       }
       df_diff <- res_item$data
+      # 不再合并 eggNOG 注释
+      message("[DEBUG] export_excel: writing sheet ", sheet_name, " without eggNOG annotation.")
       writeData(wb, sheet_name, df_diff)
       
       norm_cols_diff <- grep("^Norm_LFQ intensity", colnames(df_diff), value = TRUE)
@@ -599,7 +599,7 @@ output$download_excel <- downloadHandler(
     progress$set(detail = "Saving...", value = 0.95)
     saveWorkbook(wb, f, overwrite = TRUE)
     progress$set(detail = "Complete!", value = 1.0)
-    message("[DEBUG] export_excel: report saved to ", f)
+    message("[DEBUG] export_excel: report saved without eggNOG annotation")
   }
 )
 
@@ -615,4 +615,4 @@ observeEvent(input$goto_comparisons, {
   updateNavbarPage(session, "main_navbar", selected = "comparisons")
 })
 
-message("[DEBUG] export_server.R loaded successfully.")
+message("[DEBUG] export_server.R loaded successfully (eggNOG removed).")

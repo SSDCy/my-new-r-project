@@ -1,5 +1,5 @@
 # ui/upload_ui.R
-message("[DEBUG] upload_ui.R loaded - Shared & Unique Proteins auto-updates, with timing, collapsible sections, protein selector (UpSet height 500), correlation before PCA")
+message("[DEBUG] upload_ui.R loaded - eggNOG and Sequence Download removed")
 
 upload_ui <- function() {
   tabPanel(
@@ -8,7 +8,7 @@ upload_ui <- function() {
     br(),
     tabsetPanel(
       id = "upload_tabs",
-      # ---- 上传与预览（完整保留） ----
+      # ---- 上传与预览 ----
       tabPanel(
         title = "Upload & Preview",
         div(class = "card-modern",
@@ -23,9 +23,7 @@ upload_ui <- function() {
                          div(style = "background: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 15px;",
                              h4(icon("file-upload"), " Upload Expression Matrix"),
                              fileInput("expression_file", "Choose MaxQuant proteinGroups.txt",
-                                       accept = c(".txt"),
-                                       buttonLabel = "Browse",
-                                       placeholder = "No file selected"),
+                                       accept = c(".txt"), buttonLabel = "Browse", placeholder = "No file selected"),
                              radioButtons("intensity_type", "Intensity Type",
                                           choices = c("LFQ intensity" = "LFQ", "Intensity" = "Intensity"),
                                           selected = "LFQ", inline = TRUE),
@@ -39,11 +37,26 @@ upload_ui <- function() {
                              downloadButton("download_sample_template", "Download Sample Template",
                                             class = "btn-success btn-block", style = "margin-bottom: 10px;"),
                              fileInput("sample_info_file", "Choose Sample Info File (CSV/TXT/Excel)",
-                                       accept = c(".csv", ".txt", ".xlsx", ".xls"),
-                                       buttonLabel = "Browse",
-                                       placeholder = "No file selected"),
+                                       accept = c(".csv", ".txt", ".xlsx", ".xls"), buttonLabel = "Browse", placeholder = "No file selected"),
                              p(style = "color: #666; font-size: 12px;",
                                icon("exclamation-triangle"), " First column must be sample names, matching the sample names derived from intensity column headers (without the 'LFQ intensity ' or 'Intensity ' prefix).")
+                         ),
+                         # ========= Batch CD-Search =========
+                         div(style = "background: #f8f9fa; padding: 20px; border-radius: 10px; margin-top: 15px;",
+                             h4(icon("search"), " Batch CD-Search (NCBI Conserved Domains)"),
+                             p(style = "color: #666; font-size: 12px;",
+                               icon("info-circle"), " Search protein sequences against the NCBI Conserved Domain Database (CDD). You can either run the search directly (if network allows) or manually submit a FASTA file to the NCBI website and upload the result."),
+                             fileInput("cd_search_fasta", "Upload FASTA for CD-Search (optional, can use the same reference FASTA)",
+                                       accept = c(".fasta", ".fa", ".txt"), buttonLabel = "Browse", placeholder = "Select FASTA file"),
+                             actionButton("run_cd_search", "Run Batch CD-Search", icon = icon("play"), class = "btn-success"),
+                             br(), br(),
+                             uiOutput("cd_search_status_ui"),
+                             tags$hr(),
+                             p(strong("Or upload CD-Search result file manually:")),
+                             fileInput("cd_manual_file", "Choose CD-Search result file (TSV/TXT)",
+                                       accept = c(".txt", ".tsv", ".csv"), buttonLabel = "Browse", placeholder = "No file selected"),
+                             p(style = "color: #666; font-size: 12px;",
+                               icon("info-circle"), " If automatic search fails, visit https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi, upload the FASTA, select 'CDD--62456 PSSMs', run the search, and download the result as a TSV file. Then upload it here.")
                          )
                   ),
                   column(6,
@@ -53,20 +66,18 @@ upload_ui <- function() {
                              br(),
                              uiOutput("detected_samples_ui"),
                              uiOutput("sample_match_hint")
-                         )
+                         ),
+                         uiOutput("cd_status_ui")   # 只保留 CD-Search 的状态显示
                   )
                 ),
                 hr(),
-                tags$details(
-                  tags$summary(icon("table"), " Expression Matrix Preview (Sample Columns Only)",
-                               style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
-                  DT::dataTableOutput("upload_preview")
-                ),
+                tags$details(tags$summary(icon("table"), " Expression Matrix Preview (Sample Columns Only)", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"), DT::dataTableOutput("upload_preview")),
                 hr(),
-                tags$details(
-                  tags$summary(icon("table"), " Sample Information Preview",
-                               style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
-                  DT::dataTableOutput("sample_info_preview")
+                tags$details(tags$summary(icon("table"), " Sample Information Preview", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"), DT::dataTableOutput("sample_info_preview")),
+                # eggNOG 预览已删除，只保留 CD 预览
+                conditionalPanel(
+                  condition = "output.cd_loaded",
+                  tags$details(tags$summary(icon("table"), " CD-Search Result Preview", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"), DT::dataTableOutput("cd_preview"))
                 )
             )
         )
@@ -75,7 +86,6 @@ upload_ui <- function() {
       tabPanel(
         title = "Data Quality Analysis",
         div(style = "padding: 10px;",
-            # ========== 缺失值分析 ==========
             h4(icon("exclamation-triangle"), " Missing Value Analysis"),
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("database"), " Missing Value Analysis", style = "margin: 0 0 15px 0; font-size: 18px;"),
@@ -108,43 +118,24 @@ upload_ui <- function() {
                     plotOutput("sample_nonmiss_hist", height = "500px")
                 )
             ),
-            # ========== 共有/独有蛋白与肽段（自动更新） ==========
+            # 共有/独有蛋白与肽段
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("venus-mars"), " Shared & Unique Proteins (Table View)", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
                     p("Select samples in the Missing Heatmap above (minimum 2). The table and plots will update automatically."),
                     
-                    # Summary Statistics 折叠
-                    tags$details(
-                      tags$summary("Summary Statistics", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
-                      verbatimTextOutput("intersection_summary")
-                    ),
-                    
-                    # UpSet 图
-                    h4("UpSet Plot – Protein Overlap Between Samples"),
-                    p("This UpSet plot visualizes the intersections of detected proteins across the selected samples."),
-                    div(style = "margin-bottom: 10px;",
-                        downloadButton("download_intersection_upset", "Download UpSet PNG", class = "btn-sm btn-outline-success")
-                    ),
-                    # 高度 500px，底部边距 80px
-                    div(style = "margin-bottom: 80px;",
-                        plotOutput("intersection_upset_plot", height = "500px")
-                    ),
-                    # 耗时显示
-                    div(style = "margin-top: 10px; font-size: 14px; color: #2c3e50;",
-                        strong("绘制 UpSet 图用时: "),
-                        textOutput("intersection_upset_time", inline = TRUE)
-                    ),
+                    h4("Venn Diagrams by Treatment Group"),
+                    p("For each treatment group (based on sample name prefix), a Venn diagram showing overlap of detected proteins among replicates is displayed."),
+                    uiOutput("group_venn_plots_ui"),
                     
                     h4("Protein Presence Matrix"),
-                    p("Shows 1 if protein was detected (non-missing) in the sample, 0 otherwise. 'Sum' column = number of samples where detected."),
+                    p("Shows 1 if protein was detected (non-missing) in the sample, 0 otherwise. 'Sum' column = number of samples where detected. CD-Search annotation columns (if uploaded) are appended."),
                     div(style = "margin-bottom: 10px;",
                         downloadButton("download_intersection_proteins", "Download Protein Table CSV", class = "btn-sm btn-outline-success")
                     ),
                     DT::dataTableOutput("intersection_protein_table"),
                     
                     hr(),
-                    # Peptide Sequences 表格折叠区域
                     tags$details(
                       tags$summary("Peptide Sequences (for all proteins above)", style = "cursor: pointer; font-weight: bold; color: #2c3e50; margin-bottom: 10px;"),
                       div(style = "margin-top: 10px;",
@@ -158,18 +149,14 @@ upload_ui <- function() {
                       )
                     ),
                     
-                    # Peptide Length Distribution（始终可见）
                     hr(),
                     h4("Peptide Length Distribution"),
-                    p("Select a Master Protein ID below to view its peptide length distribution. Leave empty to show all proteins."),
-                    selectizeInput("selected_master_protein", "Select Master Protein ID",
-                                   choices = NULL,
-                                   options = list(placeholder = 'All proteins (default)')),
+                    p("Distribution of peptide lengths for all detected proteins in the selected samples."),
                     downloadButton("download_peptide_length_hist", "Download Histogram PNG", class = "btn-sm btn-outline-success", style = "margin-bottom: 5px;"),
                     plotOutput("intersection_peptide_length_hist", height = "500px")
                 )
             ),
-            # ========== 样本相关性热图（移至 PCA 之前） ==========
+            # 样本相关性热图
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("th"), " Sample Correlation Heatmap", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
@@ -179,7 +166,7 @@ upload_ui <- function() {
                     plotOutput("dq_sample_cor_heatmap", height = "600px")
                 )
             ),
-            # ========== PCA 分析（移到了后面） ==========
+            # PCA 分析
             div(style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 12px; margin-bottom: 20px;",
                 h3(icon("project-diagram"), " PCA Analysis (Raw Data by Group)", style = "margin: 0 0 15px 0; font-size: 18px;"),
                 div(style = "background: white; color: #333; padding: 15px; border-radius: 8px;",
@@ -192,4 +179,4 @@ upload_ui <- function() {
     )
   )
 }
-message("[DEBUG] upload_ui.R fully defined (Sample Correlation Heatmap before PCA)")
+message("[DEBUG] upload_ui.R fully defined (eggNOG and Sequence Download removed)")

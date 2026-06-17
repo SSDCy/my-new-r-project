@@ -1,0 +1,4 @@
+[2026-06-17 14:19:19] ==== START: 3 序列 / 1 批 (chunk=950) ====
+[2026-06-17 14:19:21] chunk 1/1  submitted cdsid=QM3-qcdsearch-21F815A8BF91C626-14111AAEF0370CA8
+[2026-06-17 14:19:44] chunk 1/1  DONE  rows=0
+[2026-06-17 14:19:55] ==== END: 0 行，成功 1/1 批；TSV -> D:\R-cy-0419\huoshao_cxy\my-new-r-project\cd_cache/test/cd_search_all.tsv ====

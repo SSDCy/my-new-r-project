@@ -1,5 +1,5 @@
 # server/data_quality_intersection.R
-message("[DEBUG] data_quality_intersection.R loading... (UpSetR, nintersects=30, height 450/550, protein selector)")
+message("[DEBUG] data_quality_intersection.R loading... (eggNOG removed, CD annotation retained, fixed extract_group_prefix conflict)")
 
 # ---------- 监控热图选中的样本 ----------
 observe({
@@ -52,6 +52,21 @@ natural_order <- function(x) {
   do.call(order, num_df)
 }
 
+# ---------- 从样本名提取分组前缀（已删除局部定义，复用 global.R 中的 extract_group_prefix） ----------
+
+# ---------- 格式化显示名称：100_6 -> "100mM 6h"，200_12 -> "200mM 12h"，WT -> "WT" ----------
+format_group_display_name <- function(prefix) {
+  if (grepl("^WT$", prefix, ignore.case = TRUE)) return("WT")
+  parts <- strsplit(prefix, "_")[[1]]
+  concentration <- parts[1]
+  time_val <- if (length(parts) >= 2) parts[2] else ""
+  if (concentration %in% c("100", "200")) {
+    return(paste0(concentration, "mM ", time_val, "h"))
+  } else {
+    return(prefix)
+  }
+}
+
 # ---------- 基于热图选择自动计算数据 ----------
 intersection_data <- reactive({
   samples <- selected_samples()
@@ -79,14 +94,11 @@ intersection_data <- reactive({
   })
   names(protein_sets) <- sample_cols
   
-  ordered_names <- names(protein_sets)[natural_order(names(protein_sets))]
-  protein_sets <- protein_sets[ordered_names]
-  
+  ordered_names <- sample_cols
   per_sample_counts <- per_sample_counts_unsorted[ordered_names]
   sorted_sample_cols <- ordered_names
   
-  message("[DEBUG] intersection_data: protein_sets reordered to: ", paste(names(protein_sets), collapse = ", "))
-  message("[DEBUG] intersection_data: per_sample_counts reordered accordingly")
+  message("[DEBUG] intersection_data: protein_sets order kept as selected")
   
   shared_all <- sum(presence_matrix$Sum == length(sample_cols))
   
@@ -99,7 +111,7 @@ intersection_data <- reactive({
   upset_df[] <- lapply(upset_df, as.logical)
   upset_df <- upset_df[, ordered_names, drop = FALSE]
   
-  message("[DEBUG] intersection_data: built protein sets for UpSet, sample count = ", length(protein_sets))
+  message("[DEBUG] intersection_data: built protein sets for Venn, sample count = ", length(protein_sets))
   message("[DEBUG] intersection_data: set sizes = ", paste(sapply(protein_sets, length), collapse = ", "))
   
   detected_proteins <- presence_matrix$Protein[presence_matrix$Sum > 0]
@@ -123,59 +135,48 @@ intersection_data <- reactive({
   )
 })
 
-# ---------- 摘要 ----------
-output$intersection_summary <- renderText({
+# ---------- 按前缀分组（用于韦恩图） ----------
+grouped_sample_sets <- reactive({
   data <- intersection_data()
-  if (is.null(data)) {
-    return("Select at least 2 samples in the Missing Heatmap above. The table and plots will update automatically.")
-  }
-  
-  lines <- c()
-  lines <- c(lines, paste("Selected samples:", paste(data$samples, collapse = ", ")))
-  lines <- c(lines, paste("Total proteins evaluated:", data$total_proteins))
-  lines <- c(lines, paste("Proteins detected in all selected samples (shared):", data$shared_all))
-  lines <- c(lines, paste("Proteins detected in at least one sample:", length(data$detected_proteins)))
-  lines <- c(lines, "")
-  lines <- c(lines, "Proteins detected per sample:")
-  for (s in names(data$per_sample_counts)) {
-    lines <- c(lines, sprintf("  %s: %d", s, data$per_sample_counts[s]))
-  }
-  lines <- c(lines, "")
-  lines <- c(lines, "Unique proteins per sample (detected in exactly one sample):")
-  if (data$unique_total == 0) {
-    lines <- c(lines, "  None (all proteins appear in at least 2 samples)")
-  } else {
-    for (s in names(data$unique_counts)) {
-      lines <- c(lines, sprintf("  %s: %d", s, data$unique_counts[s]))
-    }
-    lines <- c(lines, paste("Total unique proteins:", data$unique_total))
-  }
-  
-  paste(lines, collapse = "\n")
+  if (is.null(data)) return(NULL)
+  samples <- data$samples
+  groups <- sapply(samples, extract_group_prefix)   # 使用全局函数
+  unique_groups <- unique(groups)
+  group_list <- lapply(unique_groups, function(g) {
+    members <- samples[groups == g]
+    sets <- data$protein_sets[members]
+    names(sets) <- members
+    sets
+  })
+  names(group_list) <- unique_groups
+  message("[DEBUG] grouped_sample_sets: groups = ", paste(unique_groups, collapse = ", "))
+  group_list
 })
 
-# ---------- 蛋白存在矩阵表格 ----------
+# ---------- 蛋白存在矩阵表格（添加 CD 注释，移除 eggNOG） ----------
 output$intersection_protein_table <- DT::renderDataTable({
   data <- intersection_data()
   if (is.null(data)) {
     return(DT::datatable(data.frame(Message = "Select at least 2 samples in the Missing Heatmap."), 
                          options = list(dom = 't'), rownames = FALSE))
   }
-  
   df <- data$presence_matrix
-  message("[DEBUG] intersection_protein_table: rendering datatable, nrow = ", nrow(df),
-          ", ncol = ", ncol(df))
-  
+  message("[DEBUG] intersection_protein_table: original dims = ", nrow(df), " x ", ncol(df))
   if (nrow(df) == 0) {
     return(DT::datatable(data.frame(Message = "No rows")))
   }
-  
-  dt <- DT::datatable(
-    df,
-    options = list(pageLength = 10, server = FALSE),
-    rownames = FALSE
-  )
-  
+  # eggNOG 注释已移除
+  message("[DEBUG] intersection_protein_table: eggNOG annotation merge removed, keeping CD only.")
+  # 合并 CD-Search 注释
+  if (exists("add_cd_to_table", mode = "function")) {
+    tryCatch({
+      df <- add_cd_to_table(df, id_col_name = "Protein")
+      message("[DEBUG] intersection_protein_table: after CD merge, dims = ", nrow(df), " x ", ncol(df))
+    }, error = function(e) {
+      message("[ERROR] add_cd_to_table failed: ", conditionMessage(e))
+    })
+  }
+  dt <- DT::datatable(df, options = list(pageLength = 10, server = FALSE, scrollX = TRUE), rownames = FALSE)
   if ("Sum" %in% colnames(df)) {
     dt <- DT::formatStyle(dt, columns = "Sum", fontWeight = "bold", color = "#2c3e50")
   }
@@ -188,7 +189,7 @@ output$intersection_protein_table <- DT::renderDataTable({
   dt
 }, server = FALSE)
 
-# ---------- 下载蛋白表 CSV ----------
+# ---------- 下载蛋白表 CSV（合并注释，移除 eggNOG） ----------
 output$download_intersection_proteins <- downloadHandler(
   filename = function() paste0("protein_presence_matrix_", Sys.Date(), ".csv"),
   content = function(file) {
@@ -197,163 +198,146 @@ output$download_intersection_proteins <- downloadHandler(
       write.csv(data.frame(Error = "Not enough samples selected"), file, row.names = FALSE)
       return()
     }
-    write.csv(data$presence_matrix, file, row.names = FALSE)
-    message("[DEBUG] download_intersection_proteins: saved")
+    df <- data$presence_matrix
+    if (exists("add_cd_to_table", mode = "function")) {
+      df <- tryCatch(add_cd_to_table(df, id_col_name = "Protein"), error = function(e) df)
+    }
+    write.csv(df, file, row.names = FALSE)
+    message("[DEBUG] download_intersection_proteins: saved with CD annotation (no eggNOG)")
   }
 )
 
-# ========== UpSet 图（nintersects=30，动态高度：<=10时450，>10时550） ==========
-output$intersection_upset_plot <- renderPlot({
-  start_time <- Sys.time()
-  data <- intersection_data()
-  if (is.null(data)) {
-    plot.new()
-    text(0.5, 0.5, "Select at least 2 samples in the Missing Heatmap.")
-    output$intersection_upset_time <- renderText({ "请先选择样本" })
-    return()
-  }
-  
-  sets <- data$protein_sets
-  n_sets <- length(sets)
-  set_order <- names(sets)
-  
-  # 动态高度：样本少时更矮
-  if (n_sets <= 10) {
-    plot_height <- 450
-  } else {
-    plot_height <- 550
-  }
-  message("[DEBUG] drawing UpSetR plot for ", n_sets, " samples, height = ", plot_height, ", nintersects = 30, list order: ", paste(set_order, collapse = ", "))
-  
-  if (n_sets <= 8) {
-    set_colors <- RColorBrewer::brewer.pal(max(3, n_sets), "Set2")[1:n_sets]
-  } else {
-    set_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_sets)
-  }
-  
-  if (n_sets > 10) {
-    text_scale <- c(1.8, 1.6, 1.6, 1.4, 1.0, 1.4)
-    message("[DEBUG] n_sets > 10: text_scale[5] set to 1.0")
-  } else {
-    text_scale <- c(1.8, 1.6, 1.6, 1.4, 2.0, 1.4)
-    message("[DEBUG] n_sets <= 10: default text_scale")
-  }
-  
-  old_par <- par(family = "Arial", cex.main = 1.8, cex.lab = 1.6, cex.axis = 1.4)
-  on.exit(par(old_par), add = TRUE)
-  
-  tryCatch({
-    print(
-      UpSetR::upset(
-        UpSetR::fromList(sets),
-        nsets = n_sets,
-        order.by = "freq",
-        decreasing = TRUE,
-        nintersects = 30,                # 限制显示的交集组合数，减少柱子
-        main.bar.color = "#3498db",
-        sets.bar.color = set_colors,
-        matrix.color = "#34495e",
-        mainbar.y.label = "Intersection Size",
-        sets.x.label = "Set Size",
-        set_size.angles = 45,
-        text.scale = text_scale
-      )
+# ========== 韦恩图 UI 生成 ==========
+output$group_venn_plots_ui <- renderUI({
+  groups <- grouped_sample_sets()
+  if (is.null(groups) || length(groups) == 0) return(div("No groups to display."))
+  plot_ids <- paste0("venn_", names(groups))
+  plot_list <- lapply(seq_along(groups), function(i) {
+    gname <- names(groups)[i]
+    sets <- groups[[gname]]
+    total_proteins <- length(Reduce(union, sets))
+    display_name <- format_group_display_name(gname)
+    column(width = 4,
+           div(
+             plotOutput(plot_ids[i], height = "280px"),
+             div(style = "text-align: center; font-weight: bold; font-size: 14px; margin-top: 5px;",
+                 paste0(display_name, " (", total_proteins, ")"))
+           )
     )
-    message("[DEBUG] intersection_upset_plot: UpSetR plot printed, nintersects=30, height = ", plot_height)
-    elapsed <- Sys.time() - start_time
-    output$intersection_upset_time <- renderText({
-      sprintf("%.1f 秒", as.numeric(elapsed))
-    })
-    message(sprintf("[TIMING] UpSetR: %.2f seconds", as.numeric(elapsed)))
-  }, error = function(e) {
-    message("[ERROR] UpSetR: ", e$message)
-    plot.new()
-    text(0.5, 0.5, paste("UpSet error:", e$message))
   })
-}, height = function() {
-  n <- length(selected_samples())
-  if (length(n) == 0) return(450)
-  if (n > 10) 550 else 450
+  do.call(tagList, list(fluidRow(plot_list)))
 })
 
-# ---------- 显示耗时 ----------
-output$intersection_upset_time <- renderText({
-  "计算中..."
-})
-
-# ---------- 下载 UpSet 图 ----------
-output$download_intersection_upset <- downloadHandler(
-  filename = function() paste0("UpSet_", Sys.Date(), ".png"),
-  content = function(file) {
-    data <- intersection_data()
-    if (is.null(data)) return()
-    sets <- data$protein_sets
-    n_sets <- length(sets)
-    if (n_sets <= 8) {
-      set_colors <- RColorBrewer::brewer.pal(max(3, n_sets), "Set2")[1:n_sets]
-    } else {
-      set_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_sets)
-    }
-    
-    if (n_sets > 10) {
-      text_scale <- c(1.8, 1.6, 1.6, 1.4, 1.0, 1.4)
-      png_height <- 800
-    } else {
-      text_scale <- c(1.8, 1.6, 1.6, 1.4, 2.0, 1.4)
-      png_height <- 700
-    }
-    
-    png(file, width = 1200, height = png_height, res = 150)
-    old_par <- par(family = "Arial", cex.main = 1.8, cex.lab = 1.6, cex.axis = 1.4)
-    on.exit(par(old_par), add = TRUE)
-    
-    tryCatch({
-      print(
-        UpSetR::upset(
-          UpSetR::fromList(sets),
-          nsets = n_sets,
-          order.by = "freq",
-          decreasing = TRUE,
-          nintersects = 30,
-          main.bar.color = "#3498db",
-          sets.bar.color = set_colors,
-          matrix.color = "#34495e",
-          mainbar.y.label = "Intersection Size",
-          sets.x.label = "Set Size",
-          set_size.angles = 45,
-          text.scale = text_scale
-        )
-      )
-    }, error = function(e) {
-      message("[ERROR] download UpSetR: ", e$message)
-    })
-    dev.off()
-    message("[DEBUG] download_intersection_upset: saved (nintersects=30, height ", png_height, ")")
-  }
-)
-
-# ---------- 更新 Master Protein 下拉框 ----------
+# ========== 绘制每个分组的韦恩图（正圆，小尺寸，内部标签） ==========
 observe({
-  data <- intersection_data()
-  if (!is.null(data)) {
-    choices <- data$detected_proteins
-    updateSelectizeInput(session, "selected_master_protein", choices = choices, server = TRUE)
-    message("[DEBUG] selected_master_protein choices updated, n = ", length(choices))
-  } else {
-    updateSelectizeInput(session, "selected_master_protein", choices = character(0))
-    message("[DEBUG] selected_master_protein choices cleared")
+  groups <- grouped_sample_sets()
+  if (is.null(groups)) return()
+  for (gname in names(groups)) {
+    local({
+      local_gname <- gname
+      output[[paste0("venn_", local_gname)]] <- renderPlot({
+        sets <- groups[[local_gname]]
+        n <- length(sets)
+        message("[DEBUG] venn_", local_gname, ": plotting ", n, " sets")
+        if (n < 2 || n > 5) {
+          plot.new()
+          text(0.5, 0.5, if (n < 2) "Need at least 2 samples" else "Too many samples for Venn")
+          return()
+        }
+        par(pty = "s")
+        border_colors <- if (n <= 8) {
+          RColorBrewer::brewer.pal(max(3, n), "Dark2")[1:n]
+        } else {
+          rainbow(n)
+        }
+        labels <- paste0("R", 1:n)
+        if (n == 2) {
+          VennDiagram::draw.pairwise.venn(
+            area1 = length(sets[[1]]), area2 = length(sets[[2]]),
+            cross.area = length(intersect(sets[[1]], sets[[2]])),
+            category = labels,
+            col = border_colors, lty = "solid", lwd = 2.5,
+            fill = NA, alpha = 0,
+            cat.cex = 1.2, cex = 1.2,
+            cat.pos = c(-30, 30), cat.dist = 0.03,
+            margin = 0.05
+          )
+        } else if (n == 3) {
+          VennDiagram::draw.triple.venn(
+            area1 = length(sets[[1]]), area2 = length(sets[[2]]), area3 = length(sets[[3]]),
+            n12 = length(intersect(sets[[1]], sets[[2]])),
+            n23 = length(intersect(sets[[2]], sets[[3]])),
+            n13 = length(intersect(sets[[1]], sets[[3]])),
+            n123 = length(Reduce(intersect, sets)),
+            category = labels,
+            col = border_colors, lty = "solid", lwd = 2.5,
+            fill = rep(NA, 3), alpha = rep(0, 3),
+            cat.cex = 1.2, cex = 1.2,
+            cat.pos = c(-30, 30, 180), cat.dist = 0.05,
+            margin = 0.05
+          )
+        } else if (n == 4) {
+          VennDiagram::draw.quad.venn(
+            area1 = length(sets[[1]]), area2 = length(sets[[2]]), area3 = length(sets[[3]]), area4 = length(sets[[4]]),
+            n12 = length(intersect(sets[[1]], sets[[2]])),
+            n13 = length(intersect(sets[[1]], sets[[3]])),
+            n14 = length(intersect(sets[[1]], sets[[4]])),
+            n23 = length(intersect(sets[[2]], sets[[3]])),
+            n24 = length(intersect(sets[[2]], sets[[4]])),
+            n34 = length(intersect(sets[[3]], sets[[4]])),
+            n123 = length(Reduce(intersect, sets[1:3])),
+            n124 = length(Reduce(intersect, sets[c(1,2,4)])),
+            n134 = length(Reduce(intersect, sets[c(1,3,4)])),
+            n234 = length(Reduce(intersect, sets[2:4])),
+            n1234 = length(Reduce(intersect, sets)),
+            col = border_colors, lty = "solid", lwd = 2.5,
+            fill = rep(NA, 4), alpha = rep(0, 4),
+            category = labels,
+            cat.cex = 1.0, cex = 1.0,
+            cat.pos = c(-15, 15, 180, 180), cat.dist = 0.05,
+            margin = 0.05
+          )
+        } else if (n == 5) {
+          VennDiagram::draw.quintuple.venn(
+            area1 = length(sets[[1]]), area2 = length(sets[[2]]), area3 = length(sets[[3]]), area4 = length(sets[[4]]), area5 = length(sets[[5]]),
+            n12 = length(intersect(sets[[1]], sets[[2]])),
+            n13 = length(intersect(sets[[1]], sets[[3]])),
+            n14 = length(intersect(sets[[1]], sets[[4]])),
+            n15 = length(intersect(sets[[1]], sets[[5]])),
+            n23 = length(intersect(sets[[2]], sets[[3]])),
+            n24 = length(intersect(sets[[2]], sets[[4]])),
+            n25 = length(intersect(sets[[2]], sets[[5]])),
+            n34 = length(intersect(sets[[3]], sets[[4]])),
+            n35 = length(intersect(sets[[3]], sets[[5]])),
+            n45 = length(intersect(sets[[4]], sets[[5]])),
+            n123 = length(Reduce(intersect, sets[1:3])),
+            n124 = length(Reduce(intersect, sets[c(1,2,4)])),
+            n125 = length(Reduce(intersect, sets[c(1,2,5)])),
+            n134 = length(Reduce(intersect, sets[c(1,3,4)])),
+            n135 = length(Reduce(intersect, sets[c(1,3,5)])),
+            n145 = length(Reduce(intersect, sets[c(1,4,5)])),
+            n234 = length(Reduce(intersect, sets[2:4])),
+            n235 = length(Reduce(intersect, sets[c(2,3,5)])),
+            n245 = length(Reduce(intersect, sets[c(2,4,5)])),
+            n345 = length(Reduce(intersect, sets[3:5])),
+            n1234 = length(Reduce(intersect, sets[1:4])),
+            n1235 = length(Reduce(intersect, sets[c(1,2,3,5)])),
+            n1245 = length(Reduce(intersect, sets[c(1,2,4,5)])),
+            n1345 = length(Reduce(intersect, sets[c(1,3,4,5)])),
+            n2345 = length(Reduce(intersect, sets[2:5])),
+            n12345 = length(Reduce(intersect, sets)),
+            col = border_colors, lty = "solid", lwd = 2.5,
+            fill = rep(NA, 5), alpha = rep(0, 5),
+            category = labels,
+            cat.cex = 0.9, cex = 0.9,
+            cat.pos = c(-20, 20, 180, 0, 0), cat.dist = 0.04,
+            margin = 0.05
+          )
+        }
+        message("[DEBUG] venn_", local_gname, ": done")
+      })
+    })
   }
-})
-
-# ---------- 选中蛋白（基于下拉框） ----------
-selected_protein_for_hist <- reactive({
-  pid <- input$selected_master_protein
-  if (is.null(pid) || pid == "") {
-    message("[DEBUG] selected_protein_for_hist: no protein selected, showing all")
-    return(NULL)
-  }
-  message("[DEBUG] selected_protein_for_hist: protein selected = ", pid)
-  pid
 })
 
 # ---------- 肽段表格 ----------
@@ -362,30 +346,23 @@ output$intersection_peptide_table <- DT::renderDataTable({
   if (is.null(data)) {
     return(DT::datatable(data.frame(Message = "Select at least 2 samples to view peptide sequences.")))
   }
-  
   mode <- input$peptide_display_mode
   if (is.null(mode)) mode <- "merged"
   message("[DEBUG] intersection_peptide_table: display mode = ", mode)
-  
   target_proteins <- data$detected_proteins
-  message("[DEBUG] intersection_peptide_table: using ", length(target_proteins), " detected proteins")
-  
   if (length(target_proteins) == 0) {
     return(DT::datatable(data.frame(Message = "No proteins detected in selected samples.")))
   }
-  
   clean <- rv$clean_data
   if (is.null(clean) || !"Master protein IDs" %in% colnames(clean)) {
     df <- data.frame(Protein = target_proteins, Peptide_Sequence = "Not available")
     return(DT::datatable(df, options = list(pageLength = 15), rownames = FALSE))
   }
-  
   idx <- match(target_proteins, clean$`Master protein IDs`)
   if (all(is.na(idx))) {
     df <- data.frame(Protein = target_proteins, Peptide_Sequence = "No match")
     return(DT::datatable(df, options = list(pageLength = 15), rownames = FALSE))
   }
-  
   if (!"Peptide sequences" %in% colnames(clean)) {
     sub <- clean[idx, , drop = FALSE]
     display_cols <- c("Master protein IDs", "Unique peptides", "Protein IDs")
@@ -395,14 +372,11 @@ output$intersection_peptide_table <- DT::renderDataTable({
     message("[DEBUG] intersection_peptide_table: no Peptide sequences column")
     return(DT::datatable(sub, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE))
   }
-  
   peptide_seq <- clean$`Peptide sequences`[idx]
   names(peptide_seq) <- clean$`Master protein IDs`[idx]
-  
   presence <- data$presence_matrix
   rownames(presence) <- presence$Protein
   sample_cols <- data$samples
-  
   get_detected_samples <- function(protein_id) {
     if (!protein_id %in% rownames(presence)) return(NA_character_)
     row <- presence[protein_id, sample_cols, drop = FALSE]
@@ -410,24 +384,16 @@ output$intersection_peptide_table <- DT::renderDataTable({
     if (length(detected) == 0) return("None")
     paste(detected, collapse = ", ")
   }
-  
   if (mode == "merged") {
     merged_list <- lapply(names(peptide_seq), function(pid) {
       seqs <- trimws(unlist(strsplit(peptide_seq[pid], ";")))
       seqs <- seqs[seqs != ""]
       if (length(seqs) == 0) return(NULL)
-      data.frame(`Master protein IDs` = pid, 
-                 `Peptide Sequences` = paste(seqs, collapse = "; "),
-                 stringsAsFactors = FALSE, check.names = FALSE)
+      data.frame(`Master protein IDs` = pid, `Peptide Sequences` = paste(seqs, collapse = "; "), stringsAsFactors = FALSE, check.names = FALSE)
     })
     df_merged <- do.call(rbind, merged_list)
-    if (is.null(df_merged) || nrow(df_merged) == 0) {
-      return(DT::datatable(data.frame(Message = "No peptide sequences found.")))
-    }
-    message("[DEBUG] intersection_peptide_table: merged mode, nrow = ", nrow(df_merged))
-    dt <- DT::datatable(df_merged, 
-                        options = list(pageLength = 25, scrollX = TRUE),
-                        rownames = FALSE)
+    if (is.null(df_merged) || nrow(df_merged) == 0) return(DT::datatable(data.frame(Message = "No peptide sequences found.")))
+    dt <- DT::datatable(df_merged, options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
     return(dt)
   } else {
     seq_list <- lapply(seq_along(peptide_seq), function(i) {
@@ -436,16 +402,10 @@ output$intersection_peptide_table <- DT::renderDataTable({
       seqs <- seqs[seqs != ""]
       if (length(seqs) == 0) return(NULL)
       detected_samples <- get_detected_samples(pid)
-      data.frame(`Master protein IDs` = pid, 
-                 `Peptide Sequence` = seqs,
-                 `Detected in Samples` = detected_samples,
-                 stringsAsFactors = FALSE, check.names = FALSE)
+      data.frame(`Master protein IDs` = pid, `Peptide Sequence` = seqs, `Detected in Samples` = detected_samples, stringsAsFactors = FALSE, check.names = FALSE)
     })
     df_seq <- do.call(rbind, seq_list)
-    if (is.null(df_seq) || nrow(df_seq) == 0) {
-      return(DT::datatable(data.frame(Message = "No peptide sequences found.")))
-    }
-    message("[DEBUG] intersection_peptide_table: expanded mode, nrow = ", nrow(df_seq))
+    if (is.null(df_seq) || nrow(df_seq) == 0) return(DT::datatable(data.frame(Message = "No peptide sequences found.")))
     return(DT::datatable(df_seq, options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE))
   }
 })
@@ -455,31 +415,22 @@ output$download_intersection_peptides <- downloadHandler(
   filename = function() "shared_unique_peptides.csv",
   content = function(file) {
     data <- intersection_data()
-    if (is.null(data)) {
-      write.csv(data.frame(Error = "No data"), file)
-      return()
-    }
+    if (is.null(data)) return()
     mode <- input$peptide_display_mode
     target_proteins <- data$detected_proteins
     clean <- rv$clean_data
-    if (is.null(clean) || !"Master protein IDs" %in% colnames(clean)) {
-      write.csv(data.frame(Error = "No clean data"), file)
-      return()
-    }
+    if (is.null(clean) || !"Master protein IDs" %in% colnames(clean)) return()
     idx <- match(target_proteins, clean$`Master protein IDs`)
     sub <- clean[idx, , drop = FALSE]
     if ("Peptide sequences" %in% colnames(sub)) {
       peptide_seq <- sub$`Peptide sequences`
       names(peptide_seq) <- sub$`Master protein IDs`
-      
       if (mode == "merged") {
         merged_list <- lapply(names(peptide_seq), function(pid) {
           seqs <- trimws(unlist(strsplit(peptide_seq[pid], ";")))
           seqs <- seqs[seqs != ""]
           if (length(seqs) == 0) return(NULL)
-          data.frame(`Master protein IDs` = pid, 
-                     `Peptide Sequences` = paste(seqs, collapse = "; "),
-                     stringsAsFactors = FALSE, check.names = FALSE)
+          data.frame(`Master protein IDs` = pid, `Peptide Sequences` = paste(seqs, collapse = "; "), stringsAsFactors = FALSE, check.names = FALSE)
         })
         df_out <- do.call(rbind, merged_list)
       } else {
@@ -498,120 +449,83 @@ output$download_intersection_peptides <- downloadHandler(
           seqs <- trimws(unlist(strsplit(peptide_seq[i], ";")))
           seqs <- seqs[seqs != ""]
           if (length(seqs) == 0) return(NULL)
-          data.frame(`Master protein IDs` = pid, 
-                     `Peptide Sequence` = seqs,
-                     `Detected in Samples` = get_detected_samples(pid),
-                     stringsAsFactors = FALSE, check.names = FALSE)
+          detected_samples <- get_detected_samples(pid)
+          data.frame(`Master protein IDs` = pid, `Peptide Sequence` = seqs, `Detected in Samples` = detected_samples, stringsAsFactors = FALSE, check.names = FALSE)
         })
         df_out <- do.call(rbind, seq_list)
       }
-      if (!is.null(df_out)) write.csv(df_out, file, row.names = FALSE)
-    } else {
-      write.csv(sub, file, row.names = FALSE)
-    }
-    message("[DEBUG] download_intersection_peptides: saved (mode = ", mode, ")")
+      write.csv(df_out, file, row.names = FALSE)
+    } else write.csv(sub, file, row.names = FALSE)
   }
 )
 
-# ========== 肽段长度数据（基于下拉框选择） ==========
+# ========== 肽段长度数据（所有检测蛋白） ==========
 peptide_lengths <- reactive({
   data <- intersection_data()
   if (is.null(data)) return(NULL)
   clean <- rv$clean_data
   if (is.null(clean) || !"Peptide sequences" %in% colnames(clean)) return(NULL)
-  
+  seq_col <- grep("^Peptide sequences$", colnames(clean), ignore.case = TRUE, value = TRUE)
+  if (length(seq_col) == 0) {
+    message("[DEBUG] peptide_lengths: 'Peptide sequences' column not found")
+    return(NULL)
+  }
+  seq_col <- seq_col[1]
   target_proteins <- data$detected_proteins
-  selected <- selected_protein_for_hist()
-  
-  if (!is.null(selected) && !selected %in% target_proteins) {
-    message("[DEBUG] peptide_lengths: selected protein not in detected list, resetting to NULL")
-    selected <- NULL
-  }
-  
-  if (!is.null(selected)) {
-    idx <- match(selected, clean$`Master protein IDs`)
-    if (is.na(idx)) {
-      message("[DEBUG] peptide_lengths: protein ID not found in clean data")
-      return(numeric(0))
-    }
-    pep_seq <- clean$`Peptide sequences`[idx]
-    seqs <- trimws(unlist(strsplit(pep_seq, ";")))
+  idx <- match(target_proteins, clean$`Master protein IDs`)
+  peptide_seq <- clean[[seq_col]][idx]
+  names(peptide_seq) <- clean$`Master protein IDs`[idx]
+  lengths <- c()
+  for (pid in names(peptide_seq)) {
+    seqs <- trimws(unlist(strsplit(peptide_seq[pid], ";")))
     seqs <- seqs[seqs != ""]
-    lengths <- nchar(seqs)
-    message("[DEBUG] peptide_lengths: selected protein ", selected, ", n peptide = ", length(lengths))
-  } else {
-    idx <- match(target_proteins, clean$`Master protein IDs`)
-    peptide_seq <- clean$`Peptide sequences`[idx]
-    names(peptide_seq) <- clean$`Master protein IDs`[idx]
-    lengths <- c()
-    for (pid in names(peptide_seq)) {
-      seqs <- trimws(unlist(strsplit(peptide_seq[pid], ";")))
-      seqs <- seqs[seqs != ""]
-      lengths <- c(lengths, nchar(seqs))
-    }
-    message("[DEBUG] peptide_lengths: all proteins, total peptides = ", length(lengths))
+    lengths <- c(lengths, nchar(seqs))
   }
+  message("[DEBUG] peptide_lengths: total peptides = ", length(lengths))
+  if (length(lengths) == 0) return(NULL)
   lengths
 })
 
-# ---------- 条形图输出 ----------
+# ---------- 条形图输出（所有蛋白，无网格线） ----------
 output$intersection_peptide_length_hist <- renderPlot({
   lengths <- peptide_lengths()
   if (is.null(lengths) || length(lengths) == 0) {
     plot.new()
-    text(0.5, 0.5, "Peptide sequence data not available", family = "Arial", cex = 1.5)
+    text(0.5, 0.5, "Peptide sequence data not available\n(No 'Peptide sequences' column in MaxQuant output)", family = "Arial", cex = 1.2)
     return()
   }
-  
-  selected <- selected_protein_for_hist()
   data <- intersection_data()
   if (is.null(data)) return()
-  
-  if (!is.null(selected)) {
-    n_peptides <- length(lengths)
-    plot_title <- paste0("Peptide Length Distribution for Protein: ", selected,
-                         "\n(", n_peptides, " peptides)")
-  } else {
-    n_proteins <- length(data$detected_proteins)
-    n_peptides <- length(lengths)
-    plot_title <- paste0("Peptide Length Distribution\n(",
-                         n_proteins, " proteins, ", n_peptides, " peptides)")
-  }
-  
+  n_proteins <- length(data$detected_proteins)
+  n_peptides <- length(lengths)
+  plot_title <- paste0("Peptide Length Distribution\n(", n_proteins, " proteins, ", n_peptides, " peptides)")
   freq_table <- as.data.frame(table(Length = lengths), stringsAsFactors = FALSE)
   freq_table$Length <- as.integer(as.character(freq_table$Length))
   freq_table <- freq_table[order(freq_table$Length), ]
   freq_table$LengthFactor <- factor(freq_table$Length, levels = sort(unique(freq_table$Length)))
-  
   p <- ggplot(freq_table, aes(x = LengthFactor, y = Freq)) +
     geom_col(fill = "#3498db", alpha = 0.8, width = 0.7) +
-    labs(title = plot_title,
-         x = "Peptide Length (characters)", y = "Frequency") +
+    labs(title = plot_title, x = "Peptide Length (characters)", y = "Frequency") +
     theme_bw(base_family = "Arial") +
     theme(
       plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
       axis.title.x = element_text(size = 16),
       axis.title.y = element_text(size = 16),
       axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 14)
+      axis.text.y = element_text(size = 14),
+      panel.grid = element_blank()
     ) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
-  
   if (nrow(freq_table) <= 30) {
     p <- p + geom_text(aes(label = Freq), vjust = -0.5, size = 6, color = "black", family = "Arial")
   }
-  
-  message("[DEBUG] intersection_peptide_length_hist: rendered")
+  message("[DEBUG] intersection_peptide_length_hist: rendered for all proteins (no grid)")
   print(p)
 }, height = 500)
 
 # ---------- 下载条形图 ----------
 output$download_peptide_length_hist <- downloadHandler(
-  filename = function() {
-    selected <- selected_protein_for_hist()
-    if (!is.null(selected)) paste0("peptide_length_", selected, "_", Sys.Date(), ".png")
-    else paste0("peptide_length_all_", Sys.Date(), ".png")
-  },
+  filename = function() paste0("peptide_length_all_", Sys.Date(), ".png"),
   content = function(file) {
     lengths <- peptide_lengths()
     if (is.null(lengths) || length(lengths) == 0) {
@@ -619,45 +533,27 @@ output$download_peptide_length_hist <- downloadHandler(
       plot.new(); text(0.5,0.5,"No data", family = "Arial", cex = 1.5); dev.off()
       return()
     }
-    selected <- selected_protein_for_hist()
     data <- intersection_data()
     if (is.null(data)) return()
-    
-    if (!is.null(selected)) {
-      n_peptides <- length(lengths)
-      plot_title <- paste0("Peptide Length Distribution for Protein: ", selected,
-                           " (", n_peptides, " peptides)")
-    } else {
-      n_proteins <- length(data$detected_proteins)
-      n_peptides <- length(lengths)
-      plot_title <- paste0("Peptide Length Distribution (",
-                           n_proteins, " proteins, ", n_peptides, " peptides)")
-    }
-    
+    n_proteins <- length(data$detected_proteins)
+    n_peptides <- length(lengths)
+    plot_title <- paste0("Peptide Length Distribution\n(", n_proteins, " proteins, ", n_peptides, " peptides)")
     freq_table <- as.data.frame(table(Length = lengths), stringsAsFactors = FALSE)
     freq_table$Length <- as.integer(as.character(freq_table$Length))
-    freq_table <- freq_table[order(freq_table$Length), ]
-    freq_table$LengthFactor <- factor(freq_table$Length, levels = sort(unique(freq_table$Length)))
-    
+    freq_table <- freq_table[order(freq_table$Length), ]; freq_table$LengthFactor <- factor(freq_table$Length, levels = sort(unique(freq_table$Length)))
     p <- ggplot(freq_table, aes(x = LengthFactor, y = Freq)) +
       geom_col(fill = "#3498db", alpha = 0.8, width = 0.7) +
-      labs(title = plot_title,
-           x = "Peptide Length (characters)", y = "Frequency") +
+      labs(title = plot_title, x = "Peptide Length (characters)", y = "Frequency") +
       theme_bw(base_family = "Arial") +
-      theme(
-        plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16),
-        axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
-        axis.text.y = element_text(size = 14)
-      ) +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+            axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16),
+            axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
+            axis.text.y = element_text(size = 14),
+            panel.grid = element_blank()) +
       scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
-    
-    if (nrow(freq_table) <= 30) {
-      p <- p + geom_text(aes(label = Freq), vjust = -0.5, size = 6, color = "black", family = "Arial")
-    }
+    if (nrow(freq_table) <= 30) p <- p + geom_text(aes(label = Freq), vjust = -0.5, size = 6, color = "black", family = "Arial")
     ggsave(file, plot = p, width = 8, height = 6, dpi = 150)
   }
 )
 
-message("[DEBUG] data_quality_intersection.R loaded successfully (nintersects=30, dynamic height 450/550)")
+message("[DEBUG] data_quality_intersection.R loaded successfully (extract_group_prefix conflict resolved)")

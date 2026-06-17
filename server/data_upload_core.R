@@ -1,9 +1,7 @@
 # server/data_upload_core.R
-message("[DEBUG] data_upload_core.R loading... (expression_data column names enforced underscore)")
+message("[DEBUG] data_upload_core.R loading... (expression_data column names enforced underscore, sequence download removed)")
 
-# ================== 全局辅助函数（使用 global.R 中的定义） ==================
-# 不再重复定义 extract_sample_names 和 standardize_sample_name
-
+# ================== 全局辅助函数 ==================
 get_raw_prefix <- function(type = input$intensity_type) {
   if (type == "LFQ") "LFQ intensity " else "Intensity "
 }
@@ -481,7 +479,6 @@ observeEvent(input$reset_color, {
   showNotification("Colors reset to defaults.", type = "message", duration = 2)
 })
 
-# 关键修改：expression_data 最后强制替换点号为下划线
 expression_data <- reactive({
   message("[DEBUG] expression_data (from data_upload_core.R) triggered")
   req(rv$clean_data)
@@ -500,7 +497,6 @@ expression_data <- reactive({
   df <- suppressWarnings(as.data.frame(lapply(df, as.numeric)))
   df[df == 0] <- NA
   
-  # 强制将列名中的点替换为下划线
   colnames(df) <- gsub("\\.", "_", colnames(df))
   message("[DEBUG] expression_data: column names after underscore enforcement: ", paste(head(colnames(df), 3), collapse = ", "))
   
@@ -515,4 +511,5 @@ expression_data <- reactive({
   df
 })
 
-message("[DEBUG] data_upload_core.R loaded successfully (column name underscore enforced in expression_data).")
+# ================== 蛋白序列下载（已移除） ==================
+message("[DEBUG] Sequence download (protein FASTA) functionality removed.")

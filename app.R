@@ -9,6 +9,8 @@ source("ui/grouping_ui.R", local = TRUE)             # Define Groups
 source("ui/comparisons_ui.R", local = TRUE)          # Set Comparisons
 source("ui/plots_ui.R", local = TRUE)                # Plots（包含 Parameters 和 Export，以及 UpSet）
 
+message("[DEBUG] app.R: UI source files loaded")
+
 build_ui <- function() {
   fluidPage(
     title = "Universal Proteomics Differential Analysis Platform",
@@ -174,7 +176,10 @@ server <- function(input, output, session) {
   source("server/sample_correlation_plot.R", local = TRUE)
   source("server/input_validation.R", local = TRUE)
   source("server/data_quality_plots.R", local = TRUE)
-  source("server/data_quality_intersection.R", local = TRUE)   # 新增
+  # eggNOG and auto_eggnog removed
+  message("[DEBUG] app.R: eggNOG and auto_eggnog source lines removed.")
+  source("server/cd_search.R", local = TRUE)   # Batch CD-Search
+  source("server/data_quality_intersection.R", local = TRUE)
   source("server/preprocessing_nav.R", local = TRUE)
 }
 

@@ -1,0 +1,296 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
+		<meta name="ncbi_app" content="cdd" /><meta name="ncbi_pdid" content="batchcdsearch_results" />
+		<meta name="ncbi_phid" content="95B7CF68A314E7F10000000000000001" />
+		<meta name="ncbi_db" content="cdd" />
+		<meta name="ncbi_nquery" content="" />
+		<meta name="ncbi_qlen" content="" />
+		
+		<title>Welcome to NCBI Batch CD-search</title>
+		<link rel="stylesheet" href="//www.ncbi.nlm.nih.gov/ncbi.css">
+		<link type="text/css" rel="stylesheet" href="/Structure/shlu/resource/common.css">
+		<link rel="stylesheet" href="/Structure/shlu/resource/button/button_base.css">
+		<link rel="stylesheet" href="/Structure/shlu/resource/infobox/infobox_base.css">
+		<link type="text/css" rel="stylesheet" href="files/bwrpsb.min.css">
+		<link type="text/css" rel="stylesheet" href="files/summary.min.css">
+		<style type="text/css">
+		</style>
+		
+		<script type="text/javascript" src="/Structure/shlu/jslibs/jquery.min.js"></script>
+		<script type="text/javascript" SRC="//www.ncbi.nlm.nih.gov/coreweb/javascript/imagemouseover.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="/Structure/shlu/resource/slucore.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="/Structure/shlu/resource/button/button.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="/Structure/shlu/resource/infobox/infobox.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="/Structure/shlu/resource/timer/timer.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="/Structure/shlu/resource/cgilinks.js"></script> <!-- standard js -->
+		<script type="text/javascript" SRC="files/bwrpsb.min.js"></script>
+		<script type="text/javascript" SRC="files/summary.min.js"></script>
+        <!-- ========== BEGIN_GOVT_SHUTDOWN_NOTICE_added_20130927 =========== -->
+        <!--
+        <script type="text/javascript">
+            jQuery.getScript("/core/alerts/alerts.js", function () {
+            galert(['div#governmentshutdown', 'body > *:nth-child(1)'])
+            });
+        </script>
+        -->
+        <!-- ========== END_GOVT_SHUTDOWN_NOTICE_added_20130927 =========== -->
+		<script type="text/javascript">
+			var backendCgi = "https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi";	//your cgi url
+			var iInterval = 4000;	//can be made to cgi-fillable
+			var iIntervalInc = 0;
+			var helpObj = 
+			{
+			};
+			
+			
+			var jobState = 
+			{
+				'DONE': 0,
+				'INVALIDRID': 1,
+				'NULLINPUT': 2,
+				'RUNNING': 3,
+				'QMERROR': 4,
+				'DATAERROR': 5,
+				'ABUSEINPUT': 6
+			};
+			
+			var NOTARGET = 0;
+			var NOTARGET_LIT = "none";
+			//
+			//var jobTypes = 
+			//{
+			//	'NONE': {'code': 0, 'value': 'none'},
+			//	'QOPTIONS': {'code': 1, 'value': 'qopts'},
+			//	'SQUERY': {'code': 2, 'value': 'aquery'},
+			//	'HITLIST': {'code': 3, 'value': 'hits'},	//
+			//	'ALIGNS': {'code': 4, 'value': 'aligns'},
+			//	'FEATLIST': {'code': 5, 'value': 'feats'}
+			//};
+			
+			
+			
+			
+			var ajaxObj = 
+			{
+				'url': backendCgi,
+				'dataType': 'jsonp',
+				'jsonp': 'callback',
+				'async': true,
+				'complete': ajaxComplete,
+				'success': updatePage,
+				
+				'data':	{}//ajax query data
+			};
+			
+			var tDataKey = "tdata";	//target data key
+			var ridKey = "cdsid";
+			var xmpKey = "isxmp";
+			
+			var ctrlHandle = "QM3-qcdsearch-18F875DE2BE00F68-0";
+			
+			
+			var xmpHandle = "";
+			var navData = "qopts";
+			
+			///*
+			
+		</script>
+		
+	</head>
+	<body>
+        <div id="global_alert" style="width: 100%"></div>
+		<!-- Banner part -->
+		<table id="tbl_header" style="width: 100%">
+			<col style="width: 145px" />
+			<tr>
+				<td><a href="//www.ncbi.nlm.nih.gov"><img src="files/ncbi_logo.gif" alt="NCBI"></a></td>
+				<td>
+					<table>
+						<tr>
+							<td style="width: 100%;" align="center"><img src="files/banner.png" alt="Batch CD search tool"></td><!-- must use align attribute, not "text-align" style! -->
+							<td style="width: 130px; text-align: right"><img src="files/right-bg.png" alt="Lister Hill Center" title="Lister Hill Center"></td>
+						</tr>
+					</table>
+				</td>
+			</tr>
+			<tr>
+				<!--<td><img src="//www.ncbi.nlm.nih.gov/coreweb/template1/pix/top3_ulm_no_a.gif" usemap="#unlmenu" name="unl_menu_pix" style="border-bottom: 1px solid #369"></td>-->
+				<td id="td_ncbibtns">
+					<a href="//www.ncbi.nlm.nih.gov/"><img style="width: 46px; height: 16px;" src="//www.ncbi.nlm.nih.gov/Structure/IMG/buttons/button_ncbi1_home.png" alt="NCBI Home Page"></a>
+					<a href="//www.ncbi.nlm.nih.gov/ncbisearch/"><img style="width: 51px; height: 16px;" src="//www.ncbi.nlm.nih.gov/Structure/IMG/buttons/button_ncbi2_search.png" alt="NCBI Site Search page"></a>
+					<a href="//www.ncbi.nlm.nih.gov/guide/all/"><img style="width: 48px; height: 16px;" src="//www.ncbi.nlm.nih.gov/Structure/IMG/buttons/button_ncbi3_guide.png" alt="NCBI Guide that lists and describes the NCBI resources"></a>
+				</td>  
+				<td style="width: 100%">
+					<div id="navbar" style="height: 17px; width: 100%">
+						<table id="linktbl">
+							<tr>
+								<td><a class="first" href="https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi?">New search</a></td>
+								<td><a href="/Structure/index.shtml">Structure Home</a></td>
+								<td><a href="/Structure/MMDB/mmdb.shtml">3D Macromolecular Structures</a></td>
+								<td><a href="/Structure/cdd/cdd.shtml">Conserved Domains</a></td>
+								<td><a href="//pubchem.ncbi.nlm.nih.gov/">Pubchem</a></td>
+								<td><a href="/Structure/biosystems/docs/biosystems_about.html">BioSystems</a></td>
+								<td class="last"><a href="/Structure/cdd/cdd_help.shtml#BatchCDSearch_help_contents">Help</a></td>
+							</tr>
+						</table>
+					</div>
+				</td>
+			</tr>
+		</table>
+
+		<!-- End of Banner part -->
+		<!-- Can add some static system message here, no need to change the binary -->
+		<!--
+		<div id="global_alert" style="border: 3px solid red; font-weight: 600; padding: 0.5em 2em 0.5em 4em; background: #ff7 url(/core/icons/exclamation.png) no-repeat 5px center;">
+			The BATCH CD-Search service is currently experiencing heavy load, and processing of requests may take significantly longer than expected. If you need to process a small number of queries, you may consider submitting them one at a time to <a href="https://www.ncbi.nlm.nih.gov/Structure/cdd/wrpsb.cgi" title="CD-Search service">standard CD-Search</a>. If you need to process large number of queries, please consider setting up a local copy of the CD-Search annotation system by installing <a href="https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST" title="Standalone BLAST binaries">RPS-BLAST</a> and the <a href="https://ftp.ncbi.nlm.nih.gov/pub/mmdb/cdd/rpsbproc" title="Standalone RPS-BLAST result processor">rpsbproc</a> utility.
+		</div>
+		-->
+		<!-- Dynamic message from backend can display here, wrapped in a div -->
+		<table style="width: 100%"><tr><td align="center" id="msgwrap"></td></tr></table>
+		
+		<table id="tab_Main_Content"><tr>
+			<td id="td_Main_Content"><!-- Main table, have to wrap everything auto-size -->
+				<table id="tbl_SumGrid">
+					<tr>
+						<td id="td_Msg_Data">
+							
+							<div id="div_Status" class="backstage"></div>
+							<div id="div_DLPanel" class="backstage" style="float: left; margin-top: 10px;">
+								<form id="frm_Dld" method="post" action="https://www.ncbi.nlm.nih.gov/Structure/bwrpsb/bwrpsb.cgi"><!-- submit when data is ready (checked by ajax -->
+									<input id="hid_DlRid" type="hidden" name="cdsid" value="">
+								</form>
+								
+								<p style="clear: both; width: 100%; text-align: center"><input type="image" id="id_img_gonav" src="files/browse-results.png" onclick="GotoNavigation();"></p>
+								
+								<div style="clear: both; width: 100%; height: 2em; text-align: center; margin-top: 8px; margin-bottom: 8px; font-size: 12pt; color: #369; font-weight: 600; font-family: verdana,arial,helvetica,sans-serif">-&nbsp;Or&nbsp;-</div>
+								
+								<table id="tbl_DLPanel">
+									<tr><td colspan=3 id="td_DLTitle">Select Download data <a target="_blank" href="/Structure/cdd/cdd_help.shtml#BatchRPSBOutputDownload"><img src="files/infoQ.gif"></a></td></tr>
+									<tr id="tr_DataType">
+										<td style="white-space: nowrap">
+											<input id="hid_tdata_hits" type="radio" name="tdata" value="hits" checked>Domain Hits<br>
+										</td>
+										<td>
+											<input id="hid_tdata_aligns" type="radio" name="tdata" value="aligns">Align details<br>
+											<p style="margin-left: 10px; font-size: 10px; white-space: nowrap">
+												as <input id="hid_alnfmt_asn" type="radio" name="alnfmt" value="asn" checked>ASN Text
+												<input id="hid_alnfmt_xml" type="radio" name="alnfmt" value="xml">XML
+												<input id="hid_alnfmt_json" type="radio" name="alnfmt" value="json">JSON
+												<input id="hid_alnfmt_text" type="radio" name="alnfmt" value="text">BLAST Text
+											</p>
+										</td>
+										<td>
+											<input id="hid_tdata_feats" type="radio" name="tdata" value="feats">Features<br>
+										</td>
+									</tr>
+									<tr>
+										<td class="options">
+											<p>Data mode</p>
+											<input id="hid_dmode_rep" type="radio" name="dmode" value="rep" checked>Concise<br>
+											<input id="hid_dmode_std" type="radio" name="dmode" value="std">Standard<br>
+											<input id="hid_dmode_full" type="radio" name="dmode" value="full">Full<br>
+										</td>
+										<td class="options">
+											<input id="hid_clonly" type="checkbox" name="clonly" value="true">Superfamily Only<br>
+											<input id="hid_qdefl" type="checkbox" name="qdefl" value="true">Include query defline<br>
+											<input id="hid_cddefl" type="checkbox" name="cddefl" value="true">Include domain defline<br>
+										</td>
+										<td style="padding-top: 5px; padding-bottom: 5px; padding-right: 5px; text-align: right; vertical-align: bottom">
+											<input type="image" src="files/download.png" onclick="startDownload();">
+										</td>
+									</tr>
+								</table>
+								<!--
+								<div style="margin-left: 60px; margin-top: 15px; white-space: nowrap;">
+									Or&nbsp;<button onclick="GotoNavigation();">Browse results</button>&nbsp;in graphical format
+								</div>
+								-->
+							</div>
+							
+						</td>
+						<td id="td_SumPanel">
+							<table class="sumlist">
+								<caption align="top" style="text-align: left">Statistics: <a target="_blank" href="/Structure/cdd/cdd_help.shtml#BatchRPSBOutputStatistics"><img src="files/infoQ.gif"></a></caption>
+								<tr><td class="subttl">Search-ID:</td><td id="id_cdsid" class="subval">QM3-qcdsearch-18F875DE2BE00F68-0</td></tr>
+								<tr><td class="subttl">Data source:</td><td id="id_db" class="subval">CDSEARCH/cdd </td></tr>
+								<tr><td class="subttl">E-Value cut-off:</td><td id="id_eval" class="subval">0.01</td></tr>
+								<tr><td class="subttl">Composition-corrected scoring:</td><td id="id_cbadj" class="subval">Applied</td></tr>
+								<tr><td class="subttl">Low-complexity regions:</td><td id="id_fltr" class="subval">Not filtered</td></tr>
+								<tr><td class="subttl">Maximum aligns:</td><td id="id_mhits" class="subval">500</td></tr>
+								<tr><td class="subttl">Run time:</td><td id="id_rtime" class="subval"></td></tr>
+								<tr><td class="subttl">Total queries parsed:</td><td id="id_ttlQs" class="subval"></td></tr>
+								<tr><td class="subttl">Valid queries:</td><td id="id_ttlVQs" class="subval"></td></tr>
+								<tr><td class="subttl">Failed queries:</td><td id="id_ttlFs" class="subval"></td></tr>
+								<tr><td class="subttl">Queries with no domain hits:</td><td id="id_ttlNHs" class="subval"></td></tr>
+								<tr><td class="subttl">Total domains found:</td><td id="id_ttlCDs" class="subval"></td></tr>
+								<tr><td class="subttl">Total clusters found:</td><td id="id_ttlCLs" class="subval"></td></tr>
+								<tr><td class="subttl">Total specific features found:</td><td id="id_ttlSpFeats" class="subval"></td></tr>
+								<tr><td class="subttl">Total generic features found:</td><td id="id_ttlGnFeats" class="subval"></td></tr>
+							</table>
+						</td>
+						
+					</tr>
+					<tr>
+						<td id="td_prompt" colspan="2" style="background-color: #ffc; padding: 5px;" class="backstage">
+							<p style="font-family: Georgia,Palatino,'Times New Roman',serif; font-weight: 800; font-size: 10pt; margin-bottom: 4px">Sample data <a target="_blank" href="/Structure/cdd/cdd_help.shtml#BatchRPSBOutputSampleData"><img src="files/infoQ.gif"></a></p>
+							<!--The table below shows partial result. To download the complete result, select desired data in the download panel above and click the download button. To navigate through a graphic presentation of the result, click <a href="javascript:void(0);" onclick="GotoNavigation();">here</a>.-->
+							The table below shows partial result. To download the complete result, select desired options in the download panel above and click the "download" button. Alternatively, click the "Browse results" button to view the results in graphical format, using the "navigate results" menu on the resultant page to select any individual protein from your query list and display its domain footprints, alignment details, and features.
+						</td>
+					</tr>
+					<tr>
+						<td id="td_XmpTable" colspan="2">
+							<!-- put sample table -->
+						</td>
+					</tr>
+				</table>
+			</td>	
+		</tr></table>
+
+		<!-- Footer part -->
+		<div id="refs">
+			<p>References:</p>
+			<ul>
+				<li><a href="https://www.ncbi.nlm.nih.gov/pubmed/36477806" title="Pubmed entry"><img src="files/PubMeds.gif"></a>Wang J et al. (2023), <span style="font-style: italic">"The conserved domain database in 2023"</span>, <span style="font-weight: 800">Nucleic Acids Res.51</span>(D)384-8.</li>
+                <li><a href="https://www.ncbi.nlm.nih.gov/pubmed/31777944" title="Pubmed entry"><img src="files/PubMeds.gif"></a>Lu S et al. (2020), <span style="font-style: italic">"The conserved domain database in 2020"</span>, <span style="font-weight: 800">Nucleic Acids Res.48</span>(D)265-8.</li>
+                
+                <li><a href="https://www.ncbi.nlm.nih.gov/pubmed/27899674" title="Pubmed entry"><img src="files/PubMeds.gif"></a>Marchler-Bauer A et al. (2017), <span style="font-style: italic">"CDD/SPARCLE: functional classification of proteins via subfamily domain architectures."</span>, <span style="font-weight: 800">Nucleic Acids Res.45</span>(D)200-3.</li>
+			</ul>
+		</div>
+		<div id="footer">
+			<table style="width: 100%; margin: 10px;">
+				<tr>
+					<td style="text-align: center; font-size: 10pt;">
+						<b><a href="/Structure/cdd/cdd_help.shtml#BatchCDSearch_help_contents">Help</a></b> | <a href="//www.ncbi.nlm.nih.gov/About/disclaimer.html">Disclaimer</a> | <a href="mailto:info@ncbi.nlm.nih.gov">Write to the Help Desk</a><BR><a href="//www.ncbi.nlm.nih.gov">NCBI</a> | <a href="https://www.nlm.nih.gov">NLM</a> | <a href="https://www.nih.gov">NIH</a>
+					</td>
+				</tr>
+			</table> 
+		</div>
+
+		<div id="div_ticker" class="backstage">
+			<table>
+				<tr>
+					<td>
+						<img src="files/spinner3.gif">
+						<p id="p_timer">
+							0:00:00:00
+						</p>
+					</td>
+				</tr>
+			</table>
+				
+		</div>
+		<!-- End of Footer part -->
+		<form id="postsubmit" method="post" target="_blank"></form>
+		<!-- Global maps -->
+		<!-- no need any more
+		<map name="unlmenu">
+			<area alt="NCBI Home" coords="2,0,39,15" href="//www.ncbi.nlm.nih.gov" onMouseOver="changpics(unl_menu_pix, unl_menu_home_a)" onMouseOut="changpics(unl_menu_pix, unl_menu_noa)">
+			<area alt="NCBI Search" coords="40,0,91,15" href="//www.ncbi.nlm.nih.gov/entrez/query.fcgi?db=ncbisearch&cmd=search" onMouseOver="changpics(unl_menu_pix, unl_menu_search_a)" onMouseOut="changpics(unl_menu_pix, unl_menu_noa)">
+			<area alt="NCBI SiteMap" coords="92,0,143,15" href="//www.ncbi.nlm.nih.gov/Sitemap/" onMouseOver="changpics(unl_menu_pix, unl_menu_sitemap_a)" onMouseOut="changpics(unl_menu_pix, unl_menu_noa)">
+		</map>
+		-->
+		<!-- End of Global maps -->
+	</body>
+</html>
