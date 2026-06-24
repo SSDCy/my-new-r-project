@@ -1,10 +1,6 @@
 # app.py
-# Streamlit 主程序 - 蛋白质组学分析平台
-# 修改：
-#   1. Data Upload 页面同时显示原始数据维度和清洗后维度
-#   2. Preprocessing 页面默认基线样本为 WT-1，插补方法为 quantile 时可自定义分位数
-#   3. 大量调试信息
-#   4. STRING PPI Network 页面已替换为调试好的版本
+# Streamlit Proteomics Platform
+# Fixed: ESM2 batch buttons feedback, STRING UniProt fallback always shows mapping.
 
 import streamlit as st
 import pandas as pd
@@ -20,7 +16,7 @@ import re
 import json
 import time
 
-# 工具模块
+# ---------- Utility modules ----------
 from utils.data_io import load_expression_data, load_sample_info
 from utils.preprocessing import apply_missing_filter, impute_missing, run_combat_py
 from utils.normalization import total_intensity_normalize
@@ -29,7 +25,10 @@ from utils.visualization import (
     plot_volcano, plot_heatmap, plot_venn, plot_upset,
     plot_volcano_single_annotated, build_combined_plot
 )
-from utils.cd_search import batch_cd_search, parse_cd_tsv
+from utils.cd_search import (
+    batch_cd_search_simple, batch_cd_search_with_cache,
+    parse_cd_tsv, load_cd_cache, get_cached_tasks, CD_CHUNK_SIZE
+)
 from utils.export_utils import create_excel_report
 from utils.data_quality import (
     plot_missing_heatmap, plot_valid_values_per_sample,
@@ -40,7 +39,11 @@ from utils.data_quality import (
 from utils.eggnog_annotation import (
     run_eggnog_annotation_local,
     parse_eggnog_manual_file,
-    EMAPPER_PATH
+    EMAPPER_PATH,
+    load_go_names,
+    load_ko_names,
+    get_go_name,
+    get_ko_name
 )
 from utils.esm_search import (
     load_esm_model, build_reference_library, get_esm_embedding,
@@ -51,7 +54,6 @@ from utils.esm_search import (
 from utils.enrichment import get_go_background, enrich_go
 from utils.llm_summary import generate_function_summary
 
-# STRING 模块
 from utils.string_ppi import (
     extract_uniprot_from_eggnog,
     run_blast_mapping,
@@ -63,568 +65,567 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 st.set_page_config(page_title="Proteomics Platform", layout="wide")
 
-# ==================== 辅助函数 ====================
+# ---------- Debug helper ----------
+def debug(msg: str):
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}][DEBUG] {msg}", flush=True)
 
+# ---------- Helper functions ----------
 def parse_manual_uniprot_ids(text: str) -> list:
-    """解析手动输入的 UniProt ID 列表"""
-    ids = [
-        x.strip()
-        for x in text.replace(",", "\n").replace(";", "\n").splitlines()
-        if x.strip()
-    ]
-
+    ids = [x.strip() for x in text.replace(",", "\n").replace(";", "\n").splitlines() if x.strip()]
     if any(x.startswith(">") for x in ids):
-        st.error("这里需要输入 UniProt Accession，不是 FASTA 序列。FASTA 请粘贴到上方 FASTA 输入框。")
+        st.error("FASTA sequences are not allowed here.")
         st.stop()
-
-    uniprot_pattern = re.compile(
-        r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9](?:[A-Z][A-Z0-9]{2}[0-9])?)$"
-    )
-
-    invalid_ids = [x for x in ids if not uniprot_pattern.match(x)]
-
-    if invalid_ids:
-        st.error("以下内容不是有效的 UniProt Accession，请检查输入：")
-        st.code("\n".join(invalid_ids[:20]))
+    if not ids:
+        st.warning("No identifiers entered.")
         st.stop()
-
     return ids
 
+def build_annotations_from_eggnog(eggnog_df):
+    if eggnog_df is None or eggnog_df.empty:
+        return {}
+    id_col = eggnog_df.columns[0]
+    annotations = {}
+    if 'GOs' not in eggnog_df.columns:
+        return {}
+    for _, row in eggnog_df.iterrows():
+        pid = str(row[id_col])
+        gos = str(row.get('GOs', ''))
+        go_list = [g.strip() for g in gos.split(',') if g.strip() and g.strip() != '-']
+        if go_list:
+            annotations[pid] = {'go': go_list}
+    return annotations
 
-# ==================== 初始化 session state ====================
-if 'raw_expr_df' not in st.session_state:
-    st.session_state.raw_expr_df = None       # 新增：原始未清洗数据
-if 'expr_df' not in st.session_state:
-    st.session_state.expr_df = None
-if 'lfq_cols' not in st.session_state:
-    st.session_state.lfq_cols = None
-if 'sample_names' not in st.session_state:
-    st.session_state.sample_names = None
-if 'sample_info' not in st.session_state:
-    st.session_state.sample_info = None
-if 'processed' not in st.session_state:
-    st.session_state.processed = None
-if 'norm_data' not in st.session_state:
-    st.session_state.norm_data = None
-if 'groups' not in st.session_state:
-    st.session_state.groups = {}
-if 'comparisons' not in st.session_state:
-    st.session_state.comparisons = []
-if 'de_results' not in st.session_state:
-    st.session_state.de_results = {}
-if 'page' not in st.session_state:
-    st.session_state.page = "Home"
-if 'cleaning_stats' not in st.session_state:
-    st.session_state.cleaning_stats = None
-if 'cd_result' not in st.session_state:
-    st.session_state.cd_result = None
-if 'eggnog_result' not in st.session_state:
-    st.session_state.eggnog_result = None
+def enrich_esm_result_with_eggnog(result_df, eggnog_df):
+    debug("Enriching ESM2 results with eggNOG annotations...")
+    if eggnog_df is None or eggnog_df.empty:
+        return result_df
+    id_col = eggnog_df.columns[0]
+    lookup = {}
+    for _, row in eggnog_df.iterrows():
+        pid = str(row[id_col])
+        gene = str(row.get('Preferred_name', '') or row.get('Description', ''))
+        protein_name = str(row.get('Description', ''))
+        lookup[pid] = {
+            'Gene': gene,
+            'Protein_Name': protein_name,
+            'GO': str(row.get('GOs', '')),
+            'EC': str(row.get('EC', ''))
+        }
+    for idx, protein_id in enumerate(result_df['Protein_ID']):
+        if protein_id in lookup:
+            result_df.at[idx, 'Gene'] = lookup[protein_id]['Gene']
+            result_df.at[idx, 'Protein_Name'] = lookup[protein_id]['Protein_Name']
+            result_df.at[idx, 'GO'] = lookup[protein_id]['GO']
+            result_df.at[idx, 'EC'] = lookup[protein_id]['EC']
+        else:
+            result_df.at[idx, 'Gene'] = ''
+            result_df.at[idx, 'Protein_Name'] = ''
+            result_df.at[idx, 'GO'] = ''
+            result_df.at[idx, 'EC'] = ''
+    return result_df
 
-# ==================== 侧边栏导航 ====================
+# ---------- Batch search step functions ----------
+def init_batch_search_state(session_state, total_sequences: int):
+    session_state.batch_search_in_progress = True
+    session_state.batch_search_index = 0
+    session_state.batch_search_results = []
+    session_state.batch_search_total = total_sequences
+
+def run_batch_search_step(query_seqs, model, batch_converter, custom_library, session_state, step_size=100):
+    total = session_state.batch_search_total
+    start = session_state.batch_search_index
+    end = min(start + step_size, total)
+    ids = list(custom_library.keys())
+    embeddings = np.stack([custom_library[k] for k in ids], axis=0)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    embeddings_norm = embeddings / norms
+    for i in range(start, end):
+        seq = query_seqs[i]
+        try:
+            q_emb = get_esm_embedding(seq, model, batch_converter)
+        except Exception:
+            session_state.batch_search_results.append({'query_index': i, 'best_id': None, 'similarity': 0.0})
+            continue
+        q_norm = np.linalg.norm(q_emb)
+        if q_norm == 0:
+            session_state.batch_search_results.append({'query_index': i, 'best_id': None, 'similarity': 0.0})
+            continue
+        sims = np.dot(embeddings_norm, q_emb / q_norm)
+        best_idx = np.argmax(sims)
+        session_state.batch_search_results.append({
+            'query_index': i, 'best_id': ids[best_idx], 'similarity': float(sims[best_idx])
+        })
+    session_state.batch_search_index = end
+    if end >= total:
+        session_state.batch_search_in_progress = False
+        return True
+    return False
+
+def display_batch_results_and_enrichment(results, target_ids, annotations):
+    if results is not None and len(results) > 0:
+        st.subheader("Top Match Proteins")
+        df = pd.DataFrame({
+            "Query No.": [r['query_index']+1 for r in results],
+            "Best Match": [r['best_id'] if r['best_id'] else 'Failed' for r in results],
+            "Similarity": [round(r['similarity'],4) for r in results]
+        })
+        st.dataframe(df, width='stretch')
+        if all(round(r['similarity'],4) >= 0.9999 for r in results):
+            st.warning("All similarities are ~1 because the query sequences are identical to those in the reference library. For GO enrichment, this is expected.")
+
+    if annotations and len(target_ids) > 0:
+        valid_targets = [pid for pid in target_ids if pid in annotations]
+        if not valid_targets:
+            st.warning("None of the selected proteins have GO annotations.")
+            return
+        if len(valid_targets) < len(target_ids):
+            st.info(f"Only {len(valid_targets)} out of {len(target_ids)} proteins have GO annotations.")
+        st.subheader("GO Enrichment Analysis")
+        bg_list = list(annotations.keys())
+        st.info(f"Background proteins ({len(bg_list)}): {', '.join(bg_list[:20])}{'...' if len(bg_list)>20 else ''}")
+        if len(valid_targets) == len(annotations):
+            st.warning("Target set is identical to the background set. Please select a subset.")
+            return
+        go_bg = get_go_background(annotations)
+        enrich_df = enrich_go(valid_targets, annotations, go_bg)
+        if len(enrich_df) > 0:
+            fig = px.scatter(enrich_df, x='enrichment_ratio', y='GO', size='count',
+                             color='adjusted_p', color_continuous_scale='Reds_r',
+                             title="Enriched GO Terms")
+            st.plotly_chart(fig, width='stretch')
+            st.dataframe(enrich_df)
+        else:
+            st.info("No significantly enriched GO terms (p<0.05).")
+    else:
+        st.warning("No annotations available for enrichment.")
+        if st.session_state.get("eggnog_result") is not None:
+            if st.button("Use eggNOG annotations for enrichment", key="batch_use_eggnog"):
+                annots = build_annotations_from_eggnog(st.session_state.eggnog_result)
+                st.session_state.custom_annotations = annots
+                st.rerun()
+        else:
+            if not st.session_state.get("use_pretrained", True) and "custom_library" in st.session_state:
+                if st.button("Load UniProt annotations now", key="batch_load_annot"):
+                    lib_ids = list(st.session_state.custom_library.keys())
+                    annots = fetch_uniprot_annotations_batch(lib_ids)
+                    st.session_state.custom_annotations = annots
+                    st.rerun()
+
+# ---------- Initialize session state ----------
+defaults = {
+    'raw_expr_df': None, 'expr_df': None, 'lfq_cols': None, 'sample_names': None,
+    'sample_info': None, 'processed': None, 'norm_data': None, 'groups': {},
+    'comparisons': [], 'de_results': {}, 'page': "Home", 'cleaning_stats': None,
+    'cd_result': None, 'eggnog_result': None, 'integrated_data': None,
+    'integrated_protein_list': None, 'integrated_go_data': None,
+    'integrated_enrich': None, 'integrated_use_api': False,
+    'ref_fasta_text': "", 'eggnog_fasta_text': "",
+    'batch_final_results': None, 'batch_target_ids': None,
+    'last_search_result': None, 'current_summary': None,
+    'custom_annotations': None, 'use_pretrained': False,
+    'custom_ids': None,
+    'query_id_f1': "", 'query_seq_f1': "",
+    'batch_text': "",
+    'esm_model': None, 'esm_alphabet': None, 'esm_batch_converter': None
+}
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+# ---------- Sidebar navigation ----------
 st.sidebar.title("Navigation")
 pages = [
     "Home", "Data Upload", "Data Quality", "Preprocessing",
     "Define Groups & Comparisons", "Differential Analysis",
     "Visualization", "CD-Search", "Export", "EggNOG Annotation",
-    "ESM2 Similarity Search", "STRING PPI Network"
+    "ESM2 Similarity Search", "STRING PPI Network",
+    "Integrated Analysis"
 ]
 current_page = pages.index(st.session_state.page) if st.session_state.page in pages else 0
 page = st.sidebar.radio("Go to", pages, index=current_page)
 st.session_state.page = page
 
-# ==================== 页面逻辑 ====================
-
-# ---------- Home ----------
+# ---------- Page: Home ----------
 if page == "Home":
     st.title("Proteomics Differential Analysis Platform")
-    st.write("从 MaxQuant 数据到差异分析、注释和报告。")
-    if st.button("开始分析 → 上传数据"):
+    st.write("From MaxQuant data to differential expression, annotation, and report.")
+    if st.button("Start Analysis -> Upload Data"):
         st.session_state.page = "Data Upload"
         st.rerun()
 
-# ---------- Data Upload ----------
+# ---------- Page: Data Upload ----------
 elif page == "Data Upload":
-    st.header("数据上传")
-    expr_file = st.file_uploader("上传 proteinGroups.txt", type=['txt'])
-    sample_file = st.file_uploader("上传样本信息 (CSV 或 Excel)", type=['csv', 'xlsx'])
-    
-    if expr_file is not None and sample_file is not None:
-        df_clean, lfq_cols, sample_names, col_type, clean_stats, df_raw = load_expression_data(expr_file)
+    st.header("Data Upload")
+    st.info("Data cleaning (removing reverse hits, contaminants) will be performed automatically during Preprocessing.")
+    expr_file = st.file_uploader("Upload proteinGroups.txt", type=['txt'])
+    sample_file = st.file_uploader("Upload sample info (CSV or Excel)", type=['csv', 'xlsx'])
+    if expr_file and sample_file:
+        df_clean, lfq_cols, sample_names, col_type, clean_stats, df_raw = load_expression_data(expr_file, clean=False)
         si = load_sample_info(sample_file)
         if df_clean is not None and si is not None:
-            st.session_state.raw_expr_df = df_raw          # 原始未清洗数据
+            st.session_state.raw_expr_df = df_raw
             st.session_state.expr_df = df_clean
             st.session_state.lfq_cols = lfq_cols
             st.session_state.sample_names = sample_names
             st.session_state.sample_info = si
-            st.session_state.cleaning_stats = clean_stats
-            print(f"[DEBUG] 数据上传成功: 原始行数={df_raw.shape[0]}, 清洗后行数={df_clean.shape[0]}, LFQ列数={len(lfq_cols)}")
-            st.success("数据加载成功！")
-            # 显示两种维度
-            st.write(f"**原始数据维度**（上传文件直接解析）: {df_raw.shape[0]} 行 × {df_raw.shape[1]} 列")
-            st.write(f"**清洗后数据维度**（去除Reverse/污染物等）: {df_clean.shape[0]} 行 × {df_clean.shape[1]} 列")
-            st.write("前5行（清洗后）:", df_clean.head())
-            st.write("样本信息:", si.head())
+            st.session_state.cleaning_stats = None
+            st.success("Data loaded successfully! (Raw data, cleaning will be done in Preprocessing)")
+            st.write(f"**Data dimensions**: {df_clean.shape[0]} rows x {df_clean.shape[1]} cols")
+            st.write("First 5 rows:", df_clean.head())
+            st.write("Sample info:", si.head())
 
-# ---------- Data Quality ----------
+# ---------- Page: Data Quality ----------
 elif page == "Data Quality":
-    st.header("数据质量分析")
+    st.header("Data Quality")
     if st.session_state.expr_df is None:
-        st.warning("请先上传数据")
+        st.warning("Please upload data first.")
     else:
         expr_df = st.session_state.expr_df
         lfq_cols = st.session_state.lfq_cols
         sample_info = st.session_state.sample_info
-
-        st.subheader("缺失值热图")
-        print("[DEBUG] Data Quality: 绘制缺失值热图")
         fig_miss = plot_missing_heatmap(expr_df, lfq_cols)
-        if fig_miss:
-            st.pyplot(fig_miss)
-
-        st.subheader("每个样本的有效值数量")
-        print("[DEBUG] Data Quality: 绘制 Valid Values per Sample")
+        if fig_miss: st.pyplot(fig_miss)
         fig_valid = plot_valid_values_per_sample(expr_df, lfq_cols)
-        if fig_valid:
-            st.pyplot(fig_valid)
-
-        st.subheader("按处理组的韦恩图")
-        print("[DEBUG] Data Quality: 绘制分组韦恩图")
+        if fig_valid: st.pyplot(fig_valid)
         venn_figs = plot_venn_by_group(expr_df, lfq_cols)
         if venn_figs:
             cols = st.columns(3)
             for i, (gname, fig) in enumerate(venn_figs):
-                with cols[i % 3]:
-                    st.pyplot(fig)
+                with cols[i % 3]: st.pyplot(fig)
         else:
-            st.info("没有可绘制的韦恩图（每组需要2-3个样本）")
-
-        st.subheader("肽段长度分布")
+            st.info("No Venn diagrams available (need 2-3 samples per group)")
         merged, _ = get_peptide_sequences_table(expr_df)
         if merged is not None:
-            print("[DEBUG] Data Quality: 绘制肽段长度分布")
             fig_len = plot_peptide_length_histogram(merged)
-            if fig_len:
-                st.pyplot(fig_len)
+            if fig_len: st.pyplot(fig_len)
         else:
-            st.info("无肽段序列数据")
-
-        st.subheader("样本相关性热图")
-        print("[DEBUG] Data Quality: 绘制样本相关性热图")
+            st.info("No peptide sequence data.")
         fig_cor = plot_sample_correlation_heatmap(expr_df, lfq_cols)
-        if fig_cor:
-            st.pyplot(fig_cor)
-
-        st.subheader("PCA 分析 (原始数据)")
-        print("[DEBUG] Data Quality: 绘制 PCA")
+        if fig_cor: st.pyplot(fig_cor)
         fig_pca = plot_pca_raw_by_group(expr_df, lfq_cols, sample_info)
-        if fig_pca:
-            st.pyplot(fig_pca)
+        if fig_pca: st.pyplot(fig_pca)
 
-# ---------- Preprocessing ----------
+# ---------- Page: Preprocessing ----------
 elif page == "Preprocessing":
-    st.header("预处理")
+    st.header("Preprocessing")
     if st.session_state.expr_df is None:
-        st.warning("请先上传数据")
+        st.warning("Please upload data first.")
     else:
-        if st.session_state.cleaning_stats is not None:
-            st.subheader("Data Cleaning Summary")
-            cs = st.session_state.cleaning_stats
-            st.write(f"原始蛋白数: {cs['original']}")
-            st.write(f"移除 Reverse hits: {cs['reverse_removed']}")
-            st.write(f"移除 Potential contaminants: {cs['contaminant_removed']}")
-            st.write(f"移除 CON_ contaminants: {cs['con_removed']}")
-            st.write(f"清洗后保留蛋白数: {cs['retained']}")
-            st.write("---")
-
-        max_missing = st.slider("最大缺失比例", 0.0, 1.0, 0.5)
-        impute_method = st.selectbox("插补方法", ["none", "knn", "ppca", "quantile", "minvalue"], index=3)
-        
-        # ---------- 分位数自定义（当选择 quantile 时） ----------
+        max_missing = st.slider("Max missing fraction", 0.0, 1.0, 0.5)
+        impute_method = st.selectbox("Imputation method", ["none","knn","ppca","quantile","minvalue"], index=3)
         quantile_prob = 0.01
         if impute_method == "quantile":
-            st.info("默认使用 1% 分位数（0.01）填充缺失值，可修改：")
-            quantile_prob = st.number_input("分位数", min_value=0.001, max_value=0.5, value=0.01, step=0.01,
-                                            help="用于替换缺失值的分位数，越小则填充值越低")
-            print(f"[DEBUG] 用户设置 quantile 分位数: {quantile_prob}")
-
-        # ---------- 基线样本默认选择 WT-1 ----------
+            quantile_prob = st.number_input("Quantile", 0.001, 0.5, 0.01, 0.01)
         lfq_cols = st.session_state.lfq_cols
-        # 默认索引：寻找 LFQ intensity WT-1，找不到则用第一个
-        default_baseline = "LFQ intensity WT-1"
-        if default_baseline in lfq_cols:
-            default_idx = lfq_cols.index(default_baseline)
-        else:
-            default_idx = 0
-            print(f"[DEBUG] 未找到 {default_baseline}，默认使用第一个列作为基线")
-        baseline_sample = st.selectbox("归一化基线样本", lfq_cols, index=default_idx)
-        print(f"[DEBUG] 选择基线样本: {baseline_sample}")
-
-        if st.button("运行预处理"):
-            before_filter = st.session_state.expr_df.shape[0]
-            print(f"[DEBUG] 用户点击运行预处理: 缺失阈值={max_missing}, 插补={impute_method}, 基线={baseline_sample}")
+        baseline_sample = st.selectbox("Baseline sample for normalization", lfq_cols,
+                                        index=lfq_cols.index("LFQ intensity WT-1") if "LFQ intensity WT-1" in lfq_cols else 0)
+        if st.button("Run Preprocessing"):
+            start_time = time.time()
             df = st.session_state.expr_df.copy()
-            df = apply_missing_filter(df, st.session_state.lfq_cols, max_missing, st.session_state.sample_info)
-            after_filter = df.shape[0]
-            print(f"[DEBUG] 缺失过滤后保留蛋白数: {after_filter} (移除 {before_filter - after_filter})")
-            # 将分位数参数传递给插补函数
-            df = impute_missing(df, st.session_state.lfq_cols, impute_method, quantile_prob=quantile_prob, k=10)
-            df = total_intensity_normalize(df, st.session_state.lfq_cols, baseline_sample, st.session_state.sample_names)
+
+            if st.session_state.cleaning_stats is None:
+                debug("Performing data cleaning...")
+                reverse_removed, contam_removed, con_removed = 0, 0, 0
+                if 'Reverse' in df.columns:
+                    mask = df['Reverse'].str.contains(r'\+', na=False)
+                    reverse_removed = mask.sum()
+                    df = df[~mask]
+                if 'Potential contaminant' in df.columns:
+                    mask = df['Potential contaminant'].str.contains(r'\+', na=False)
+                    contam_removed = mask.sum()
+                    df = df[~mask]
+                if 'Protein IDs' in df.columns:
+                    mask = df['Protein IDs'].str.startswith('CON_', na=False)
+                    con_removed = mask.sum()
+                    df = df[~mask]
+                    if 'Master protein IDs' not in df.columns:
+                        df['Master protein IDs'] = df['Protein IDs'].str.split(';').str[0]
+                st.session_state.cleaning_stats = {
+                    'original': st.session_state.raw_expr_df.shape[0],
+                    'reverse_removed': reverse_removed,
+                    'contaminant_removed': contam_removed,
+                    'con_removed': con_removed,
+                    'retained': df.shape[0]
+                }
+                st.session_state.expr_df = df
+                debug(f"Data cleaned: {df.shape[0]} rows retained.")
+            else:
+                debug("Data already cleaned, skipping cleaning step.")
+
+            if st.session_state.cleaning_stats:
+                cs = st.session_state.cleaning_stats
+                st.write(f"**Cleaning Summary**: Original {cs['original']}, Removed reverse {cs['reverse_removed']}, contaminants {cs['contaminant_removed']}, CON_ {cs['con_removed']}. Retained {cs['retained']}")
+
+            df = apply_missing_filter(df, lfq_cols, max_missing, st.session_state.sample_info)
+            df = impute_missing(df, lfq_cols, impute_method, quantile_prob=quantile_prob, k=10)
+            df = total_intensity_normalize(df, lfq_cols, baseline_sample, st.session_state.sample_names)
             st.session_state.processed = df
-            final_na = df[st.session_state.lfq_cols].isna().sum().sum()
-            print(f"[DEBUG] 预处理完成后 LFQ 列缺失值总数: {final_na}")
-            st.success(f"预处理完成！缺失过滤前 {before_filter} 个蛋白，过滤后保留 {after_filter} 个。插补后缺失值数量: {final_na}")
-            st.write("处理后数据 (仅显示前5行, 可横向滚动):")
+            elapsed = time.time() - start_time
+            st.success(f"Preprocessing completed in {elapsed:.1f} seconds.")
             st.dataframe(df.head())
 
-# ---------- Define Groups & Comparisons ----------
+# ---------- Page: Define Groups & Comparisons ----------
 elif page == "Define Groups & Comparisons":
-    st.header("定义分组与比较")
-    
-    if st.session_state.sample_info is not None and st.session_state.lfq_cols is not None:
+    st.header("Define Groups & Comparisons")
+    if st.session_state.sample_info is not None and st.session_state.lfq_cols:
         si = st.session_state.sample_info
         lfq_cols = st.session_state.lfq_cols
-        
-        short_from_cols = []
-        for c in lfq_cols:
-            if c.startswith('LFQ intensity '):
-                short_from_cols.append(c[len('LFQ intensity '):])
-            else:
-                short_from_cols.append(c)
-        short_std = [s.replace('.', '_').strip() for s in short_from_cols]
-        col_std = [c.replace('.', '_').strip() for c in lfq_cols]
-        info_index_std = [str(idx).replace('.', '_').strip() for idx in si.index]
-        
-        print(f"[DEBUG] 短名示例 (前3): {short_std[:3]}")
-        
+        short_from_cols = [c[len('LFQ intensity '):] if c.startswith('LFQ intensity ') else c for c in lfq_cols]
+        short_std = [s.replace('.','_').strip() for s in short_from_cols]
+        col_std = [c.replace('.','_').strip() for c in lfq_cols]
+        info_index_std = [str(idx).replace('.','_').strip() for idx in si.index]
         match_map = {}
-        for i, (full_col, short, full_std) in enumerate(zip(lfq_cols, short_std, col_std)):
-            if short in info_index_std:
-                match_map[full_col] = info_index_std[info_index_std.index(short)]
-            elif full_std in info_index_std:
-                match_map[full_col] = full_std
+        for i, (fc, sh, fstd) in enumerate(zip(lfq_cols, short_std, col_std)):
+            if sh in info_index_std:
+                match_map[fc] = sh
+            elif fstd in info_index_std:
+                match_map[fc] = fstd
             else:
-                for idx_name in info_index_std:
-                    if short in idx_name or idx_name in short:
-                        match_map[full_col] = idx_name
+                for idxn in info_index_std:
+                    if sh in idxn or idxn in sh:
+                        match_map[fc] = idxn
                         break
-        
-        st.info(f"匹配到 {len(match_map)} 个样本")
-        
         groups = {}
-        used_column = None
+        used_col = None
         if 'SubGroup' in si.columns:
-            for full_col, matched_idx in match_map.items():
-                subgroup_val = si.loc[si.index[info_index_std.index(matched_idx)], 'SubGroup']
-                groups.setdefault(subgroup_val, []).append(full_col)
-            used_column = 'SubGroup'
+            for fc, midx in match_map.items():
+                sg = si.loc[si.index[info_index_std.index(midx)], 'SubGroup']
+                groups.setdefault(sg, []).append(fc)
+            used_col = 'SubGroup'
         elif 'Group' in si.columns:
-            for full_col, matched_idx in match_map.items():
-                group_val = si.loc[si.index[info_index_std.index(matched_idx)], 'Group']
-                groups.setdefault(group_val, []).append(full_col)
-            used_column = 'Group'
+            for fc, midx in match_map.items():
+                g = si.loc[si.index[info_index_std.index(midx)], 'Group']
+                groups.setdefault(g, []).append(fc)
+            used_col = 'Group'
         else:
             prefixes = {}
             for s in short_std:
                 parts = s.split('_')
-                if len(parts) >= 2:
-                    prefix = '_'.join(parts[:-1])
-                else:
-                    prefix = s
-                prefixes.setdefault(prefix, []).append(s)
-            for prefix, short_list in prefixes.items():
-                full_list = [lfq_cols[short_std.index(s)] for s in short_list if s in short_std]
-                if full_list:
-                    groups[prefix] = full_list
-            used_column = 'prefix'
-        
+                pref = '_'.join(parts[:-1]) if len(parts)>=2 else s
+                prefixes.setdefault(pref, []).append(s)
+            for pref, slist in prefixes.items():
+                flist = [lfq_cols[short_std.index(s)] for s in slist if s in short_std]
+                if flist:
+                    groups[pref] = flist
+            used_col = 'prefix'
         st.session_state.groups = groups
-        
+        st.write(f"### Groups (based on {used_col})")
+        for gn, cols in groups.items():
+            st.write(f"**{gn}** ({len(cols)} samples): {', '.join(cols)}")
         if groups:
-            st.write(f"### 分组结果 (基于 {used_column})")
-            for gname, cols in groups.items():
-                st.write(f"**{gname}** ({len(cols)} 样本): {', '.join(cols)}")
-        else:
-            st.warning("未能生成分组，请检查样本信息表。")
-            st.write("### 备选方案：根据样本名前缀自动分组")
-            prefixes = {}
-            for s in short_std:
-                parts = s.split('_')
-                if len(parts) >= 2:
-                    prefix = '_'.join(parts[:-1])
+            st.subheader("Add comparison")
+            c1, c2 = st.columns(2)
+            with c1: treat = st.selectbox("Treatment", list(groups.keys()), key="treat")
+            with c2: ctrl = st.selectbox("Control", list(groups.keys()), key="ctrl")
+            if st.button("Add comparison"):
+                if treat != ctrl:
+                    comp_name = f'{treat} vs {ctrl}'
+                    if comp_name not in [c['name'] for c in st.session_state.comparisons]:
+                        st.session_state.comparisons.append({'treat':treat, 'ctrl':ctrl, 'name':comp_name})
+                        st.success(f"Comparison '{comp_name}' added.")
                 else:
-                    prefix = s
-                prefixes.setdefault(prefix, []).append(s)
-            st.json(prefixes)
-            if st.button("使用前缀分组"):
-                new_groups = {}
-                for prefix, short_list in prefixes.items():
-                    full_list = [lfq_cols[short_std.index(s)] for s in short_list if s in short_std]
-                    if full_list:
-                        new_groups[prefix] = full_list
-                st.session_state.groups = new_groups
-                st.rerun()
-    
-    if st.session_state.groups:
-        group_list = list(st.session_state.groups.keys())
-        st.write("---")
-        st.subheader("手动添加比较")
-        col1, col2 = st.columns(2)
-        with col1:
-            treat = st.selectbox("处理组", group_list, key="treat")
-        with col2:
-            ctrl = st.selectbox("对照组", group_list, key="ctrl")
-        if st.button("添加比较"):
-            if treat != ctrl:
-                comp_name = f'{treat} vs {ctrl}'
-                if comp_name not in [c['name'] for c in st.session_state.comparisons]:
-                    st.session_state.comparisons.append({
-                        'treat': treat,
-                        'ctrl': ctrl,
-                        'name': comp_name
-                    })
-                    st.success(f"比较 '{comp_name}' 已添加")
-                else:
-                    st.warning("该比较已存在")
-            else:
-                st.error("处理组和对照组不能相同")
-        
-        st.subheader("一键添加所有 vs WT 比较")
-        wt_candidates = [g for g in group_list if 'wt' in g.lower() or g.lower() == 'control']
-        if wt_candidates:
-            wt_group = wt_candidates[0]
-            other_groups = [g for g in group_list if g != wt_group]
-            if other_groups:
-                if st.button(f"添加所有其他组 vs {wt_group} 的比较"):
+                    st.error("Treatment and control must be different.")
+            st.subheader("Add all vs WT")
+            wt_candidates = [g for g in groups if 'wt' in g.lower() or g.lower()=='control']
+            if wt_candidates:
+                wt_group = wt_candidates[0]
+                others = [g for g in groups if g != wt_group]
+                if others and st.button(f"Add all vs {wt_group}"):
                     added = 0
-                    for treat_grp in other_groups:
-                        comp_name = f'{treat_grp} vs {wt_group}'
-                        if comp_name not in [c['name'] for c in st.session_state.comparisons]:
-                            st.session_state.comparisons.append({
-                                'treat': treat_grp,
-                                'ctrl': wt_group,
-                                'name': comp_name
-                            })
+                    for tr in others:
+                        cname = f'{tr} vs {wt_group}'
+                        if cname not in [c['name'] for c in st.session_state.comparisons]:
+                            st.session_state.comparisons.append({'treat':tr, 'ctrl':wt_group, 'name':cname})
                             added += 1
-                    if added > 0:
-                        st.success(f"已添加 {added} 个比较")
-                    else:
-                        st.info("所有比较已存在")
-            else:
-                st.info("没有其他组可比较")
-        else:
-            st.warning("未找到 WT/Control 组，无法批量添加。请手动添加比较。")
-    
-    if st.session_state.comparisons:
-        st.write("---")
-        st.subheader("当前比较")
-        for comp in st.session_state.comparisons:
-            treat_samples = st.session_state.groups.get(comp['treat'], [])
-            ctrl_samples = st.session_state.groups.get(comp['ctrl'], [])
-            st.write(f"- **{comp['name']}**：处理组 **{comp['treat']}** ({len(treat_samples)} 样本) vs 对照组 **{comp['ctrl']}** ({len(ctrl_samples)} 样本)")
-    else:
-        st.info("尚未定义任何比较")
+                    if added: st.success(f"{added} comparisons added.")
+        if st.session_state.comparisons:
+            st.subheader("Current comparisons")
+            for comp in st.session_state.comparisons:
+                st.write(f"- **{comp['name']}**: {comp['treat']} vs {comp['ctrl']}")
 
-# ---------- Differential Analysis ----------
+# ---------- Page: Differential Analysis ----------
 elif page == "Differential Analysis":
-    st.header("差异分析")
+    st.header("Differential Analysis")
     if not st.session_state.comparisons:
-        st.warning("请先在 'Define Groups & Comparisons' 页面添加比较")
+        st.warning("Please define comparisons first.")
     elif st.session_state.processed is None:
-        st.warning("请先运行预处理")
+        st.warning("Please run preprocessing first.")
     else:
-        method = st.selectbox("统计方法", ["t-test", "wilcoxon", "limma"])
+        method = st.selectbox("Statistical method", ["t-test","wilcoxon","limma"])
         fc_up = st.number_input("FC up >", value=1.2)
         fc_down = st.number_input("FC down <", value=0.84)
-        p_cut = st.number_input("P-value 阈值", value=0.05)
-        
-        st.write("---")
-        st.subheader("有效重复数阈值")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            min_treat_valid = st.number_input("Treatment group min valid replicates", min_value=1, value=2)
-        with col2:
-            min_ctrl_valid = st.number_input("Control group min valid replicates", min_value=1, value=2)
-        with col3:
-            min_rep_ttest = st.number_input("t-test 最少重复数", min_value=1, value=2)
-        with col4:
-            pass
-        
-        col5, col6 = st.columns(2)
-        with col5:
-            min_rep_inc = st.number_input("标记为 Increase 所需处理组最少重复数", min_value=1, value=2)
-        with col6:
-            min_rep_dec = st.number_input("标记为 Decrease 所需对照组最少重复数", min_value=1, value=2)
-        
-        st.write("---")
-        st.subheader("蛋白质过滤")
-        min_unique_pep = st.number_input("最小 Unique Peptides (≥ 此值)", min_value=1, value=2, step=1)
-        use_pep_filter = st.checkbox("启用 Unique Peptides 过滤", value=True)
-        
-        if st.button("运行所有比较"):
+        p_cut = st.number_input("P-value threshold", value=0.05)
+        col1,col2,col3,col4 = st.columns(4)
+        with col1: min_treat_valid = st.number_input("Min valid replicates treatment", min_value=1, value=2)
+        with col2: min_ctrl_valid = st.number_input("Min valid replicates control", min_value=1, value=2)
+        with col3: min_rep_ttest = st.number_input("Min replicates for t-test", min_value=1, value=2)
+        with col4: pass
+        col5,col6 = st.columns(2)
+        with col5: min_rep_inc = st.number_input("Min replicates for Increase", min_value=1, value=2)
+        with col6: min_rep_dec = st.number_input("Min replicates for Decrease", min_value=1, value=2)
+        min_unique_pep = st.number_input("Min Unique Peptides", min_value=1, value=2)
+        use_pep_filter = st.checkbox("Enable Unique Peptide filter", value=True)
+        if st.button("Run all comparisons"):
+            start_time = time.time()
             norm_df = st.session_state.processed.copy()
             if use_pep_filter and 'Unique peptides' in norm_df.columns:
-                print(f"[DEBUG] 差异分析前 Unique peptide 过滤: 阈值 >= {min_unique_pep}")
-                before = norm_df.shape[0]
                 norm_df['Unique peptides'] = pd.to_numeric(norm_df['Unique peptides'], errors='coerce')
                 norm_df = norm_df.dropna(subset=['Unique peptides'])
                 norm_df = norm_df[norm_df['Unique peptides'] >= min_unique_pep]
-                print(f"[DEBUG] 过滤后剩余蛋白质: {norm_df.shape[0]} (从 {before})")
-            
             results = {}
             for comp in st.session_state.comparisons:
-                treat_cols = st.session_state.groups[comp['treat']]
-                ctrl_cols = st.session_state.groups[comp['ctrl']]
-                print(f"[DEBUG] 差异分析: {comp['name']}, 方法={method}")
-                res = run_de_analysis(norm_df, treat_cols, ctrl_cols,
+                res = run_de_analysis(norm_df, st.session_state.groups[comp['treat']],
+                                      st.session_state.groups[comp['ctrl']],
                                       fc_up=fc_up, fc_down=fc_down, p_cut=p_cut,
-                                      method=method,
-                                      min_treat_valid=min_treat_valid,
-                                      min_ctrl_valid=min_ctrl_valid,
-                                      min_rep_ttest=min_rep_ttest,
-                                      min_rep_inc=min_rep_inc,
-                                      min_rep_dec=min_rep_dec)
+                                      method=method, min_treat_valid=min_treat_valid,
+                                      min_ctrl_valid=min_ctrl_valid, min_rep_ttest=min_rep_ttest,
+                                      min_rep_inc=min_rep_inc, min_rep_dec=min_rep_dec)
                 if res is not None:
                     results[comp['name']] = res
             st.session_state.de_results = results
-            st.success("差异分析完成！")
+            elapsed = time.time() - start_time
+            st.success(f"Differential analysis completed in {elapsed:.1f} seconds.")
             for name, res in results.items():
-                total = len(res)
-                up = (res['regulation']=='Up').sum()
-                down = (res['regulation']=='Down').sum()
-                inc = (res['regulation']=='Increase').sum()
-                dec = (res['regulation']=='Decrease').sum()
-                st.write(f"**{name}**：总蛋白 {total}，Up {up}，Down {down}，Increase {inc}，Decrease {dec}")
+                st.write(f"**{name}**: total {len(res)}, Up {(res['regulation']=='Up').sum()}, Down {(res['regulation']=='Down').sum()}")
 
-# ---------- Visualization ----------
+# ---------- Page: Visualization ----------
 elif page == "Visualization":
-    st.header("可视化")
+    st.header("Visualization")
     if not st.session_state.de_results:
-        st.warning("请先运行差异分析")
+        st.warning("Please run differential analysis first.")
     else:
-        comp_name = st.selectbox("选择比较", list(st.session_state.de_results.keys()))
+        comp_name = st.selectbox("Select comparison", list(st.session_state.de_results.keys()))
         res = st.session_state.de_results[comp_name]
         fig_vol = plot_volcano(res)
         st.plotly_chart(fig_vol)
-        
-        if st.button("生成热图"):
-            sig_prots = res[res['regulation'].isin(['Up','Down','Increase','Decrease'])]['Master protein IDs']
-            if not sig_prots.empty:
-                full_mat = st.session_state.processed.set_index('Master protein IDs')
-                sel_mat = full_mat.loc[full_mat.index.isin(sig_prots)]
-                sel_mat = sel_mat.select_dtypes(include=[np.number]).apply(pd.to_numeric, errors='coerce')
-                if not sel_mat.empty:
-                    heatmap_fig = plot_heatmap(sel_mat)
+        if st.button("Generate Heatmap"):
+            start_time = time.time()
+            sig = res[res['regulation'].isin(['Up','Down','Increase','Decrease'])]['Master protein IDs']
+            if len(sig):
+                mat = st.session_state.processed.set_index('Master protein IDs').loc[lambda x: x.index.isin(sig)]
+                numeric_cols = mat.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols):
+                    mat = mat[numeric_cols].apply(pd.to_numeric, errors='coerce')
+                    heatmap_fig = plot_heatmap(mat)
                     st.pyplot(heatmap_fig)
+                    elapsed = time.time() - start_time
+                    st.success(f"Heatmap generated in {elapsed:.1f} seconds.")
                 else:
-                    st.warning("未找到差异蛋白对应的数值表达数据")
+                    st.warning("No numeric data for heatmap.")
             else:
-                st.warning("没有差异蛋白可绘制热图")
+                st.warning("No significant proteins.")
 
-# ---------- CD-Search (保存结果到 session_state) ----------
+# ---------- Page: CD-Search ----------
 elif page == "CD-Search":
     st.header("NCBI CD-Search")
-    st.subheader("方式一：自动搜索（粘贴 FASTA）")
-    fasta_text = st.text_area("粘贴 FASTA 序列", height=200)
-    if st.button("运行自动 CD-Search"):
-        if fasta_text.strip():
-            with st.spinner("正在搜索..."):
-                print("[DEBUG] 开始自动 CD-Search")
-                result = batch_cd_search(fasta_text)
-                if result is not None:
-                    st.session_state.cd_result = result
-                    st.dataframe(result)
+    st.info("Note: The 'Accession' column in CD-Search results refers to NCBI conserved domain IDs, not UniProt protein accessions.")
+    def ensure_fasta_header(text):
+        lines = text.strip().splitlines()
+        if lines and not lines[0].startswith(">"):
+            st.info("No FASTA header detected. Adding '>query' automatically.")
+            text = ">query\n" + text
+        return text
+
+    tab1, tab2, tab3 = st.tabs(["Simple Search", "Batch Search (with cache)", "Load from Cache"])
+    with tab1:
+        st.subheader("Simple Search (<950 sequences)")
+        fasta_text = st.text_area("Paste FASTA sequences", height=200, key="cd_simple_fasta")
+        if st.button("Run Search", key="cd_simple_btn"):
+            start_time = time.time()
+            if fasta_text.strip():
+                fasta_text = ensure_fasta_header(fasta_text)
+                with st.spinner("Searching..."):
+                    result = batch_cd_search_simple(fasta_text)
+                    if result is not None:
+                        st.session_state.cd_result = result
+                        elapsed = time.time() - start_time
+                        st.success(f"Search completed in {elapsed:.1f} seconds. {len(result)} records")
+                        st.dataframe(result)
+                    else:
+                        st.error("Search failed.")
+            else:
+                st.warning("Please enter FASTA sequences.")
+    with tab2:
+        st.subheader("Batch Search (auto-split + cache + resume)")
+        st.markdown(f"Auto splits into chunks of {CD_CHUNK_SIZE}, saves to cache.")
+        batch_fasta = st.text_area("Paste FASTA (supports large input)", height=200, key="cd_batch_fasta")
+        if batch_fasta.strip():
+            from utils.cd_search import parse_fasta_for_cd
+            ids, seqs = parse_fasta_for_cd(ensure_fasta_header(batch_fasta))
+            n = len(ids)
+            batches = (n + CD_CHUNK_SIZE - 1)//CD_CHUNK_SIZE
+            st.info(f"Detected **{n}** sequences, will be split into **{batches}** batches.")
+        if st.button("Start Batch Search", key="cd_batch_btn", type="primary"):
+            start_time = time.time()
+            if not batch_fasta.strip():
+                st.warning("No sequences provided.")
+            else:
+                batch_fasta = ensure_fasta_header(batch_fasta)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                def update_progress(frac):
+                    progress_bar.progress(frac)
+                    status_text.text(f"Progress: {int(frac*100)}%")
+                with st.spinner("Searching (check terminal for progress)..."):
+                    combined, task_dir = batch_cd_search_with_cache(batch_fasta, progress_callback=update_progress)
+                progress_bar.progress(1.0)
+                if combined is not None and not combined.empty:
+                    st.session_state.cd_result = combined
+                    elapsed = time.time() - start_time
+                    st.success(f"Batch search completed in {elapsed:.1f} seconds. {len(combined)} records")
+                    st.dataframe(combined.head(20))
+                    csv = combined.to_csv(index=False).encode()
+                    st.download_button("Download CSV", csv, file_name="cd_search_results.csv")
                 else:
-                    st.error("自动搜索失败")
+                    st.error("Search failed. Check terminal logs.")
+    with tab3:
+        st.subheader("Load from Cache")
+        cached_tasks = get_cached_tasks()
+        if not cached_tasks:
+            st.info("No cached tasks found.")
         else:
-            st.warning("请输入 FASTA 序列")
-
-    st.subheader("方式二：手动上传 CD-Search 结果文件")
-    uploaded_cd = st.file_uploader("上传 CD-Search 结果 (TSV/TXT)", type=['tsv', 'txt', 'csv'])
-    if uploaded_cd is not None:
-        try:
-            print("[DEBUG] 开始解析手动上传的 CD-Search 文件")
-            content = uploaded_cd.read().decode('utf-8')
-            df = parse_cd_tsv(content)
-            if df is not None and not df.empty:
-                st.session_state.cd_result = df
-                st.success(f"成功解析 {len(df)} 条 CD-Search 记录")
-                st.dataframe(df, height=600)
-            else:
-                st.error("解析失败，请检查文件格式")
-        except Exception as e:
-            st.error(f"读取文件出错: {e}")
-
+            selected = st.selectbox("Choose task", cached_tasks)
+            if st.button("Load", key="cd_cache_load"):
+                start_time = time.time()
+                df, name = load_cd_cache(selected)
+                if df is not None and not df.empty:
+                    st.session_state.cd_result = df
+                    elapsed = time.time() - start_time
+                    st.success(f"Loaded {len(df)} records in {elapsed:.1f} seconds.")
+                    st.dataframe(df.head(20))
     if st.session_state.cd_result is not None:
-        st.info(f"当前已加载 CD-Search 注释：{st.session_state.cd_result.shape[0]} 行")
-    else:
-        st.info("尚未加载任何 CD-Search 注释")
+        st.info(f"CD-Search result loaded: {st.session_state.cd_result.shape[0]} rows")
 
-# ---------- Export ----------
+# ---------- Page: Export ----------
 elif page == "Export":
-    st.header("导出")
+    st.header("Export")
     if st.session_state.processed is None or not st.session_state.de_results:
-        st.warning("请先完成预处理和差异分析")
+        st.warning("Preprocessing and differential analysis must be completed first.")
     else:
-        st.subheader("单图下载")
-        selected_comp = st.selectbox("选择比较", list(st.session_state.de_results.keys()))
-        plot_format = st.selectbox("图片格式", ["svg", "tiff"])
-        col1, col2 = st.columns(2)
-        with col1:
-            width = st.number_input("宽度 (inch)", min_value=5, max_value=30, value=10)
-        with col2:
-            height = st.number_input("高度 (inch)", min_value=5, max_value=30, value=8)
-        custom_title = st.text_input("自定义标题 (留空使用默认)", value="")
-        
-        if st.button("下载单图"):
-            print(f"[DEBUG] 下载单图: {selected_comp}, 格式={plot_format}, 尺寸={width}x{height}")
-            res = st.session_state.de_results[selected_comp]
-            title = custom_title if custom_title else selected_comp
-            fig = plot_volcano_single_annotated(res, fc_up=1.2, fc_down=0.84, p_cut=0.05, title=title)
+        st.subheader("Download single plot")
+        comp = st.selectbox("Comparison", list(st.session_state.de_results.keys()))
+        fmt = st.selectbox("Format", ["svg","tiff"])
+        w = st.number_input("Width (inch)", 5,30,10)
+        h = st.number_input("Height (inch)", 5,30,8)
+        title = st.text_input("Custom title (leave blank for default)")
+        if st.button("Download Plot"):
+            start_time = time.time()
+            res = st.session_state.de_results[comp]
+            fig = plot_volcano_single_annotated(res, title=title or comp)
             if fig:
-                with tempfile.NamedTemporaryFile(suffix=f".{plot_format}", delete=False) as tmp:
+                with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
                     fig.savefig(tmp.name, dpi=300, bbox_inches='tight')
-                    with open(tmp.name, 'rb') as f:
-                        st.download_button(
-                            label="点击下载单图",
-                            data=f,
-                            file_name=f"volcano_{selected_comp}.{plot_format}",
-                            mime=f"image/{plot_format}"
-                        )
-        
-        st.subheader("组合图下载")
-        combined_title = st.text_input("组合图主标题", value="Combined Volcano Plots")
-        sub_titles_input = st.text_area("子图标题 (每行一个，按比较顺序)", value="")
-        if st.button("下载组合图"):
-            print(f"[DEBUG] 下载组合图，标题={combined_title}")
-            results_list = [st.session_state.de_results[comp['name']] for comp in st.session_state.comparisons]
-            comp_names = [comp['name'] for comp in st.session_state.comparisons]
-            if sub_titles_input.strip():
-                sub_titles = [s.strip() for s in sub_titles_input.split('\n') if s.strip()]
-                while len(sub_titles) < len(comp_names):
-                    sub_titles.append('')
-            else:
-                sub_titles = comp_names
-            fig = build_combined_plot(results_list, comp_names, main_title=combined_title,
-                                      fc_up=1.2, fc_down=0.84, p_cut=0.05,
-                                      sub_titles=sub_titles)
-            if fig:
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                    fig.savefig(tmp.name, dpi=300, bbox_inches='tight')
-                    with open(tmp.name, 'rb') as f:
-                        st.download_button(
-                            label="点击下载组合图",
-                            data=f,
-                            file_name="combined_volcano.png",
-                            mime="image/png"
-                        )
-        
-        st.subheader("Excel 报告导出")
-        if st.button("生成 Excel 报告"):
-            print("[DEBUG] 开始生成 Excel 报告")
+                    with open(tmp.name,'rb') as f:
+                        st.download_button("Download", f, file_name=f"volcano_{comp}.{fmt}")
+                elapsed = time.time() - start_time
+                st.success(f"Plot generated in {elapsed:.1f} seconds.")
+        st.subheader("Excel Report")
+        if st.button("Generate Excel Report"):
+            start_time = time.time()
             wb = create_excel_report(
-                raw_data=st.session_state.raw_expr_df,   # 使用真正的原始数据
+                raw_data=st.session_state.raw_expr_df,
                 clean_data=st.session_state.expr_df,
                 norm_data=st.session_state.processed,
                 de_results=st.session_state.de_results,
@@ -634,539 +635,852 @@ elif page == "Export":
             )
             with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
                 wb.save(tmp.name)
-                with open(tmp.name, 'rb') as f:
-                    st.download_button('下载 Excel 报告', f, file_name='proteomics_report.xlsx')
+                with open(tmp.name,'rb') as f:
+                    st.download_button('Download Report', f, file_name='proteomics_report.xlsx')
+            elapsed = time.time() - start_time
+            st.success(f"Excel report generated in {elapsed:.1f} seconds.")
 
-# ---------- EggNOG Annotation (含数据库下载助手) ----------
+# ---------- Page: EggNOG Annotation (REVISED) ----------
 elif page == "EggNOG Annotation":
     st.header("EggNOG Annotation")
-    st.markdown("使用本地 eggnog-mapper 或手动上传结果文件进行功能注释。")
+    st.markdown("Use local eggnog-mapper or upload manual result file.")
     
-    # ========== 数据库下载工具 ==========
-    st.subheader("📦 数据库下载")
-    st.info("数据库只需下载一次。如果已下载，可跳过此步骤。")
-    
+    # 数据库状态检查
+    st.subheader("Database Status")
     data_dir = os.path.join(os.path.dirname(EMAPPER_PATH), "data")
-    db_ready = os.path.exists(os.path.join(data_dir, "eggnog.db")) and \
-               os.path.exists(os.path.join(data_dir, "eggnog_proteins.dmnd"))
-    
+    db_ready = os.path.exists(os.path.join(data_dir, "eggnog.db")) and os.path.exists(os.path.join(data_dir, "eggnog_proteins.dmnd"))
     if db_ready:
-        st.success("✅ 数据库已就绪，可以直接使用本地注释。")
+        st.success("Database ready")
     else:
-        st.warning("⚠️ 数据库尚未下载或未完整解压。请使用下方按钮下载。")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("下载 eggnog.db (约 8 GB)", use_container_width=True):
+        st.warning("Database not fully prepared")
+    with st.expander("Download tools", expanded=False):
+        c1,c2 = st.columns(2)
+        with c1:
+            if st.button("Download eggnog.db.gz"):
+                start_time = time.time()
                 url = "https://downloads.eggnogdb.org/emapper/emapperdb-5.0.2/eggnog.db.gz"
                 dest = os.path.join(data_dir, "eggnog.db.gz")
                 os.makedirs(data_dir, exist_ok=True)
-                
-                with st.spinner("正在下载 eggnog.db，请耐心等待（约 8 GB）..."):
-                    try:
-                        with requests.get(url, stream=True, timeout=30) as r:
-                            r.raise_for_status()
-                            total_size = int(r.headers.get('content-length', 0))
-                            progress_bar = st.progress(0)
-                            downloaded = 0
-                            with open(dest, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                                        downloaded += len(chunk)
-                                        if total_size > 0:
-                                            progress_bar.progress(min(downloaded / total_size, 1.0))
-                        st.success("下载完成！请点击旁边的解压按钮。")
-                    except Exception as e:
-                        st.error(f"下载失败: {e}")
-        
-        with col2:
-            if st.button("解压 eggnog.db.gz", use_container_width=True):
-                gz_path = os.path.join(data_dir, "eggnog.db.gz")
-                db_path = os.path.join(data_dir, "eggnog.db")
-                if not os.path.exists(gz_path):
-                    st.error("找不到 eggnog.db.gz，请先下载。")
-                else:
-                    with st.spinner("正在解压..."):
-                        try:
-                            with gzip.open(gz_path, 'rb') as src, open(db_path, 'wb') as dst:
-                                shutil.copyfileobj(src, dst)
-                            os.remove(gz_path)
-                            st.success("解压成功！")
-                        except Exception as e:
-                            st.error(f"解压失败: {e}")
-        
-        col3, col4 = st.columns(2)
-        with col3:
-            if st.button("下载 eggnog_proteins.dmnd (约 4 GB)", use_container_width=True):
-                url = "https://downloads.eggnogdb.org/emapper/emapperdb-5.0.2/eggnog_proteins.dmnd.gz"
-                dest = os.path.join(data_dir, "eggnog_proteins.dmnd.gz")
-                os.makedirs(data_dir, exist_ok=True)
-                
-                with st.spinner("正在下载 eggnog_proteins.dmnd (约 4 GB)..."):
-                    try:
-                        with requests.get(url, stream=True, timeout=30) as r:
-                            r.raise_for_status()
-                            total_size = int(r.headers.get('content-length', 0))
-                            progress_bar = st.progress(0)
-                            downloaded = 0
-                            with open(dest, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                                        downloaded += len(chunk)
-                                        if total_size > 0:
-                                            progress_bar.progress(min(downloaded / total_size, 1.0))
-                        st.success("下载完成！请点击旁边的解压按钮。")
-                    except Exception as e:
-                        st.error(f"下载失败: {e}")
-        
-        with col4:
-            if st.button("解压 eggnog_proteins.dmnd.gz", use_container_width=True):
-                gz_path = os.path.join(data_dir, "eggnog_proteins.dmnd.gz")
-                dmnd_path = os.path.join(data_dir, "eggnog_proteins.dmnd")
-                if not os.path.exists(gz_path):
-                    st.error("找不到 eggnog_proteins.dmnd.gz，请先下载。")
-                else:
-                    with st.spinner("正在解压..."):
-                        try:
-                            with gzip.open(gz_path, 'rb') as src, open(dmnd_path, 'wb') as dst:
-                                shutil.copyfileobj(src, dst)
-                            os.remove(gz_path)
-                            st.success("解压成功！")
-                        except Exception as e:
-                            st.error(f"解压失败: {e}")
+                with st.spinner("Downloading..."):
+                    r = requests.get(url, stream=True)
+                    with open(dest, 'wb') as f:
+                        for chunk in r.iter_content(1024*1024):
+                            f.write(chunk)
+                elapsed = time.time() - start_time
+                st.success(f"Download finished in {elapsed:.1f} seconds.")
+        with c2:
+            if st.button("Decompress eggnog.db.gz"):
+                start_time = time.time()
+                gz = os.path.join(data_dir, "eggnog.db.gz")
+                db = os.path.join(data_dir, "eggnog.db")
+                if os.path.exists(gz):
+                    import gzip
+                    with gzip.open(gz,'rb') as src, open(db,'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                    elapsed = time.time() - start_time
+                    st.success(f"Decompressed in {elapsed:.1f} seconds.")
 
-    st.markdown("---")
-    
-    # ========== 本地运行 ==========
-    tab_local, tab_upload = st.tabs(["本地运行 (推荐)", "手动上传"])
-    
-    with tab_local:
-        st.subheader("粘贴 FASTA 序列，使用本地 emapper.py 进行注释")
-        fasta_text = st.text_area("粘贴 FASTA 序列", height=200)
-        if st.button("开始本地注释"):
-            if fasta_text.strip():
-                df = run_eggnog_annotation_local(fasta_text)
-                if df is not None:
-                    st.success("注释完成！")
-                    st.session_state.eggnog_result = df
-                    st.dataframe(df, height=600)
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="下载注释结果 (CSV)",
-                        data=csv,
-                        file_name="eggnog_annotations.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.error("注释失败，请检查序列或重试。")
-            else:
-                st.warning("请输入 FASTA 序列")
-        st.info("首次使用可能需要下载数据库（约20GB），请耐心等待。")
-    
-    # ========== 手动上传 ==========
-    with tab_upload:
-        st.subheader("手动上传 eggNOG 结果文件")
-        st.markdown("""
-        1. 访问 [eggNOG-mapper 网站](http://eggnog-mapper.embl.de/) 提交序列。
-        2. 下载 **annotations** 文件（TSV 格式）。
-        3. 在此上传。
-        """)
-        uploaded_eggnog = st.file_uploader("上传 eggNOG 注释结果 (TSV)", type=['tsv', 'txt', 'csv'])
-        if uploaded_eggnog is not None:
-            try:
-                content = uploaded_eggnog.getvalue().decode('utf-8')
-                df = parse_eggnog_manual_file(content)
-                if df is not None and not df.empty:
-                    st.session_state.eggnog_result = df
-                    st.success(f"成功解析 {len(df)} 条注释记录")
-                    st.dataframe(df, height=600)
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="下载注释结果 (CSV)",
-                        data=csv,
-                        file_name="eggnog_annotations.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.error("解析失败，请检查文件格式")
-            except Exception as e:
-                st.error(f"读取文件出错: {e}")
-
+    # ----- NEW: 如果已有注释结果，直接显示，无需重新运行 -----
     if st.session_state.eggnog_result is not None:
-        st.info(f"当前已加载 eggNOG 注释：{st.session_state.eggnog_result.shape[0]} 行")
-    else:
-        st.info("尚未加载任何 eggNOG 注释")
+        st.success("Existing annotation result loaded from session.")
+        df = st.session_state.eggnog_result
+        st.dataframe(df)
 
-# ---------- ESM2 Similarity Search ----------
+        st.subheader("GO & KEGG Summary (from existing result)")
+        # 加载映射文件
+        go_obo_path = r"D:\myProject\go-basic.obo"
+        kegg_file_path = r"D:\myProject\TBtools.KeggBackEnd"
+        debug("Loading GO names from obo file...")
+        go_name_map = load_go_names(go_obo_path)
+        debug("Loading KO names from KEGG backend file...")
+        ko_name_map = load_ko_names(kegg_file_path)
+
+        if 'GOs' in df.columns:
+            all_go = []
+            for gos in df['GOs'].dropna():
+                all_go.extend([g.strip() for g in gos.split(',') if g.strip() and g.strip() != '-'])
+            if all_go:
+                go_counts = pd.Series(all_go).value_counts().head(20)
+                go_labels = [get_go_name(go_id, go_name_map) for go_id in go_counts.index]
+                debug(f"GO plot labels (first 5): {go_labels[:5]}")
+                fig_go = px.bar(x=go_labels, y=go_counts.values,
+                                labels={'x':'GO Term','y':'Count'}, title='Top 20 GO Terms')
+                st.plotly_chart(fig_go, width='stretch')
+            else:
+                debug("No valid GO terms found.")
+        else:
+            debug("'GOs' column not found in annotation result.")
+
+        if 'KEGG_ko' in df.columns:
+            all_ko = []
+            for kos in df['KEGG_ko'].dropna():
+                all_ko.extend([k.strip() for k in kos.split(',') if k.strip() and k.strip() != '-'])
+            if all_ko:
+                ko_counts = pd.Series(all_ko).value_counts().head(20)
+                ko_labels = [get_ko_name(ko_id, ko_name_map) for ko_id in ko_counts.index]
+                debug(f"KO plot labels (first 5): {ko_labels[:5]}")
+                fig_ko = px.bar(x=ko_labels, y=ko_counts.values,
+                                labels={'x':'KEGG KO','y':'Count'}, title='Top 20 KEGG Orthologs')
+                st.plotly_chart(fig_ko, width='stretch')
+            else:
+                debug("No valid KO terms found.")
+        else:
+            debug("'KEGG_ko' column not found in annotation result.")
+
+        st.info("You can still re-run annotation below if needed.")
+        st.markdown("---")
+
+    # 原有标签页：本地运行和手动上传
+    tab_local, tab_upload = st.tabs(["Local Run", "Manual Upload"])
+    with tab_local:
+        st.subheader("Paste FASTA to run local emapper.py")
+        if st.session_state.ref_fasta_text:
+            st.info("Reference FASTA already loaded.")
+        else:
+            st.warning("No reference FASTA loaded. Upload here or in ESM2 page.")
+            uploaded_ref = st.file_uploader("Upload reference FASTA", type=["fasta","fa","txt"], key="eggnog_ref_upload")
+            if uploaded_ref:
+                st.session_state.ref_fasta_text = uploaded_ref.getvalue().decode("utf-8")
+                st.success("Reference FASTA loaded.")
+        with st.expander("Auto-fill from DE proteins", expanded=True):
+            if st.session_state.de_results:
+                comp = st.selectbox("Comparison", list(st.session_state.de_results.keys()), key="eggnog_de_comp")
+                res = st.session_state.de_results[comp]
+                reg_filter = st.multiselect("Regulation filter", ['Up','Down','Increase','Decrease'], default=['Up','Down'], key="eggnog_de_reg")
+                mask = res['regulation'].isin(reg_filter)
+                protein_ids = res[mask]['Master protein IDs'].tolist()
+                if protein_ids:
+                    selected = st.multiselect("Proteins to annotate", protein_ids, default=protein_ids[:5] if len(protein_ids)>5 else protein_ids)
+                    if st.button("Fill FASTA"):
+                        if not st.session_state.ref_fasta_text:
+                            st.error("No reference FASTA.")
+                        else:
+                            fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                            lines = [f">{pid}\n{fasta_dict[pid]}" for pid in selected if pid in fasta_dict]
+                            if lines:
+                                st.session_state.eggnog_fasta_text = "\n".join(lines)
+                                st.success(f"Filled {len(lines)} sequences.")
+                else:
+                    st.info("No proteins matching filter.")
+        st.text_area("FASTA sequences", height=220, key="eggnog_fasta_text")
+        if st.button("Run Local Annotation"):
+            fasta_content = st.session_state.eggnog_fasta_text
+            if not fasta_content.strip():
+                st.warning("No sequences entered.")
+            else:
+                start_time = time.time()
+                df = run_eggnog_annotation_local(fasta_content)
+                if df is not None:
+                    st.session_state.eggnog_result = df
+                    elapsed = time.time() - start_time
+                    st.success(f"Annotation completed in {elapsed:.1f} seconds.")
+                    # 立即显示结果
+                    st.dataframe(df)
+                    # 加载映射并绘图
+                    go_obo_path = r"D:\myProject\go-basic.obo"
+                    kegg_file_path = r"D:\myProject\TBtools.KeggBackEnd"
+                    debug("Loading GO names from obo file...")
+                    go_name_map = load_go_names(go_obo_path)
+                    debug("Loading KO names from KEGG backend file...")
+                    ko_name_map = load_ko_names(kegg_file_path)
+                    st.subheader("GO & KEGG Summary")
+                    if 'GOs' in df.columns:
+                        all_go = []
+                        for gos in df['GOs'].dropna():
+                            all_go.extend([g.strip() for g in gos.split(',') if g.strip() and g.strip() != '-'])
+                        if all_go:
+                            go_counts = pd.Series(all_go).value_counts().head(20)
+                            go_labels = [get_go_name(go_id, go_name_map) for go_id in go_counts.index]
+                            debug(f"GO plot labels (first 5): {go_labels[:5]}")
+                            fig_go = px.bar(x=go_labels, y=go_counts.values,
+                                            labels={'x':'GO Term','y':'Count'}, title='Top 20 GO Terms')
+                            st.plotly_chart(fig_go, width='stretch')
+                    if 'KEGG_ko' in df.columns:
+                        all_ko = []
+                        for kos in df['KEGG_ko'].dropna():
+                            all_ko.extend([k.strip() for k in kos.split(',') if k.strip() and k.strip() != '-'])
+                        if all_ko:
+                            ko_counts = pd.Series(all_ko).value_counts().head(20)
+                            ko_labels = [get_ko_name(ko_id, ko_name_map) for ko_id in ko_counts.index]
+                            debug(f"KO plot labels (first 5): {ko_labels[:5]}")
+                            fig_ko = px.bar(x=ko_labels, y=ko_counts.values,
+                                            labels={'x':'KEGG KO','y':'Count'}, title='Top 20 KEGG Orthologs')
+                            st.plotly_chart(fig_ko, width='stretch')
+                else:
+                    st.error("Annotation failed.")
+    with tab_upload:
+        st.subheader("Upload eggNOG result file (TSV)")
+        upload_file = st.file_uploader("Upload annotation file", type=['tsv','txt','csv'])
+        if upload_file:
+            content = upload_file.getvalue().decode('utf-8')
+            df = parse_eggnog_manual_file(content)
+            if df is not None and not df.empty:
+                st.session_state.eggnog_result = df
+                st.success(f"Parsed {len(df)} records.")
+                st.dataframe(df)
+                # 加载映射并绘图
+                go_obo_path = r"D:\myProject\go-basic.obo"
+                kegg_file_path = r"D:\myProject\TBtools.KeggBackEnd"
+                debug("Loading GO names from obo file...")
+                go_name_map = load_go_names(go_obo_path)
+                debug("Loading KO names from KEGG backend file...")
+                ko_name_map = load_ko_names(kegg_file_path)
+                if 'GOs' in df.columns or 'KEGG_ko' in df.columns:
+                    st.subheader("GO & KEGG Summary")
+                    if 'GOs' in df.columns:
+                        all_go = []
+                        for gos in df['GOs'].dropna():
+                            all_go.extend([g.strip() for g in gos.split(',') if g.strip() and g.strip() != '-'])
+                        if all_go:
+                            go_counts = pd.Series(all_go).value_counts().head(20)
+                            go_labels = [get_go_name(go_id, go_name_map) for go_id in go_counts.index]
+                            fig_go = px.bar(x=go_labels, y=go_counts.values,
+                                            labels={'x':'GO Term','y':'Count'}, title='Top 20 GO Terms')
+                            st.plotly_chart(fig_go, width='stretch')
+                    if 'KEGG_ko' in df.columns:
+                        all_ko = []
+                        for kos in df['KEGG_ko'].dropna():
+                            all_ko.extend([k.strip() for k in kos.split(',') if k.strip() and k.strip() != '-'])
+                        if all_ko:
+                            ko_counts = pd.Series(all_ko).value_counts().head(20)
+                            ko_labels = [get_ko_name(ko_id, ko_name_map) for ko_id in ko_counts.index]
+                            fig_ko = px.bar(x=ko_labels, y=ko_counts.values,
+                                            labels={'x':'KEGG KO','y':'Count'}, title='Top 20 KEGG Orthologs')
+                            st.plotly_chart(fig_ko, width='stretch')
+
+# ---------- Page: ESM2 Similarity Search ----------
 elif page == "ESM2 Similarity Search":
-    st.header("🔬 ESM2 蛋白质功能相似性搜索")
-    st.caption("功能1: 单条蛋白相似检索 → 功能3: AI摘要生成 | 功能2: 批量注释与富集分析")
-    
+    st.header("ESM2 Protein Similarity Search")
+    st.caption("Function 1: Single query similarity search & AI summary. Function 2: Batch annotation & enrichment.")
     if not ESM_AVAILABLE:
-        st.error("**ESM2 功能不可用**，请安装 PyTorch 和 fair-esm：")
-        st.code("pip install torch fair-esm", language="bash")
-        st.info("安装完成后请重启 Streamlit 应用。")
+        st.error("ESM2 not available. Install PyTorch and fair-esm.")
         st.stop()
 
-    model_state_key = "esm_model"
-    if model_state_key not in st.session_state:
-        with st.spinner("正在加载 ESM2 模型（首次加载可能需要下载，约 140MB）..."):
+    if st.session_state.esm_model is None:
+        start_time = time.time()
+        with st.spinner("Loading ESM2 model (first time only)..."):
             model, alphabet, batch_converter = load_esm_model()
             if model is not None:
                 st.session_state.esm_model = model
                 st.session_state.esm_alphabet = alphabet
                 st.session_state.esm_batch_converter = batch_converter
-                st.success("模型加载成功！")
+                elapsed = time.time() - start_time
+                st.success(f"ESM2 model loaded in {elapsed:.1f} seconds.")
             else:
-                st.error("模型加载失败，请检查控制台输出。")
+                st.error("Model loading failed")
                 st.stop()
 
     model = st.session_state.esm_model
     batch_converter = st.session_state.esm_batch_converter
 
-    st.subheader("📚 参考库管理")
+    st.subheader("Reference Library")
     pretrained_available = is_pretrained_available()
-    use_pretrained = st.checkbox("使用预构建 Swiss-Prot 参考库", value=pretrained_available, disabled=not pretrained_available)
-    
-    custom_fasta = None
-    if not use_pretrained:
-        custom_fasta = st.file_uploader("上传自定义参考蛋白 FASTA 文件", type=["fasta", "fa", "txt"], key="global_ref_fasta")
-        if custom_fasta is not None:
-            fasta_text = custom_fasta.getvalue().decode("utf-8")
-            hash_val = compute_fasta_hash(fasta_text)
-            cache_exists = os.path.exists(f"data/custom_cache_{hash_val}.npz")
-            if cache_exists:
-                st.info("💾 检测到缓存，构建时将直接加载。")
-            if st.button("构建/更新自定义嵌入库"):
-                print("[DEBUG] 开始构建自定义嵌入库...")
-                with st.spinner("正在处理..."):
-                    emb_dict, ids = build_reference_library(fasta_text, model, batch_converter, use_cache=True)
+    use_pretrained = st.checkbox("Use pretrained Swiss-Prot library", value=pretrained_available, disabled=not pretrained_available)
+    st.session_state.use_pretrained = use_pretrained
+
+    if st.session_state.ref_fasta_text:
+        st.info("Reference FASTA already loaded.")
+        if not use_pretrained and "custom_library" not in st.session_state:
+            if st.button("Build/Update Custom Library from existing FASTA", key="build_from_existing"):
+                start_time = time.time()
+                with st.spinner("Processing..."):
+                    emb_dict, ids = build_reference_library(st.session_state.ref_fasta_text, model, batch_converter, use_cache=True)
                     st.session_state.custom_library = emb_dict
                     st.session_state.custom_ids = ids
-                    if len(emb_dict) > 0:
-                        st.success(f"自定义库已就绪，共 {len(emb_dict)} 条蛋白。")
-                    else:
-                        st.error("构建失败。")
+                    elapsed = time.time() - start_time
+                    st.success(f"Library built/updated in {elapsed:.1f} seconds. {len(emb_dict)} proteins")
     else:
-        if "custom_library" in st.session_state:
-            del st.session_state.custom_library
+        if not use_pretrained:
+            custom_fasta = st.file_uploader("Upload custom reference FASTA", type=["fasta","fa","txt"], key="global_ref_fasta")
+            if custom_fasta:
+                fasta_text = custom_fasta.getvalue().decode("utf-8")
+                st.session_state.ref_fasta_text = fasta_text
+                hash_val = compute_fasta_hash(fasta_text)
+                if os.path.exists(f"data/custom_cache_{hash_val}.npz"):
+                    st.info("Cache detected, will be loaded directly.")
+                if st.button("Build/Update Custom Library"):
+                    start_time = time.time()
+                    with st.spinner("Processing..."):
+                        emb_dict, ids = build_reference_library(fasta_text, model, batch_converter, use_cache=True)
+                        st.session_state.custom_library = emb_dict
+                        st.session_state.custom_ids = ids
+                        elapsed = time.time() - start_time
+                        st.success(f"Library built in {elapsed:.1f} seconds. {len(emb_dict)} proteins")
 
     if use_pretrained:
-        st.info("当前使用预构建 Swiss-Prot 库。")
-    elif "custom_library" in st.session_state and st.session_state.custom_library:
-        st.info(f"当前使用自定义库，包含 {len(st.session_state.custom_library)} 个蛋白。")
+        st.info("Using pretrained Swiss-Prot library.")
+        if "custom_library" in st.session_state:
+            del st.session_state.custom_library
+    elif "custom_library" in st.session_state and st.session_state.custom_library is not None:
+        st.info(f"Custom library with {len(st.session_state.custom_library)} proteins.")
     else:
-        st.info("尚未构建或选择任何参考库。")
+        st.info("No library selected or built yet.")
 
     st.markdown("---")
 
-    with st.expander("🔎 功能1：单条蛋白相似性检索 + AI摘要", expanded=True):
-        st.markdown("输入一条蛋白序列或蛋白ID，在参考库中查找功能最相似的蛋白。")
-        col1, col2 = st.columns(2)
-        with col1:
-            query_id = st.text_input("Master Protein ID", placeholder="Pt_Chr0100002")
-            upload_query_fasta = st.file_uploader("上传查询蛋白 FASTA 文件（用于提取ID序列）", type=["fasta", "fa", "txt"], key="query_fasta_upload")
-        with col2:
-            query_seq = st.text_area("或直接粘贴蛋白序列", height=120, placeholder="MKGAKSK...")
-        top_n = st.slider("返回结果数", 5, 50, 10, key="top_n_single")
-        
-        if st.button("🔍 搜索相似蛋白", key="single_search"):
+    def show_de_protein_selector(label="Select DE proteins", key_suffix=""):
+        if not st.session_state.get("de_results"):
+            st.warning("No differential analysis results available.")
+            return None, []
+        comps = list(st.session_state.de_results.keys())
+        comp_name = st.selectbox("Comparison", comps, key=f"esm_de_comp_{key_suffix}")
+        res = st.session_state.de_results[comp_name]
+        reg_filter = st.multiselect("Regulation filter", ['Up','Down','Increase','Decrease'], default=['Up','Down'], key=f"esm_de_reg_{key_suffix}")
+        if not reg_filter:
+            return comp_name, []
+        mask = res['regulation'].isin(reg_filter)
+        protein_ids = res[mask]['Master protein IDs'].tolist()
+        if not protein_ids:
+            st.info("No proteins match the selected filters.")
+            return comp_name, []
+        selected = st.multiselect(label, protein_ids, key=f"esm_de_sel_{key_suffix}")
+        return comp_name, selected
+
+    # Function 1
+    with st.expander("Function 1: Single query similarity & AI summary", expanded=True):
+        st.markdown("Enter a protein ID or sequence, or select from DE proteins.")
+        with st.expander("Or select from differential expression proteins", expanded=False):
+            comp_name_f1, selected_f1 = show_de_protein_selector("Select one protein", "f1")
+            if selected_f1:
+                first_pid = selected_f1[0]
+                st.info(f"Will search for: {first_pid}")
+                st.session_state.query_id_f1 = first_pid
+                if st.session_state.ref_fasta_text:
+                    fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                    seq = fasta_dict.get(first_pid, "")
+                    st.session_state.query_seq_f1 = seq if seq else ""
+        c1, c2 = st.columns(2)
+        with c1:
+            query_id = st.text_input("Protein ID", key="query_id_f1")
+        with c2:
+            query_seq = st.text_area("Or paste protein sequence", key="query_seq_f1", height=120)
+        top_n = st.slider("Number of results", 5, 50, 10)
+        if st.button("Search Similar Proteins", key="single_search"):
+            start_time = time.time()
             final_seq = None
             if query_seq.strip():
                 lines = query_seq.strip().splitlines()
-                seq_parts = [l for l in lines if not l.startswith(">")]
-                final_seq = "".join(seq_parts)
-                print(f"[DEBUG] 功能1: 使用粘贴序列，长度={len(final_seq)}")
+                final_seq = "".join([l for l in lines if not l.startswith(">")])
             elif query_id.strip():
-                upload_text = None
-                if upload_query_fasta is not None:
-                    upload_text = upload_query_fasta.getvalue().decode("utf-8")
-                final_seq = get_sequence_for_id(query_id.strip(), fasta_text=upload_text)
+                final_seq = get_sequence_for_id(query_id.strip(), fasta_text=st.session_state.ref_fasta_text)
                 if final_seq is None:
-                    st.error(f"无法获取蛋白 {query_id} 的序列。")
+                    st.error("Could not retrieve sequence.")
                     st.stop()
-                print(f"[DEBUG] 功能1: 获取到序列，长度={len(final_seq)}")
             else:
-                st.error("请至少输入蛋白ID或粘贴序列。")
+                st.error("Provide either ID or sequence.")
                 st.stop()
-            
-            custom_lib = st.session_state.get("custom_library", None)
-            result_df = find_similar_proteins(
-                final_seq, top_n=top_n,
-                model=model, batch_converter=batch_converter,
-                use_pretrained=use_pretrained,
-                custom_library=custom_lib
-            )
+            custom_lib = st.session_state.get("custom_library")
+            result_df = find_similar_proteins(final_seq, top_n, model, batch_converter,
+                                              use_pretrained=use_pretrained, custom_library=custom_lib)
             if "Error" in result_df.columns:
                 st.error(result_df["Error"][0])
             else:
-                st.dataframe(result_df, width='stretch')
+                if st.session_state.get("eggnog_result") is not None:
+                    result_df = enrich_esm_result_with_eggnog(result_df, st.session_state.eggnog_result)
                 st.session_state.last_search_result = result_df
-                
-                st.markdown("---")
-                st.subheader("🤖 功能3：AI 功能摘要")
-                st.caption("选择一个蛋白，生成其功能描述。")
-                selected_idx = st.selectbox(
-                    "选择蛋白：",
-                    range(len(result_df)),
-                    format_func=lambda i: f"#{i+1}: {result_df.iloc[i]['Protein_ID']} (相似度 {result_df.iloc[i]['Similarity']:.3f})",
-                    key="summary_select"
+                elapsed = time.time() - start_time
+                st.success(f"Search completed in {elapsed:.1f} seconds. Found {len(result_df)} proteins.")
+        if "last_search_result" in st.session_state and st.session_state.last_search_result is not None:
+            res = st.session_state.last_search_result
+            st.dataframe(res, width='stretch')
+            if 'Gene' in res.columns and (res['Gene'] == '').any():
+                st.info("Only proteins present in the eggNOG annotation will have Gene/Protein_Name/GO/EC information.")
+            st.subheader("AI Functional Summary")
+            selected_idx = st.selectbox("Select protein:", range(len(res)),
+                                        format_func=lambda i: f"#{i+1}: {res.iloc[i]['Protein_ID']} (sim {res.iloc[i]['Similarity']:.3f})")
+            use_api = st.checkbox("Use DeepSeek AI (requires API key)", key="use_api_summary")
+            if st.button("Generate Summary", key="gen_summary"):
+                start_time = time.time()
+                row = res.iloc[selected_idx]
+                summary = generate_function_summary(
+                    protein_id=row['Protein_ID'], protein_name=row.get('Protein_Name',''),
+                    similarity_score=row['Similarity'], similar_protein=res.iloc[0]['Protein_ID'],
+                    go_terms=row.get('GO',''), ec_numbers=row.get('EC',''), use_api=use_api
                 )
-                use_api = st.checkbox("使用 DeepSeek AI（需 API Key）", value=False, key="use_api_summary")
-                if st.button("生成摘要", key="gen_summary"):
-                    row = result_df.iloc[selected_idx]
-                    pid = row['Protein_ID']
-                    sim = row['Similarity']
-                    pname = row.get('Protein_Name', '')
-                    gos = row.get('GO', '')
-                    ecs = row.get('EC', '')
-                    print(f"[DEBUG] 生成摘要: {pid}, use_api={use_api}")
-                    with st.spinner("正在生成..."):
-                        summary = generate_function_summary(
-                            protein_id=pid,
-                            protein_name=pname,
-                            similarity_score=sim,
-                            similar_protein=result_df.iloc[0]['Protein_ID'],
-                            go_terms=gos,
-                            ec_numbers=ecs,
-                            use_api=use_api
-                        )
-                        st.session_state.current_summary = summary
-                if 'current_summary' in st.session_state:
-                    st.success(st.session_state.current_summary)
+                st.session_state.current_summary = summary
+                elapsed = time.time() - start_time
+                st.success(f"Summary generated in {elapsed:.1f} seconds.")
+            if 'current_summary' in st.session_state:
+                st.success(st.session_state.current_summary)
 
-    st.markdown("---")
+    # Function 2
+    with st.expander("Function 2: Batch annotation & enrichment", expanded=False):
+        st.markdown("Input multiple sequences or select from DE proteins, or directly run GO enrichment on all DE proteins.")
+        st.info("In 'ESM similarity + enrichment' mode, you can directly search selected proteins without pasting sequences manually.")
+        analysis_mode = st.radio("Analysis mode", ["ESM similarity + enrichment", "Direct GO enrichment (all DE proteins)"], horizontal=True, key="batch_analysis_mode")
 
-    with st.expander("🧬 功能2：批量AI注释 + 富集分析", expanded=False):
-        st.markdown("输入多条蛋白序列，对每条序列找到参考库中最相似的蛋白，并对这些蛋白进行GO富集分析。")
-        st.warning("富集分析要求参考库具有 UniProt 注释（标准 Accession），否则将跳过富集分析。")
-        
-        input_mode = st.radio("输入方式", ["粘贴序列", "上传FASTA文件"], horizontal=True, key="batch_mode")
-        batch_seqs = []
-        if input_mode == "粘贴序列":
-            txt = st.text_area("每条序列一行（可包含FASTA头）", height=150, key="batch_text")
-            if txt:
-                lines = txt.strip().split('\n')
-                seq = ""
-                for line in lines:
-                    if line.startswith('>'):
-                        if seq:
-                            batch_seqs.append(seq); seq = ""
-                    else:
-                        seq += line.strip()
-                if seq:
-                    batch_seqs.append(seq)
-        else:
-            batch_file = st.file_uploader("上传FASTA文件", type=["fasta", "fa", "txt"], key="batch_file")
-            if batch_file:
-                content = batch_file.read().decode('utf-8')
-                batch_seqs = list(parse_fasta(content).values())
-                st.success(f"解析到 {len(batch_seqs)} 条序列")
-        
-        if st.button("📥 为当前自定义库加载 UniProt 注释", disabled=(use_pretrained or "custom_library" not in st.session_state)):
-            lib_ids = list(st.session_state.custom_library.keys())
-            if lib_ids:
-                sample_ids = lib_ids[:20]
-                valid = sum(is_uniprot_accession(extract_accession(x)) for x in sample_ids)
-                if valid < len(sample_ids) * 0.1:
-                    st.warning("当前库的蛋白ID不是标准UniProt格式，无法获取注释。请使用标准Swiss-Prot蛋白测试富集。")
+        if "batch_search_in_progress" not in st.session_state:
+            st.session_state.batch_search_in_progress = False
+            st.session_state.batch_search_index = 0
+            st.session_state.batch_search_results = []
+            st.session_state.batch_search_total = 0
+            st.session_state.batch_search_seqs = []
+
+        if analysis_mode == "Direct GO enrichment (all DE proteins)":
+            st.info("This will run enrichment analysis directly on all differentially expressed proteins (using current comparison and regulation filter) without ESM similarity search.")
+            comps = list(st.session_state.de_results.keys())
+            comp_name = st.selectbox("Comparison", comps, key="batch_dir_comp")
+            res = st.session_state.de_results[comp_name]
+            reg_filter = st.multiselect("Regulation filter", ['Up','Down','Increase','Decrease'], default=['Up','Down'], key="batch_dir_reg")
+            if st.button("Run GO Enrichment on all filtered DE proteins", key="batch_direct_go"):
+                if not reg_filter:
+                    st.warning("Please select at least one regulation type.")
                 else:
-                    with st.spinner("获取注释中..."):
-                        annots = fetch_uniprot_annotations_batch(lib_ids)
-                        st.session_state.custom_annotations = annots
-                        st.success(f"已获取 {len(annots)} 个蛋白的注释。")
-            else:
-                st.warning("参考库为空。")
-        
-        if st.button("🚀 运行批量注释与富集", disabled=(len(batch_seqs) == 0)):
-            if "custom_library" not in st.session_state or not st.session_state.custom_library:
-                st.error("请先构建参考库。")
-            else:
-                lib = st.session_state.custom_library
-                with st.spinner(f"正在处理 {len(batch_seqs)} 条序列..."):
-                    results = batch_search_top1(batch_seqs, model, batch_converter, lib)
-                    target_ids = [r['best_id'] for r in results if r['best_id']]
-                    st.subheader("📋 最佳匹配蛋白")
-                    display_df = pd.DataFrame({
-                        "查询序号": [r['query_index']+1 for r in results],
-                        "最佳匹配蛋白": [r['best_id'] if r['best_id'] else '失败' for r in results],
-                        "相似度": [round(r['similarity'], 4) for r in results]
-                    })
-                    st.dataframe(display_df, width='stretch')
-                    
-                    annotations = st.session_state.get('custom_annotations', {})
-                    if annotations and len(target_ids) > 0:
-                        st.subheader("📊 富集分析")
-                        go_bg = get_go_background(annotations)
-                        enrich_df = enrich_go(target_ids, annotations, go_bg)
-                        if len(enrich_df) > 0:
-                            fig = px.scatter(
-                                enrich_df,
-                                x='enrichment_ratio',
-                                y='GO',
-                                size='count',
-                                color='adjusted_p',
-                                color_continuous_scale='Reds_r',
-                                title="富集的GO术语（超几何检验）",
-                                labels={'enrichment_ratio': '富集因子', 'GO': 'GO术语', 'count': '目标基因数'}
-                            )
-                            st.plotly_chart(fig, width='stretch')
-                            st.dataframe(enrich_df)
-                        else:
-                            st.info("未检测到显著富集的GO术语 (p<0.05)。")
+                    mask = res['regulation'].isin(reg_filter)
+                    target_ids = res[mask]['Master protein IDs'].tolist()
+                    if not target_ids:
+                        st.warning("No proteins match the filter.")
                     else:
-                        st.warning("缺少注释信息，无法进行富集分析。请先点击按钮加载注释。")
+                        annotations = st.session_state.get('custom_annotations')
+                        if not annotations and st.session_state.get("eggnog_result") is not None:
+                            annotations = build_annotations_from_eggnog(st.session_state.eggnog_result)
+                            if annotations:
+                                st.session_state.custom_annotations = annotations
+                        if not annotations:
+                            st.error("No annotations available. Please run eggNOG annotation or load UniProt annotations first.")
+                        else:
+                            display_batch_results_and_enrichment([], target_ids, annotations)
+        else:
+            with st.expander("Or select multiple DE proteins", expanded=True):
+                comp_name_f2, selected_f2 = show_de_protein_selector("Select proteins for batch", "f2")
+                debug(f"ESM2 batch: selected proteins = {selected_f2}")
 
-# ---------- STRING PPI Network (调试好的版本) ----------
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Fill batch sequences", key="fill_batch_btn", help="Extract sequences and fill the text area below."):
+                        debug("Fill batch sequences button clicked.")
+                        if not st.session_state.ref_fasta_text:
+                            st.error("Reference FASTA is required.")
+                        elif not selected_f2:
+                            st.warning("Please select at least one protein.")
+                        else:
+                            fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                            seqs = []
+                            for pid in selected_f2:
+                                seq = fasta_dict.get(pid, "")
+                                if seq:
+                                    seqs.append(seq)
+                                else:
+                                    st.warning(f"Sequence not found for {pid}")
+                            if seqs:
+                                text_lines = []
+                                for i, (pid, s) in enumerate(zip(selected_f2, seqs)):
+                                    text_lines.append(f">{pid}")
+                                    text_lines.append(s)
+                                st.session_state.batch_text = "\n".join(text_lines)
+                                st.success(f"Filled {len(seqs)} sequences into the text area below.")
+                            else:
+                                st.warning("No sequences could be extracted.")
+                with col2:
+                    if st.button("Run ESM Search on Selected Proteins", key="run_esm_selection", help="Directly run ESM search using the selected proteins' sequences."):
+                        debug("Run ESM Search button clicked.")
+                        if not st.session_state.ref_fasta_text:
+                            st.error("Reference FASTA is required.")
+                        elif "custom_library" not in st.session_state or not st.session_state.custom_library:
+                            st.error("Build reference library first.")
+                        elif not selected_f2:
+                            st.warning("Please select at least one protein.")
+                        else:
+                            fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                            seqs = []
+                            for pid in selected_f2:
+                                seq = fasta_dict.get(pid, "")
+                                if seq:
+                                    seqs.append(seq)
+                                else:
+                                    st.warning(f"Sequence not found for {pid}")
+                            if seqs:
+                                st.session_state.batch_final_results = None
+                                init_batch_search_state(st.session_state, len(seqs))
+                                st.session_state.batch_search_seqs = seqs
+                                st.rerun()
+                            else:
+                                st.warning("No sequences could be extracted.")
+
+            if st.session_state.get("batch_final_results") and not st.session_state.batch_search_in_progress:
+                results = st.session_state.batch_final_results
+                target_ids = st.session_state.batch_target_ids or []
+                annotations = st.session_state.get('custom_annotations')
+                if not annotations and st.session_state.get("eggnog_result") is not None:
+                    annotations = build_annotations_from_eggnog(st.session_state.eggnog_result)
+                    if annotations:
+                        st.session_state.custom_annotations = annotations
+                display_batch_results_and_enrichment(results, target_ids, annotations or {})
+
+            elif st.session_state.batch_search_in_progress:
+                total = st.session_state.batch_search_total
+                current = st.session_state.batch_search_index
+                st.progress(current/total if total else 0)
+                st.write(f"Processing: {current}/{total}")
+                lib = st.session_state.get("custom_library")
+                if lib is None:
+                    st.error("Library lost.")
+                    st.session_state.batch_search_in_progress = False
+                    st.rerun()
+                else:
+                    done = run_batch_search_step(st.session_state.batch_search_seqs, model, batch_converter, lib, st.session_state, 100)
+                    if done:
+                        results = st.session_state.batch_search_results
+                        target_ids = [r['best_id'] for r in results if r['best_id']]
+                        st.session_state.batch_final_results = results
+                        st.session_state.batch_target_ids = target_ids
+                        annotations = st.session_state.get('custom_annotations')
+                        if not annotations and st.session_state.get("eggnog_result") is not None:
+                            annotations = build_annotations_from_eggnog(st.session_state.eggnog_result)
+                            if annotations:
+                                st.session_state.custom_annotations = annotations
+                        display_batch_results_and_enrichment(results, target_ids, annotations or {})
+                        st.session_state.batch_search_in_progress = False
+                        st.rerun()
+                    else:
+                        st.rerun()
+                st.stop()
+
+            else:
+                st.markdown("---")
+                st.write("Or paste sequences manually:")
+                input_mode = st.radio("Input method", ["Paste sequences", "Upload FASTA"], horizontal=True)
+                batch_seqs = []
+                if input_mode == "Paste sequences":
+                    txt = st.text_area("One sequence per line (FASTA headers allowed)", key="batch_text", height=150)
+                    if txt:
+                        lines = txt.strip().split('\n')
+                        seq = ""
+                        for line in lines:
+                            if line.startswith('>'):
+                                if seq: batch_seqs.append(seq); seq = ""
+                            else: seq += line.strip()
+                        if seq: batch_seqs.append(seq)
+                else:
+                    batch_file = st.file_uploader("Upload FASTA", type=["fasta","fa","txt"], key="batch_file")
+                    if batch_file:
+                        batch_seqs = list(parse_fasta(batch_file.read().decode()).values())
+                        st.success(f"Parsed {len(batch_seqs)} sequences")
+
+                if st.button("Load UniProt annotations for current library", disabled=(use_pretrained or "custom_library" not in st.session_state)):
+                    start_time = time.time()
+                    lib_ids = list(st.session_state.custom_library.keys())
+                    if lib_ids:
+                        valid = sum(is_uniprot_accession(extract_accession(x)) for x in lib_ids[:20])
+                        if valid < 2:
+                            st.warning("Library IDs are not standard UniProt.")
+                        else:
+                            with st.spinner("Fetching annotations..."):
+                                annots = fetch_uniprot_annotations_batch(lib_ids)
+                                st.session_state.custom_annotations = annots
+                                elapsed = time.time() - start_time
+                                st.success(f"Fetched {len(annots)} annotations in {elapsed:.1f} seconds.")
+                    else:
+                        st.warning("Library empty.")
+
+                if st.button("Run Batch Annotation & Enrichment", disabled=(len(batch_seqs)==0)):
+                    if "custom_library" not in st.session_state or not st.session_state.custom_library:
+                        st.error("Build reference library first.")
+                    else:
+                        st.session_state.batch_final_results = None
+                        init_batch_search_state(st.session_state, len(batch_seqs))
+                        st.session_state.batch_search_seqs = batch_seqs
+                        st.rerun()
+
+# ---------- Page: STRING PPI Network ----------
 elif page == "STRING PPI Network":
     st.header("STRING PPI Network")
-
-    st.info(
-        "STRING 网络通过在线 STRING API 获取。"
-        "UniProt/EBI BLAST 也是在线服务，可能排队较久。"
-        "推荐优先使用 eggNOG 注释或手动输入 UniProt ID。"
-    )
-
-    fasta_text = st.text_area(
-        "FASTA 输入框：粘贴 FASTA 格式的蛋白序列",
-        height=200,
-        placeholder=">protein_1\nMKT...",
-        help="这里填写 FASTA。只有选择 eggNOG 注释或 BLAST 映射时才需要。",
-    )
-
+    st.info("Query protein-protein interactions via STRING. No local database required.")
+    source_option = st.radio("Protein source", ["Manual input / FASTA", "Select from DE results"])
+    fasta_text = ""
+    fasta_seqs = {}
+    original_ids = []
+    selected_de_protein = None
+    if source_option == "Manual input / FASTA":
+        fasta_text = st.text_area("Paste FASTA sequence(s)", height=200, placeholder=">Pt_Chr0100005\nMKT...")
+    else:
+        if not st.session_state.de_results:
+            st.warning("No DE results.")
+        else:
+            comp = st.selectbox("Comparison", list(st.session_state.de_results.keys()), key="string_de_comp")
+            res = st.session_state.de_results[comp]
+            reg_filter = st.multiselect("Regulation filter", ['Up','Down','Increase','Decrease'], default=['Up','Down'], key="string_de_reg")
+            mask = res['regulation'].isin(reg_filter)
+            protein_ids = res[mask]['Master protein IDs'].tolist()
+            if protein_ids:
+                selected_de_protein = st.selectbox("Protein of interest", protein_ids)
+                auto_seq = ""
+                if st.session_state.ref_fasta_text:
+                    fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                    if selected_de_protein in fasta_dict:
+                        auto_seq = fasta_dict[selected_de_protein]
+                if not auto_seq:
+                    st.warning("Sequence not found in reference FASTA, please paste manually.")
+                else:
+                    st.success("Sequence auto-filled from reference.")
+                fasta_text = st.text_area("Sequence", value=auto_seq, height=150)
+            else:
+                st.warning("No proteins matching filter.")
     if fasta_text.strip():
         fasta_seqs = parse_fasta(fasta_text)
         original_ids = list(fasta_seqs.keys())
-        st.write(f"解析到 {len(original_ids)} 条序列")
-    else:
-        fasta_seqs = {}
-        original_ids = []
+        if not fasta_seqs:
+            fasta_text = ">query\n" + fasta_text.strip()
+            fasta_seqs = parse_fasta(fasta_text)
+            original_ids = list(fasta_seqs.keys())
+        st.success(f"Parsed {len(original_ids)} sequences")
+    if source_option == "Select from DE results" and selected_de_protein:
+        if selected_de_protein not in original_ids:
+            original_ids.append(selected_de_protein)
 
-    st.subheader("映射到 UniProt / STRING")
-
-    mapping_method = st.radio(
-        "映射方法",
-        [
-            "优先使用 eggNOG 注释",
-            "手动输入 UniProt ID",
-            "使用序列 BLAST (UniProt，较慢)",
-        ],
-        index=1,
-        help="推荐优先使用 eggNOG 注释或手动输入 UniProt ID；在线 BLAST 可能等待很久。",
-    )
-
+    st.subheader("Mapping method")
+    mapping_method = st.radio("Choose method", ["Manual UniProt ID", "Use eggNOG", "BLAST sequence"], index=2)
     manual_uniprot_text = ""
-    if mapping_method == "手动输入 UniProt ID":
-        manual_uniprot_text = st.text_area(
-            "UniProt ID 输入框：每行一个 UniProt Accession",
-            height=160,
-            placeholder="P93004\nQ9S7W5\nA0A178WKB2",
-            help="这里只能填写 UniProt Accession，不能填写 FASTA 序列。",
-        )
-        st.caption("示例格式：每行一个 accession，例如 P93004、Q9S7W5。不要粘贴 FASTA。")
+    if mapping_method == "Manual UniProt ID":
+        manual_uniprot_text = st.text_area("UniProt Accession per line", height=150, placeholder="P93004\nQ9S7W5")
 
-    st.subheader("STRING 网络参数")
-
-    species_options = {
-        "拟南芥 Arabidopsis thaliana (3702)": 3702,
-        "水稻 Oryza sativa japonica (39947)": 39947,
-        "水稻 Oryza sativa (4530)": 4530,
-        "人类 Homo sapiens (9606)": 9606,
+    st.subheader("Species & parameters")
+    species_presets = {
+        "A. thaliana (3702)": 3702, "B. distachyon (15368)": 15368, "B. taurus (9913)": 9913,
+        "C. elegans (6239)": 6239, "D. melanogaster (7227)": 7227, "D. rerio (7955)": 7955,
+        "E. coli K-12 (83333)": 83333, "G. gallus (9031)": 9031, "H. sapiens (9606)": 9606,
+        "M. musculus (10090)": 10090, "O. sativa Japonica (39947)": 39947, "R. norvegicus (10116)": 10116,
+        "S. cerevisiae (4932)": 4932, "S. pombe (4896)": 4896, "S. lycopersicum (4081)": 4081,
+        "S. tuberosum (4113)": 4113, "T. aestivum (4565)": 4565, "Z. mays (4577)": 4577,
     }
-
-    species_label = st.selectbox(
-        "选择物种",
-        list(species_options.keys()),
-        index=0,
-    )
-    species = species_options[species_label]
-
-    required_score = st.slider(
-        "相互作用阈值 required_score",
-        0,
-        1000,
-        400,
-    )
-
-    if st.button("获取 STRING 网络"):
+    common_names = {
+        3702: "Thale cress", 15368: "Purple false brome", 9913: "Cattle", 6239: "Roundworm",
+        7227: "Fruit fly", 7955: "Zebrafish", 83333: "E. coli K-12", 9031: "Chicken",
+        9606: "Human", 10090: "House mouse", 39947: "Rice", 10116: "Norway rat",
+        4932: "Baker's yeast", 4896: "Fission yeast", 4081: "Tomato", 4113: "Potato",
+        4565: "Common wheat", 4577: "Maize",
+    }
+    auto_species = 3702
+    eggnog_df = st.session_state.get("eggnog_result")
+    if eggnog_df is not None and not eggnog_df.empty:
+        seed_col = None
+        for col in eggnog_df.columns:
+            if 'seed_ortholog' in col.lower():
+                seed_col = col
+                break
+        if seed_col:
+            first_seed = str(eggnog_df[seed_col].iloc[0])
+            m = re.match(r'(\d+)\.', first_seed)
+            if m:
+                auto_species = int(m.group(1))
+                species_name = [k for k,v in species_presets.items() if v == auto_species]
+                common = common_names.get(auto_species, "")
+                if species_name:
+                    st.info(f"Detected species from eggNOG: {species_name[0]} ({common}) - ID {auto_species}")
+                else:
+                    st.info(f"Detected species ID from eggNOG: {auto_species}{' ('+common+')' if common else ''}")
+    else:
+        st.info("If you don't know the species, common model organisms are listed below. You can also enter any NCBI Taxonomy ID.")
+    default_species = auto_species if auto_species in species_presets.values() else 3702
+    preset_label = st.selectbox("Preset species", list(species_presets.keys()),
+                                index=list(species_presets.values()).index(default_species) if default_species in species_presets.values() else 0)
+    species = species_presets[preset_label]
+    custom_species = st.text_input("Or enter NCBI Taxonomy ID", value=str(species))
+    try:
+        species = int(custom_species)
+    except:
+        st.warning("Invalid species ID, using preset.")
+    required_score = st.slider("Required score", 0, 1000, 400)
+    if st.button("Fetch STRING Network"):
+        start_time = time.time()
         id_mapping = {}
-
-        with st.spinner("正在准备 UniProt ID..."):
-            if mapping_method == "手动输入 UniProt ID":
+        with st.spinner("Preparing UniProt IDs..."):
+            if mapping_method == "Manual UniProt ID":
+                if not manual_uniprot_text.strip():
+                    st.error("No UniProt IDs.")
+                    st.stop()
                 manual_ids = parse_manual_uniprot_ids(manual_uniprot_text)
-
-                if not manual_ids:
-                    st.error("请先输入 UniProt Accession。")
-                    st.stop()
-
-                id_mapping = {uid: uid for uid in manual_ids}
-
-            elif mapping_method == "优先使用 eggNOG 注释":
-                eggnog_df = st.session_state.get("eggnog_result", None)
-
+                if not manual_ids: st.stop()
+                id_mapping = {uid:uid for uid in manual_ids}
+            elif mapping_method == "Use eggNOG":
+                eggnog_df = st.session_state.get("eggnog_result")
                 if eggnog_df is None:
-                    st.error("尚未加载 eggNOG 注释。请先在 EggNOG 页面运行注释，或改用手动输入 UniProt ID。")
+                    st.error("No eggNOG result.")
                     st.stop()
-
-                if not original_ids:
-                    st.warning("未粘贴 FASTA，将尝试从 eggNOG 表格中直接提取 ID。")
-                    original_ids = list(eggnog_df.iloc[:, 0].astype(str))
-
-                id_mapping = extract_uniprot_from_eggnog(eggnog_df, original_ids)
-
+                query_ids = original_ids if original_ids else [selected_de_protein] if selected_de_protein else []
+                id_mapping = extract_uniprot_from_eggnog(eggnog_df, query_ids, fallback_to_seed=True)
                 if not id_mapping:
-                    st.error("没有从 eggNOG 注释中提取到 UniProt ID。建议改用手动输入 UniProt ID。")
-                    st.stop()
-
-                st.success(f"从 eggNOG 提取到 {len(id_mapping)} 个映射")
-
-            elif mapping_method == "使用序列 BLAST (UniProt，较慢)":
-                if not fasta_seqs:
-                    st.error("请先在 FASTA 输入框粘贴 FASTA 序列。")
-                    st.stop()
-
-                st.warning("在线 BLAST 可能排队较久，建议只测试少量序列。")
-                id_mapping = run_blast_mapping(fasta_seqs)
-
-                if not id_mapping:
-                    st.error("BLAST 没有得到 UniProt 映射结果。")
-                    st.stop()
-
+                    st.error("No UniProt extracted. Try BLAST or manual input.")
+                else:
+                    st.success(f"Extracted {len(id_mapping)} mappings.")
+            else:
+                if not fasta_text.strip(): st.error("No FASTA input."); st.stop()
+                if not fasta_seqs: st.error("Could not parse FASTA."); st.stop()
+                id_mapping = run_blast_mapping(fasta_seqs, max_retries=2, max_wait_per_job=180)
+                if not id_mapping: st.error("BLAST failed.")
+        if not id_mapping: st.stop()
         uniprot_ids = list(dict.fromkeys(id_mapping.values()))
-
-        st.info(f"最终获得 {len(uniprot_ids)} 个 UniProt ID")
-
-        map_df = pd.DataFrame(
-            list(id_mapping.items()),
-            columns=["Original_ID", "UniProt_ID"],
-        )
-        st.dataframe(map_df, use_container_width=True)
-
-        with st.spinner("正在查询 STRING 在线接口..."):
-            network_json = call_string_api(
-                uniprot_ids,
-                species=species,
-                required_score=required_score,
-            )
-
+        map_df = pd.DataFrame(list(id_mapping.items()), columns=["Original", "UniProt"])
+        valid_pattern = re.compile(r'^[OPQ][0-9][A-Z0-9]{3}[0-9]$|^[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9](?:[A-Z][A-Z0-9]{2}[0-9])?$')
+        map_df["Valid UniProt"] = map_df["UniProt"].apply(lambda x: "Yes" if valid_pattern.match(str(x)) else "No")
+        st.dataframe(map_df, width='stretch')
+        if all(map_df["Valid UniProt"] == "No"):
+            st.warning("None of the extracted IDs are standard UniProt accessions. STRING may not recognize them. Consider using BLAST or manual UniProt input.")
+        else:
+            st.info("UniProt accessions marked 'Yes' are suitable for direct input in 'Manual UniProt ID'.")
+        with st.spinner("Querying STRING..."):
+            network_json = call_string_api(uniprot_ids, species=species, required_score=required_score)
         if network_json is None:
-            st.error("STRING API 调用失败，请检查网络、物种 ID 或 UniProt ID 是否匹配。")
-            st.stop()
+            st.error("STRING API call failed.")
+        elif len(network_json) == 0:
+            st.warning("No interactions found.")
+        else:
+            elapsed = time.time() - start_time
+            st.success(f"Network with {len(network_json)} edges fetched in {elapsed:.1f} seconds.")
+            html = build_ppi_network_html(network_json, id_mapping)
+            st.components.v1.html(html, height=800, scrolling=True)
+            st.download_button("Download JSON", data=json.dumps(network_json, indent=2), file_name="string_network.json")
 
-        if len(network_json) == 0:
-            st.warning("STRING 返回为空。可能是物种选择不匹配，或这些蛋白之间没有满足阈值的互作。")
-            st.stop()
+# ---------- Page: Integrated Analysis ----------
+elif page == "Integrated Analysis":
+    st.header("Integrated Analysis")
+    st.markdown("Automatically uses eggNOG annotations to filter CD-Search, run ESM2 similarity, and query STRING.")
 
-        st.success(f"收到 STRING 网络数据，共 {len(network_json)} 条边")
+    if st.session_state.eggnog_result is None:
+        st.warning("No eggNOG annotation result found. Please run eggNOG annotation first.")
+        st.stop()
 
-        html = build_ppi_network_html(network_json, id_mapping)
-        st.components.v1.html(html, height=800, scrolling=True)
+    eggnog_df = st.session_state.eggnog_result
+    egg_ids = eggnog_df[eggnog_df.columns[0]].tolist()
 
-        st.download_button(
-            "下载原始网络 JSON",
-            data=json.dumps(network_json, indent=2),
-            file_name="string_network.json",
-            mime="application/json",
+    use_eggnog = st.checkbox("Use eggNOG annotations for integrated analysis", value=True)
+
+    # CD-Search filtering
+    st.subheader("CD-Search Results (filtered by eggNOG proteins)")
+    if st.session_state.cd_result is not None:
+        cd_df = st.session_state.cd_result
+        id_col = cd_df.columns[0]
+        cd_filtered = cd_df[cd_df[id_col].isin(egg_ids)] if use_eggnog else cd_df
+        st.dataframe(cd_filtered.head(20), width='stretch')
+        st.info(f"Showing {len(cd_filtered)} out of {len(cd_df)} CD-Search records")
+    else:
+        st.warning("No CD-Search results loaded.")
+
+    # ESM2 Similarity Search
+    st.subheader("ESM2 Similarity Search (using first eggNOG protein)")
+    if st.session_state.esm_model is None:
+        st.warning("ESM2 model not loaded yet. Please go to ESM2 page once to load the model.")
+    else:
+        if use_eggnog:
+            first_egg_id = egg_ids[0]
+            st.info(f"Will search for: {first_egg_id}")
+            if st.session_state.ref_fasta_text:
+                fasta_dict = parse_fasta(st.session_state.ref_fasta_text)
+                seq = fasta_dict.get(first_egg_id, "")
+                if not seq:
+                    st.error(f"Sequence for {first_egg_id} not found in reference FASTA.")
+                else:
+                    if st.button("Run ESM2 Similarity Search"):
+                        with st.spinner("Searching..."):
+                            result_df = find_similar_proteins(
+                                seq, top_n=10,
+                                model=st.session_state.esm_model,
+                                batch_converter=st.session_state.esm_batch_converter,
+                                use_pretrained=st.session_state.get("use_pretrained", False),
+                                custom_library=st.session_state.get("custom_library")
+                            )
+                            if "Error" in result_df.columns:
+                                st.error(result_df["Error"][0])
+                            else:
+                                result_df = enrich_esm_result_with_eggnog(result_df, eggnog_df)
+                                st.session_state.last_search_result = result_df
+                                st.success("Search completed.")
+            else:
+                st.error("Reference FASTA not loaded. Please upload it in ESM2 or EggNOG page.")
+            if st.session_state.get("last_search_result") is not None:
+                st.dataframe(st.session_state.last_search_result, width='stretch')
+                if 'Gene' in st.session_state.last_search_result.columns and (st.session_state.last_search_result['Gene'] == '').any():
+                    st.info("Only proteins present in the eggNOG annotation will have Gene/Protein_Name/GO/EC information.")
+        else:
+            st.info("Uncheck the toggle to manually control ESM2 from its dedicated page.")
+
+    # STRING PPI Network
+    st.subheader("STRING PPI Network (using eggNOG UniProt IDs)")
+    if use_eggnog:
+        target_ids = egg_ids[:5]
+        id_mapping = extract_uniprot_from_eggnog(eggnog_df, target_ids, fallback_to_seed=True)
+        if not id_mapping:
+            st.warning("No valid UniProt IDs could be extracted from eggNOG. You can try BLAST or manual input on the STRING page.")
+        else:
+            uniprot_ids = list(dict.fromkeys(id_mapping.values()))
+            st.info(f"Extracted {len(uniprot_ids)} UniProt IDs: {', '.join(uniprot_ids[:5])}")
+            species = 3702
+            seed_col = None
+            for col in eggnog_df.columns:
+                if 'seed_ortholog' in col.lower():
+                    seed_col = col
+                    break
+            if seed_col:
+                first_seed = str(eggnog_df[seed_col].iloc[0])
+                m = re.match(r'(\d+)\.', first_seed)
+                if m:
+                    species = int(m.group(1))
+            required_score = st.slider("Required score", 0, 1000, 400, key="integrated_string_score")
+            if st.button("Fetch STRING Network"):
+                with st.spinner("Querying STRING..."):
+                    network_json = call_string_api(uniprot_ids, species=species, required_score=required_score)
+                if network_json is None:
+                    st.error("STRING API call failed.")
+                elif len(network_json) == 0:
+                    st.warning("No interactions found.")
+                else:
+                    html = build_ppi_network_html(network_json, id_mapping)
+                    st.components.v1.html(html, height=600, scrolling=True)
+                    st.download_button("Download JSON", data=json.dumps(network_json, indent=2), file_name="string_network.json")
+    else:
+        st.info("Uncheck the toggle to manually use STRING from its dedicated page.")
+
+    # AI Functional Summary
+    st.subheader("AI Functional Summary")
+    st.markdown("Generate an AI-powered functional summary for a selected eggNOG-annotated protein.")
+    protein_list = egg_ids
+    selected_protein = st.selectbox("Select a protein from eggNOG:", protein_list)
+    use_api = st.checkbox("Use DeepSeek AI (requires API key)", value=False, key="integrated_use_api")
+    if st.button("Generate Summary", key="integrated_gen_summary"):
+        protein_row = eggnog_df[eggnog_df[eggnog_df.columns[0]] == selected_protein].iloc[0]
+        protein_name = str(protein_row.get('Description', '') or protein_row.get('Preferred_name', ''))
+        go_terms = str(protein_row.get('GOs', ''))
+        ec_numbers = str(protein_row.get('EC', ''))
+        start_time = time.time()
+        summary = generate_function_summary(
+            protein_id=selected_protein,
+            protein_name=protein_name,
+            similarity_score=None,
+            similar_protein="",
+            go_terms=go_terms,
+            ec_numbers=ec_numbers,
+            use_api=use_api
         )
+        elapsed = time.time() - start_time
+        st.success(f"Summary generated in {elapsed:.1f} seconds.")
+        st.write(summary)
+
+    # Export integrated report
+    st.subheader("Export Integrated Report")
+    if st.button("Generate Integrated Report CSV"):
+        export_parts = {}
+        if st.session_state.cd_result is not None:
+            cd_df = st.session_state.cd_result
+            if use_eggnog:
+                id_col = cd_df.columns[0]
+                cd_sub = cd_df[cd_df[id_col].isin(egg_ids)]
+                export_parts["CD_Search"] = cd_sub
+            else:
+                export_parts["CD_Search"] = cd_df
+        if st.session_state.get("last_search_result") is not None:
+            export_parts["ESM2_Search"] = st.session_state.last_search_result
+        if use_eggnog:
+            export_parts["EggNOG"] = eggnog_df
+        if export_parts:
+            combined_list = []
+            for source, df in export_parts.items():
+                temp = df.copy()
+                temp["Source"] = source
+                combined_list.append(temp)
+            combined = pd.concat(combined_list, ignore_index=True)
+            csv = combined.to_csv(index=False).encode()
+            st.download_button("Download CSV", csv, file_name="integrated_analysis.csv")
+        else:
+            st.info("No data to export.")
+
+# ---------- End of pages ----------

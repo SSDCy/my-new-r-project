@@ -1,0 +1,25 @@
+Query	Hit type	PSSM-ID	From	To	E-Value	Bitscore	Accession	Short name	Incomplete	Superfamily
+Pt_Chr0100100	specific	397245	71	410	3.63315e-60	198.804	pfam03016	Exostosin	 - 	cl20239
+Pt_Chr0100100	superfamily	420081	427	466	0.00700522	35.723	cl23892	TyeA superfamily	N	 - 
+Pt_Chr0100101	superfamily	464352	295	802	8.7559e-125	390.588	cl20765	DUF4487 superfamily	 - 	 - 
+Pt_Chr0100102	superfamily	215574	1	932	0	1640.83	cl47077	PIR superfamily	N	 - 
+Pt_Chr0100103	superfamily	464352	294	698	1.96653e-79	264.628	cl20765	DUF4487 superfamily	 - 	 - 
+Pt_Chr0100104	superfamily	215574	1	335	0	537.614	cl47077	PIR superfamily	C	 - 
+Pt_Chr0100105	specific	464133	715	879	2.25007e-31	120.12	pfam14309	DUF4378	 - 	cl16789
+Pt_Chr0100105	specific	432630	178	222	7.47546e-20	83.3804	pfam12552	DUF3741	 - 	cl13927
+Pt_Chr0100106	specific	341097	11	108	2.53861e-40	134.342	cd17015	ING_plant	 - 	cl28919
+Pt_Chr0100106	superfamily	227367	4	239	1.17727e-31	117.346	cl34876	TNG2 superfamily	 - 	 - 
+Pt_Chr0100107	specific	239460	35	555	0	870.237	cd03344	GroEL	 - 	cl02777
+Pt_Chr0100108	superfamily	178532	31	559	0	700.532	cl31958	PLN02946 superfamily	 - 	 - 
+Pt_Chr0100109	superfamily	480629	107	189	0.00338101	36.1561	cl46289	Retrotrans_gag superfamily	N	 - 
+Pt_Chr0100110	superfamily	215393	59	383	0	564.153	cl27763	PLN02738 superfamily	N	 - 
+Pt_Chr0100113	superfamily	444852	41	76	0.00543297	34.8073	cl00342	Trp-synth-beta_II superfamily	N	 - 
+Pt_Chr0100114	specific	433612	2	54	5.34949e-23	85.7873	pfam13966	zf-RVT	N	cl16506
+Pt_Chr0100115	specific	173795	120	599	2.38896e-126	380.02	cd04852	Peptidases_S8_3	 - 	cl10459
+Pt_Chr0100115	specific	239035	366	494	5.00982e-34	126.374	cd02120	PA_subtilisin_like	 - 	cl28883
+Pt_Chr0100115	specific	465493	681	787	9.61706e-34	124.62	pfam17766	fn3_6	 - 	cl05663
+Pt_Chr0100115	specific	428674	37	123	5.45631e-19	81.9565	pfam05922	Inhibitor_I9	 - 	cl05470
+Pt_Chr0100116	superfamily	427142	219	270	1.16247e-06	45.5346	cl07846	DBD_Tnp_Mut superfamily	 - 	 - 
+Pt_Chr0100118	specific	443104	351	493	3.3126e-19	86.4769	COG3897	Nnt1	NC	cl43977
+Pt_Chr0100118	specific	400515	77	178	2.06783e-16	74.7117	pfam08242	Methyltransf_12	 - 	cl17173
+Pt_Chr0100119	specific	461828	19	548	0	970.934	pfam06101	Vps62	 - 	cl05569
